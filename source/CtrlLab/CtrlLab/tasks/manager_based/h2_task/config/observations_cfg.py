@@ -54,6 +54,14 @@ class ObservationsCfg:
             history_length=POLICY_HISTORY_LENGTH,
         )
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100), history_length=POLICY_HISTORY_LENGTH)
+        # Exteroceptive terrain perception from the existing pelvis-mounted ray caster.
+        # This makes the actor terrain-aware; the critic already receives this scan below.
+        height_scanner = ObsTerm(
+            func=mdp.height_scan,
+            clip=(-1.0, 1.0),
+            scale=0.2,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+        )
 
         def __post_init__(self):
             self.enable_corruption = True

@@ -239,6 +239,8 @@ class RobotFlatEnvCfg(RobotRoughEnvCfg):
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
         self.scene.height_scanner = None
+        # The flat task has no ray caster, so remove the terrain observation from both groups.
+        self.observations.policy.height_scanner = None
         self.observations.critic.height_scanner = None
         self.curriculum.terrain_levels = None
         self.commands.base_velocity.resampling_time_range = (10, 10)
