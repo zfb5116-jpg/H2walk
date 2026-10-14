@@ -133,9 +133,11 @@ class RobotSceneCfg(InteractiveSceneCfg):
 
     height_scanner = RayCasterCfg(
         prim_path=H2_HEIGHT_SCANNER_PRIM_PATH,
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        # Center the map 0.3 m ahead of the pelvis: x in [-0.5, 1.1] m.
+        offset=RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+        # TerProg H^b: 33 x 17 samples, 5 cm resolution, 1.6 x 0.8 m window.
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[1.6, 0.8]),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )

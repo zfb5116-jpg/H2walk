@@ -11,6 +11,10 @@ from isaaclab_rl.rsl_rl import (
     RslRlRndCfg,
 )
 
+from ..networks import register_rsl_rl_policy
+
+register_rsl_rl_policy()
+
 
 @configclass
 class H2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -53,3 +57,10 @@ class H2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class H2RoughPPORunnerCfg(H2FlatPPORunnerCfg):
     max_iterations = 8000
     experiment_name = "h2_rough_manager_based"
+    policy = RslRlPpoActorCriticCfg(
+        class_name="H2ActorCriticOur",
+        init_noise_std=1.0,
+        actor_hidden_dims=[256, 128, 64],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
