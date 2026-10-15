@@ -188,10 +188,12 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.track_ang_vel_z.weight = 2.0
 
         self.rewards.base_linear_velocity.weight = -2.0
-        self.rewards.base_angular_velocity.weight = -0.9
+        self.rewards.base_angular_velocity.weight = -1.5
         self.rewards.base_acc.weight = -2.5e-4
         self.rewards.base_height.weight = -5.0
-        self.rewards.flat_orientation.weight = -7.0
+        self.rewards.flat_orientation.weight = -12.0
+        self.rewards.base_lateral_velocity.weight = -0.8
+        self.rewards.base_lateral_acc.weight = -8e-4
 
         self.rewards.action_rate.weight = -0.015
         self.rewards.action_rate2.weight = -0.02

@@ -67,6 +67,34 @@ def base_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityC
     return reward
 
 
+def base_lateral_velocity_l2(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        command_threshold: float = 0.15,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize sideways pelvis velocity while walking primarily forward.
+
+    Sideways commands are exempted so this term suppresses unwanted sway without
+    making a commanded lateral walk impossible.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    forward_mode = torch.abs(command[:, 1]) < command_threshold
+    return torch.square(asset.data.root_lin_vel_b[:, 1]) * forward_mode
+
+
+def base_lateral_acc_l2(
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize rapid left-right pelvis acceleration that causes visible sway."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    base_body_id = asset_cfg.body_ids[0] if isinstance(asset_cfg.body_ids, list) else asset_cfg.body_ids
+    base_lin_acc_b = quat_apply_inverse(asset.data.root_quat_w, asset.data.body_lin_acc_w[:, base_body_id])
+    return torch.square(base_lin_acc_b[:, 1])
+
+
 def base_height_l2(
         env: RobotEnv,
         target_height: float,

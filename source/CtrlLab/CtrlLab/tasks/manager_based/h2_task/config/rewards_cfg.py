@@ -34,6 +34,16 @@ class RewardsCfg:
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.8)
+    base_lateral_velocity = RewTerm(
+        func=h2_mdp.base_lateral_velocity_l2,
+        weight=-0.6,
+        params={"command_name": "base_velocity", "command_threshold": 0.15},
+    )
+    base_lateral_acc = RewTerm(
+        func=h2_mdp.base_lateral_acc_l2,
+        weight=-5e-4,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=H2_BASE_BODY_NAMES)},
+    )
     base_acc = RewTerm(
         func=h2_mdp.base_acc_l2,
         weight=-2.5e-4,
@@ -59,7 +69,7 @@ class RewardsCfg:
     )
     joint_waist_deviation = RewTerm(
         func=h2_mdp.joint_deviation_l2,
-        weight=-1.0,
+        weight=-1.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=H2_WAIST_JOINT_NAMES)},
     )
     joint_arm_deviation = RewTerm(
