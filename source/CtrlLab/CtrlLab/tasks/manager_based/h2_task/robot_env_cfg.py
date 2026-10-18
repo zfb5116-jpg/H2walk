@@ -202,22 +202,22 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.joint_torques.weight = -1e-5
         self.rewards.joint_power.weight = -1e-4
         self.rewards.joint_power_var.weight = -8e-5
-        self.rewards.joint_leg_deviation.weight = -0.4
+        self.rewards.joint_leg_deviation.weight = -0.2
         self.rewards.joint_waist_deviation.weight = -1.0
         self.rewards.joint_arm_deviation.weight = -0.2
         self.rewards.dof_pos_limits.weight = -10.0
         self.rewards.dof_vel_limits.weight = -10.0
         self.rewards.dof_tor_limits.weight = -10.0
 
-        self.rewards.feet_air_time.weight = 0.3
+        self.rewards.feet_air_time.weight = 0.45
         self.rewards.feet_contact_time.weight = 0.2
         self.rewards.feet_air_time_variance.weight = -1.0
-        self.rewards.feet_air_vel.weight = -0.08
+        self.rewards.feet_air_vel.weight = -0.04
         self.rewards.feet_slide.weight = -0.8
         self.rewards.feet_stumble.weight = -1.5
-        self.rewards.feet_vel.weight = -5e-3
+        self.rewards.feet_vel.weight = -2e-3
         self.rewards.feet_acc.weight = -8e-4
-        self.rewards.feet_clearance.weight = -10.0
+        self.rewards.feet_clearance.weight = -4.0
         self.rewards.support_force_z_axis.weight = -2e-4
 
         self.rewards.stand_still.weight = -2.0

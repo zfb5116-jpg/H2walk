@@ -64,7 +64,7 @@ class RewardsCfg:
     # -- posture
     joint_leg_deviation = RewTerm(
         func=h2_mdp.joint_deviation_l2,
-        weight=-0.4,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)},
     )
     joint_waist_deviation = RewTerm(
@@ -85,7 +85,7 @@ class RewardsCfg:
     # -- feet
     feet_air_time = RewTerm(
         func=h2_mdp.feet_air_time,
-        weight=0.3,
+        weight=0.45,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
             "command_name": "base_velocity",
@@ -111,7 +111,7 @@ class RewardsCfg:
     )
     feet_air_vel = RewTerm(
         func=h2_mdp.feet_air_vel_norm,
-        weight=-0.08,
+        weight=-0.04,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
             "asset_cfg": SceneEntityCfg("robot", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
@@ -127,7 +127,7 @@ class RewardsCfg:
     )
     feet_vel = RewTerm(
         func=h2_mdp.feet_vel_norm,
-        weight=-5e-3,
+        weight=-2e-3,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=H2_FOOT_BODY_NAMES, preserve_order=True)},
     )
     feet_acc = RewTerm(
@@ -142,11 +142,21 @@ class RewardsCfg:
     )
     feet_clearance = RewTerm(
         func=h2_mdp.feet_clearance_l2,
-        weight=-10.0,
+        weight=-4.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
-            "target_feet_height": -0.86,
+            "target_feet_height": -0.70,
+        },
+    )
+    feet_swing_height = RewTerm(
+        func=h2_mdp.feet_swing_height,
+        weight=0.75,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+            "target_feet_height": -0.67,
+            "height_std": 0.10,
         },
     )
     support_force_z_axis = RewTerm(

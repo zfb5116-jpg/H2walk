@@ -232,6 +232,27 @@ def feet_air_vel_norm(env, sensor_cfg: SceneEntityCfg,
     return reward
 
 
+def feet_swing_height(
+        env: RobotEnv,
+        command_name: str,
+        sensor_cfg: SceneEntityCfg,
+        target_feet_height: float = -0.67,
+        height_std: float = 0.10,
+) -> torch.Tensor:
+    """Reward lifting each swinging foot to a useful stair-clearing height."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+
+    env.update_feet_state()
+    feet_height_b = env.feet_pos_b[:, :, 2]
+    height_score = torch.exp(-torch.square((feet_height_b - target_feet_height) / height_std))
+    swing = ~contacts
+    swing_count = swing.sum(dim=1).clamp(min=1)
+    reward = torch.sum(height_score * swing, dim=1) / swing_count
+    moving = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.15
+    return reward * moving
+
+
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     feet_acc = asset.data.body_lin_acc_w[:, asset_cfg.body_ids]
