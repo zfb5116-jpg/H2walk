@@ -3,7 +3,7 @@ from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.sensors import CameraCfg, ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
@@ -142,6 +142,9 @@ class RobotSceneCfg(InteractiveSceneCfg):
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+    sm60_camera_left: CameraCfg | None = None
+    sm60_camera_right: CameraCfg | None = None
+    sm60_camera_housing: AssetBaseCfg | None = None
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
         spawn=sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75)),
@@ -223,6 +226,43 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.stand_still.weight = -2.0
         self.rewards.undesired_contacts.weight = -2.0
 
+    def _enable_sm60_cameras(self):
+        camera_spawn = sim_utils.PinholeCameraCfg(
+            focal_length=1.0,
+            horizontal_aperture=6.155,
+            vertical_aperture=3.03,
+            clipping_range=(0.05, 30.0),
+        )
+        camera_rotation = (0.7071068, 0.0, 0.7071068, 0.0)
+        camera_common = {
+            "width": 320,
+            "height": 200,
+            "data_types": ["rgb"],
+            "update_period": 1.0 / 30.0,
+            "spawn": camera_spawn,
+        }
+        self.scene.sm60_camera_left = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/head/sm60_left",
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.015, 0.0, 0.03), rot=camera_rotation, convention="ros"
+            ),
+            **camera_common,
+        )
+        self.scene.sm60_camera_right = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/head/sm60_right",
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.015, 0.0, -0.03), rot=camera_rotation, convention="ros"
+            ),
+            **camera_common,
+        )
+        self.scene.sm60_camera_housing = AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/head/sm60_housing",
+            spawn=sim_utils.CuboidCfg(
+                size=(0.0287, 0.0382, 0.1026),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.08, 0.08, 0.08)),
+            ),
+        )
+
 
 @configclass
 class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
@@ -234,6 +274,7 @@ class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
         self.commands.base_velocity.rel_standing_envs = 0.0
+        self._enable_sm60_cameras()
 
 
 @configclass
@@ -258,3 +299,4 @@ class RobotFlatPlayEnvCfg(RobotFlatEnvCfg):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
+        self._enable_sm60_cameras()
