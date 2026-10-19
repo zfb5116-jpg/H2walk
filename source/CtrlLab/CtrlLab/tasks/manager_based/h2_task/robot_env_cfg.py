@@ -45,7 +45,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     robot: ArticulationCfg = UNITREE_H2_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.95),
+            pos=(0.0, 0.0, 1.03),
             joint_pos=H2_STANDING_JOINT_POS,
             joint_vel={".*": 0.0},
         ),
@@ -186,7 +186,7 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
             if self.scene.terrain.terrain_generator is not None:
                 self.scene.terrain.terrain_generator.curriculum = False
 
-        self.commands.base_velocity.resampling_time_range = (15, 20)
+        self.commands.base_velocity.resampling_time_range = (8, 12)
         self.rewards.track_lin_vel_xy.weight = 8.0
         self.rewards.track_ang_vel_z.weight = 2.0
 
@@ -274,6 +274,9 @@ class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
         self.commands.base_velocity.rel_standing_envs = 0.0
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.2)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.8, 0.8)
         self._enable_sm60_cameras()
 
 

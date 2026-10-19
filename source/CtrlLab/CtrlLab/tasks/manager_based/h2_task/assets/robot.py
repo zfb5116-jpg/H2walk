@@ -140,6 +140,8 @@ H2_STANDING_JOINT_POS = {
 }
 
 
+# Match the H2 home keyframe in Unitree's official RL config:
+# https://github.com/unitreerobotics/unitree_rl_mjlab/blob/main/src/assets/robots/unitree_h2/h2_constants.py
 UNITREE_H2_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
@@ -161,7 +163,8 @@ UNITREE_H2_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.95),
+        # Match the Unitree H2 home keyframe used by the official RL config.
+        pos=(0.0, 0.0, 1.03),
         joint_pos=H2_STANDING_JOINT_POS,
         joint_vel={".*": 0.0},
     ),
