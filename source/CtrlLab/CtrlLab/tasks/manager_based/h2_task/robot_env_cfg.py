@@ -191,12 +191,12 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.track_ang_vel_z.weight = 2.0
 
         self.rewards.base_linear_velocity.weight = -2.0
-        self.rewards.base_angular_velocity.weight = -1.5
-        self.rewards.base_acc.weight = -2.5e-4
+        self.rewards.base_angular_velocity.weight = -2.0
+        self.rewards.base_acc.weight = -3e-4
         self.rewards.base_height.weight = -5.0
         self.rewards.flat_orientation.weight = -12.0
-        self.rewards.base_lateral_velocity.weight = -0.8
-        self.rewards.base_lateral_acc.weight = -8e-4
+        self.rewards.base_lateral_velocity.weight = -1.2
+        self.rewards.base_lateral_acc.weight = -1e-3
 
         self.rewards.action_rate.weight = -0.015
         self.rewards.action_rate2.weight = -0.02
@@ -221,6 +221,9 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.feet_vel.weight = -2e-3
         self.rewards.feet_acc.weight = -8e-4
         self.rewards.feet_clearance.weight = -4.0
+        self.rewards.feet_swing_height.weight = 0.75
+        self.rewards.track_forward_progress.weight = 2.0
+        self.rewards.feet_stair_clearance.weight = 2.0
         self.rewards.support_force_z_axis.weight = -2e-4
 
         self.rewards.stand_still.weight = -2.0

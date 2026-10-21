@@ -30,18 +30,23 @@ class RewardsCfg:
         weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
+    track_forward_progress = RewTerm(
+        func=h2_mdp.track_forward_world_velocity,
+        weight=2.0,
+        params={"command_name": "base_velocity", "std": 0.5},
+    )
 
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.8)
+    base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-2.0)
     base_lateral_velocity = RewTerm(
         func=h2_mdp.base_lateral_velocity_l2,
-        weight=-0.6,
+        weight=-1.2,
         params={"command_name": "base_velocity", "command_threshold": 0.15},
     )
     base_lateral_acc = RewTerm(
         func=h2_mdp.base_lateral_acc_l2,
-        weight=-5e-4,
+        weight=-1e-3,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=H2_BASE_BODY_NAMES)},
     )
     base_acc = RewTerm(
@@ -157,6 +162,19 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
             "target_feet_height": -0.67,
             "height_std": 0.10,
+        },
+    )
+    feet_stair_clearance = RewTerm(
+        func=h2_mdp.feet_stair_clearance,
+        weight=2.0,
+        params={
+            "command_name": "base_velocity",
+            "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+            "terrain_sensor_cfg": SceneEntityCfg("height_scanner"),
+            "clearance": 0.04,
+            "min_rise": 0.04,
+            "max_rise": 0.24,
+            "height_std": 0.12,
         },
     )
     support_force_z_axis = RewTerm(

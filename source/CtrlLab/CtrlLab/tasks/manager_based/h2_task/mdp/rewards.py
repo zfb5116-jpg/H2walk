@@ -50,6 +50,20 @@ def track_ang_vel_z_exp(
     return torch.exp(-ang_vel_error / std ** 2) * contacts.any(dim=-1)
 
 
+def track_forward_world_velocity(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        std: float = 0.5,
+        command_threshold: float = 0.15,
+) -> torch.Tensor:
+    """Keep a forward command aligned with the terrain's world-frame uphill axis."""
+    asset: Articulation = env.scene["robot"]
+    command = env.command_manager.get_command(command_name)
+    forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
+    error = asset.data.root_lin_vel_w[:, 0] - command[:, 0]
+    return torch.exp(-torch.square(error / std)) * forward
+
+
 """
 base penalty
 """
@@ -251,6 +265,49 @@ def feet_swing_height(
     reward = torch.sum(height_score * swing, dim=1) / swing_count
     moving = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.15
     return reward * moving
+
+
+def feet_stair_clearance(
+        env: RobotEnv,
+        command_name: str,
+        foot_sensor_cfg: SceneEntityCfg,
+        terrain_sensor_cfg: SceneEntityCfg,
+        clearance: float = 0.04,
+        min_rise: float = 0.04,
+        max_rise: float = 0.24,
+        height_std: float = 0.12,
+) -> torch.Tensor:
+    """Reward swing feet that clear the nearest raised terrain in the forward lane."""
+    contacts_sensor: ContactSensor = env.scene.sensors[foot_sensor_cfg.name]
+    contacts = contacts_sensor.data.net_forces_w_history[:, :, foot_sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1).values > 1.0
+
+    terrain_sensor = env.scene[terrain_sensor_cfg.name]
+    hits_w = terrain_sensor.data.ray_hits_w
+    root_pos_w = env.asset.data.root_pos_w
+    root_quat_w = env.asset.data.root_quat_w
+    ray_count = hits_w.shape[1]
+    ray_quat = root_quat_w.unsqueeze(1).expand(-1, ray_count, -1)
+    hits_b = quat_apply_inverse(ray_quat.reshape(-1, 4), (hits_w - root_pos_w.unsqueeze(1)).reshape(-1, 3)).view_as(hits_w)
+
+    valid = torch.isfinite(hits_w).all(dim=-1)
+    lane = torch.abs(hits_b[:, :, 1]) < 0.25
+    front = valid & lane & (hits_b[:, :, 0] > 0.08) & (hits_b[:, :, 0] < 0.42)
+    under = valid & lane & (hits_b[:, :, 0] > -0.30) & (hits_b[:, :, 0] < 0.02)
+    nan = torch.full_like(hits_w[:, :, 2], float("nan"))
+    front_height = torch.nan_to_num(torch.where(front, hits_w[:, :, 2], -torch.inf).amax(dim=1), neginf=0.0)
+    ground_height = torch.nan_to_num(torch.where(under, hits_w[:, :, 2], nan).nanmedian(dim=1).values, nan=0.0)
+    rise = torch.clamp(front_height - ground_height, min=0.0, max=max_rise)
+    target_z = front_height + clearance
+
+    env.update_feet_state()
+    feet_z_w = env.asset.data.body_pos_w[:, env.feet_id_b, 2]
+    swing = ~contacts
+    swing_count = swing.sum(dim=1).clamp(min=1)
+    height_score = torch.exp(-torch.square((feet_z_w - target_z.unsqueeze(1)) / height_std))
+    rise_weight = ((rise - min_rise) / (max_rise - min_rise)).clamp(0.0, 1.0)
+    moving_forward = env.command_manager.get_command(command_name)[:, 0] > 0.15
+    score = torch.sum(height_score * swing, dim=1) / swing_count
+    return score * rise_weight * moving_forward
 
 
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
