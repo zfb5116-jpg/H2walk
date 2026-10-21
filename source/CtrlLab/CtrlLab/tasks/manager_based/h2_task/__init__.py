@@ -41,5 +41,25 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:H2RoughPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Unitree-H2-Velocity-Stairs",
+    entry_point=f"{__name__}.robot_env:RobotEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.robot_env_cfg:RobotStairsEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:H2RoughPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Unitree-H2-Velocity-Stairs-Play",
+    entry_point=f"{__name__}.robot_env:RobotEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.robot_env_cfg:RobotStairsPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:H2RoughPPORunnerCfg",
+    },
+)
 from .robot_env import RobotEnv
 from .robot_env_cfg import RobotFlatPlayEnvCfg, RobotRoughPlayEnvCfg
