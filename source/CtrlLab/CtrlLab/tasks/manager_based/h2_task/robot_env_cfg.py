@@ -4,6 +4,7 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg, ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.managers import ObservationTermCfg as ObsTerm, SceneEntityCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
@@ -13,6 +14,7 @@ from .assets import (
     H2_ARM_JOINT_NAMES,
     H2_FOOT_BODY_NAMES,
     H2_HEIGHT_SCANNER_PRIM_PATH,
+    H2_LIDAR_RECON_CHECKPOINT,
     H2_HIP_KNEE_JOINT_NAMES,
     H2_LEG_JOINT_NAMES,
     H2_SHOULDER_ELBOW_WRIST_ROLL_JOINT_NAMES,
@@ -22,6 +24,8 @@ from .assets import (
     UNITREE_H2_CFG,
 )
 from .config import *
+from .lidar_hb_pattern import YuHbLidarPatternCfg
+from .mdp.observations import reconstructed_lidar_height_scan
 
 
 @configclass
@@ -141,6 +145,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
+    lidar: RayCasterCfg | None = None
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     sm60_camera_left: CameraCfg | None = None
     sm60_camera_right: CameraCfg | None = None
@@ -281,6 +286,65 @@ class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.8, 0.8)
         self._enable_sm60_cameras()
+
+
+def _enable_stairs_lidar_reconstruction(cfg):
+    """Enable the frozen GO2-trained map reconstructor for H2 stair policies."""
+    lidar_pattern = YuHbLidarPatternCfg(
+        channels=16,
+        vertical_fov_range=(-45.0, 14.0),
+        horizontal_fov_range=(-180.0, 180.0),
+        horizontal_res=1.6,
+        origin=(0.0, 0.0, 0.16),
+        box_min=(-0.55, -0.45, -0.65),
+        box_max=(1.15, 0.45, 0.55),
+        min_range=0.1,
+        max_range=2.0,
+        z_slices=9,
+    )
+    cfg.scene.lidar = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/pelvis",
+        mesh_prim_paths=["/World/ground"],
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 0.16)),
+        ray_alignment="base",
+        pattern_cfg=lidar_pattern,
+        max_distance=2.0,
+        debug_vis=False,
+    )
+    cfg.scene.lidar.update_period = cfg.decimation * cfg.sim.dt
+    cfg.observations.policy.height_scanner = ObsTerm(
+        func=reconstructed_lidar_height_scan,
+        clip=(-1.0, 1.0),
+        scale=0.2,
+        params={
+            "sensor_cfg": SceneEntityCfg("lidar"),
+            "checkpoint": str(H2_LIDAR_RECON_CHECKPOINT),
+        },
+    )
+
+
+@configclass
+class RobotStairsEnvCfg(RobotRoughEnvCfg):
+    """Curriculum training on ascending and descending stair terrains."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
+        self.scene.terrain.max_init_terrain_level = 2
+        self.scene.terrain.terrain_generator.curriculum = True
+        _enable_stairs_lidar_reconstruction(self)
+
+
+@configclass
+class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
+    """Play environment for the stair curriculum."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
+        self.scene.terrain.max_init_terrain_level = 3
+        self.scene.terrain.terrain_generator.curriculum = False
+        _enable_stairs_lidar_reconstruction(self)
 
 
 @configclass

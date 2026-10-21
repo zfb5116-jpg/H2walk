@@ -10,6 +10,10 @@ CTRLLAB_ROOT = Path(__file__).resolve().parents[7]
 DEFAULT_H2_USD_PATH = CTRLLAB_ROOT / "assets" / "isaaclab" / "unitree_robots" / "h2" / "h2.usd"
 H2_USD_PATH = os.environ.get("CTRLLAB_H2_USD_PATH", str(DEFAULT_H2_USD_PATH))
 H2_HEIGHT_SCANNER_PRIM_PATH = os.environ.get("CTRLLAB_H2_HEIGHT_SCANNER_PRIM_PATH", "{ENV_REGEX_NS}/Robot/pelvis")
+H2_LIDAR_RECON_CHECKPOINT = os.environ.get(
+    "CTRLLAB_H2_LIDAR_RECON_CHECKPOINT",
+    "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt",
+)
 
 # Joint order follows the official Unitree MuJoCo H2 model in unitree_rl_mjlab.
 H2_LEG_JOINT_NAMES = [
