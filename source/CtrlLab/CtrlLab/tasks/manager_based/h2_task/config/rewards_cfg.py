@@ -8,6 +8,7 @@ from .. import mdp as h2_mdp
 from ..assets import (
     H2_ARM_JOINT_NAMES,
     H2_BASE_BODY_NAMES,
+    H2_FALL_CONTACT_BODY_NAMES,
     H2_FOOT_BODY_NAMES,
     H2_LEG_JOINT_NAMES,
     H2_UNDESIRED_CONTACT_BODY_NAMES,
@@ -31,7 +32,7 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_forward_progress = RewTerm(
-        func=h2_mdp.track_forward_world_velocity,
+        func=h2_mdp.track_forward_velocity,
         weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
@@ -85,7 +86,7 @@ class RewardsCfg:
     # -- joint limits
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-10.0)
     dof_vel_limits = RewTerm(func=mdp.joint_vel_limits, weight=-10.0, params={"soft_ratio": 0.75})
-    dof_tor_limits = RewTerm(func=h2_mdp.joint_tor_limits, weight=-10.0, params={"soft_ratio": 0.75, "effort_limit": 360.0})
+    dof_tor_limits = RewTerm(func=h2_mdp.joint_tor_limits, weight=-10.0, params={"soft_ratio": 0.75})
 
     # -- feet
     feet_air_time = RewTerm(
@@ -190,6 +191,14 @@ class RewardsCfg:
         params={
             "threshold": 1,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_UNDESIRED_CONTACT_BODY_NAMES),
+        },
+    )
+    fall_body_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-12.0,
+        params={
+            "threshold": 1,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FALL_CONTACT_BODY_NAMES),
         },
     )
     stand_still = RewTerm(

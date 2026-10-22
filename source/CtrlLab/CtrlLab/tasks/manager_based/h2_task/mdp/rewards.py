@@ -4,7 +4,7 @@ from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 import isaaclab.envs.mdp as mdp
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 from ..robot_env import RobotEnv
 
@@ -50,18 +50,36 @@ def track_ang_vel_z_exp(
     return torch.exp(-ang_vel_error / std ** 2) * contacts.any(dim=-1)
 
 
+def track_forward_velocity(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        std: float = 0.5,
+        command_threshold: float = 0.15,
+) -> torch.Tensor:
+    """Track forward velocity in the same base frame as the velocity command."""
+    if not 0.0 < std < float("inf"):
+        raise ValueError("std must be finite and positive.")
+    if not 0.0 <= command_threshold < float("inf"):
+        raise ValueError("command_threshold must be finite and non-negative.")
+    asset: Articulation = env.scene["robot"]
+    command = env.command_manager.get_command(command_name)
+    forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
+    error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
+    return torch.exp(-torch.square(error / std)) * forward
+
+
 def track_forward_world_velocity(
         env: ManagerBasedRLEnv,
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
 ) -> torch.Tensor:
-    """Keep a forward command aligned with the terrain's world-frame uphill axis."""
-    asset: Articulation = env.scene["robot"]
-    command = env.command_manager.get_command(command_name)
-    forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
-    error = asset.data.root_lin_vel_w[:, 0] - command[:, 0]
-    return torch.exp(-torch.square(error / std)) * forward
+    """Historical name retained for configs; uses corrected base-frame tracking.
+
+    The old world-X comparison conflicted with base-frame commands after yaw
+    rotations. This alias preserves imports, not that reward behavior.
+    """
+    return track_forward_velocity(env, command_name, std, command_threshold)
 
 
 """
@@ -87,15 +105,17 @@ def base_lateral_velocity_l2(
         command_threshold: float = 0.15,
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Penalize sideways pelvis velocity while walking primarily forward.
+    """Penalize lateral tracking error while walking primarily forward.
 
-    Sideways commands are exempted so this term suppresses unwanted sway without
-    making a commanded lateral walk impossible.
+    The small-lateral-command gate is retained. Subtracting that command avoids
+    penalizing correct tracking of lateral commands inside the gate.
     """
+    if not 0.0 <= command_threshold < float("inf"):
+        raise ValueError("command_threshold must be finite and non-negative.")
     asset: Articulation = env.scene[asset_cfg.name]
     command = env.command_manager.get_command(command_name)
     forward_mode = torch.abs(command[:, 1]) < command_threshold
-    return torch.square(asset.data.root_lin_vel_b[:, 1]) * forward_mode
+    return torch.square(asset.data.root_lin_vel_b[:, 1] - command[:, 1]) * forward_mode
 
 
 def base_lateral_acc_l2(
@@ -158,14 +178,24 @@ def joint_power_var(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEnt
 
 def joint_tor_limits(env: ManagerBasedRLEnv,
                      soft_ratio: float,
-                     effort_limit: float,
+                     effort_limit: float | None = None,
                      asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
                      ) -> torch.Tensor:
+    """Penalize applied torque above each joint's soft simulation effort limit.
+
+    An explicit scalar ``effort_limit`` retains the previous common-limit
+    baseline. Excess remains in N m, capped at 1 per joint as before.
+    """
+    if not 0.0 < soft_ratio <= 1.0:
+        raise ValueError("soft_ratio must satisfy 0 < soft_ratio <= 1.")
+    if effort_limit is not None and not 0.0 < effort_limit < float("inf"):
+        raise ValueError("effort_limit must be finite and positive when supplied.")
     asset: Articulation = env.scene[asset_cfg.name]
+    limits = asset.data.joint_effort_limits[:, asset_cfg.joint_ids] if effort_limit is None else effort_limit
     out_of_limits = (
-            torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids]) - effort_limit * soft_ratio
+            torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids]) - limits * soft_ratio
     )
-    # clip to max error = 1 rad/s per joint to avoid huge penalties
+    # Preserve the existing cap of 1 N m excess per joint.
     out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)
     return torch.sum(out_of_limits, dim=1)
 
@@ -276,38 +306,84 @@ def feet_stair_clearance(
         min_rise: float = 0.04,
         max_rise: float = 0.24,
         height_std: float = 0.12,
+        target_mode: str = "highest",
 ) -> torch.Tensor:
-    """Reward swing feet that clear the nearest raised terrain in the forward lane."""
+    """Reward swing clearance using the existing ground-truth height scanner.
+
+    ``nearest`` queries each foot's lane in the horizontal heading frame and
+    targets the first raised scan column, rather than a more distant high step.
+    This is a reward-shaping hypothesis, not a footstep planner. ``highest``
+    retains the shared body-lane target for ablations, with invalid-ray fixes.
+    Both modes require valid ground and front samples. Missing rays never
+    establish a world-z=0 floor. Descending stairs and lateral/backward commands
+    are outside the nearest-target experiment.
+    """
+    if target_mode not in {"nearest", "highest"}:
+        raise ValueError("target_mode must be 'nearest' or 'highest'")
+    if not (0.0 <= clearance < float("inf") and 0.0 < min_rise < max_rise < float("inf")
+            and 0.0 < height_std < float("inf")):
+        raise ValueError("Require clearance >= 0, 0 < min_rise < max_rise, height_std > 0")
     contacts_sensor: ContactSensor = env.scene.sensors[foot_sensor_cfg.name]
     contacts = contacts_sensor.data.net_forces_w_history[:, :, foot_sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1).values > 1.0
 
     terrain_sensor = env.scene[terrain_sensor_cfg.name]
     hits_w = terrain_sensor.data.ray_hits_w
     root_pos_w = env.asset.data.root_pos_w
-    root_quat_w = env.asset.data.root_quat_w
+    root_quat_w = yaw_quat(env.asset.data.root_quat_w)
     ray_count = hits_w.shape[1]
     ray_quat = root_quat_w.unsqueeze(1).expand(-1, ray_count, -1)
-    hits_b = quat_apply_inverse(ray_quat.reshape(-1, 4), (hits_w - root_pos_w.unsqueeze(1)).reshape(-1, 3)).view_as(hits_w)
-
     valid = torch.isfinite(hits_w).all(dim=-1)
-    lane = torch.abs(hits_b[:, :, 1]) < 0.25
-    front = valid & lane & (hits_b[:, :, 0] > 0.08) & (hits_b[:, :, 0] < 0.42)
-    under = valid & lane & (hits_b[:, :, 0] > -0.30) & (hits_b[:, :, 0] < 0.02)
-    nan = torch.full_like(hits_w[:, :, 2], float("nan"))
-    front_height = torch.nan_to_num(torch.where(front, hits_w[:, :, 2], -torch.inf).amax(dim=1), neginf=0.0)
-    ground_height = torch.nan_to_num(torch.where(under, hits_w[:, :, 2], nan).nanmedian(dim=1).values, nan=0.0)
-    rise = torch.clamp(front_height - ground_height, min=0.0, max=max_rise)
+    safe_hits = torch.where(valid.unsqueeze(-1), hits_w, root_pos_w.unsqueeze(1))
+    hits_b = quat_apply_inverse(ray_quat.reshape(-1, 4), (safe_hits - root_pos_w.unsqueeze(1)).reshape(-1, 3)).view_as(hits_w)
+    feet_w = env.asset.data.body_pos_w[:, env.feet_id_b, :]
+    foot_quat = root_quat_w.unsqueeze(1).expand(-1, feet_w.shape[1], -1)
+    feet_b = quat_apply_inverse(foot_quat.reshape(-1, 4), (feet_w - root_pos_w.unsqueeze(1)).reshape(-1, 3)).view_as(feet_w)
+    # [environment, foot, ray]. The scanner has 5 cm spacing; a 2.5 cm
+    # tolerance groups one nearest longitudinal column, including rotated grids.
+    if target_mode == "nearest":
+        relative = hits_b.unsqueeze(1) - feet_b.unsqueeze(2)
+        lane = torch.abs(relative[..., 1]) < 0.10
+        under_min = -0.12
+    else:
+        relative = hits_b.unsqueeze(1).expand(-1, feet_w.shape[1], -1, -1)
+        lane = torch.abs(relative[..., 1]) < 0.25
+        under_min = -0.30
+    front = valid.unsqueeze(1) & lane & (relative[..., 0] > 0.08) & (relative[..., 0] < 0.42)
+    under = valid.unsqueeze(1) & lane & (relative[..., 0] > under_min) & (relative[..., 0] < 0.02)
+    z = safe_hits[:, None, :, 2].expand_as(front)
+    ground = torch.where(under, z, torch.nan).nanmedian(dim=-1).values
+    # A finite placeholder permits safe arithmetic; usable below excludes it.
+    ground = torch.where(under.any(dim=-1), ground, root_pos_w[:, None, 2])
+    if target_mode == "nearest":
+        raised = front & (z - ground.unsqueeze(-1) >= min_rise - 1e-6)
+        nearest_x = torch.where(raised, relative[..., 0], torch.inf).amin(dim=-1)
+        first_column = front & (torch.abs(relative[..., 0] - nearest_x.unsqueeze(-1)) < 0.025)
+        front_height = torch.where(first_column, z, torch.nan).nanmedian(dim=-1).values
+        has_front = first_column.any(dim=-1)
+    else:
+        front_height = torch.where(front, z, -torch.inf).amax(dim=-1)
+        has_front = front.any(dim=-1)
+    front_height = torch.where(has_front, front_height, ground)
+    rise = front_height - ground
+    usable = under.any(dim=-1) & has_front & torch.isfinite(feet_w).all(dim=-1)
+    if target_mode == "nearest":
+        # Do not skip an unreachably high near step in favor of a farther one.
+        usable &= (rise >= min_rise - 1e-6) & (rise <= max_rise + 1e-6)
+        # Nonzero shaping at min_rise also covers the 2 cm curriculum start.
+        rise_weight = (rise / max_rise).clamp(0.0, 1.0)
+    else:
+        rise_weight = ((rise - min_rise) / (max_rise - min_rise)).clamp(0.0, 1.0)
     target_z = front_height + clearance
-
-    env.update_feet_state()
-    feet_z_w = env.asset.data.body_pos_w[:, env.feet_id_b, 2]
+    feet_z_w = torch.nan_to_num(feet_w[..., 2])
     swing = ~contacts
     swing_count = swing.sum(dim=1).clamp(min=1)
-    height_score = torch.exp(-torch.square((feet_z_w - target_z.unsqueeze(1)) / height_std))
-    rise_weight = ((rise - min_rise) / (max_rise - min_rise)).clamp(0.0, 1.0)
-    moving_forward = env.command_manager.get_command(command_name)[:, 0] > 0.15
-    score = torch.sum(height_score * swing, dim=1) / swing_count
-    return score * rise_weight * moving_forward
+    height_score = torch.exp(-torch.square((feet_z_w - target_z) / height_std))
+    command = env.command_manager.get_command(command_name)
+    moving_forward = command[:, 0] > 0.15
+    if target_mode == "nearest":
+        moving_forward &= (torch.abs(command[:, 1]) < 0.15) & (torch.abs(command[:, 2]) < 0.3)
+    score = torch.sum(height_score * rise_weight * usable * swing, dim=1) / swing_count
+    return score * moving_forward
 
 
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

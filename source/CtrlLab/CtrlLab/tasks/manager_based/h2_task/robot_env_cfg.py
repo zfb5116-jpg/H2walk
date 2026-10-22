@@ -338,13 +338,22 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
     """Curriculum training on ascending and descending stair terrains."""
 
     lidar_reliable_fusion: bool = False
+    use_lidar_reconstruction: bool = False
+    stairs_clearance_target_mode: str = "nearest"
 
     def __post_init__(self):
         super().__post_init__()
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
-        self.scene.terrain.max_init_terrain_level = 2
+        # Preserve upstream's shallow start and fall detection for H2.
+        self.scene.terrain.max_init_terrain_level = 0
         self.scene.terrain.terrain_generator.curriculum = True
-        _enable_stairs_lidar_reconstruction(self)
+        self.rewards.feet_stair_clearance.weight = 2.5
+        self.rewards.feet_stair_clearance.params.update(
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16,
+             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode}
+        )
+        if self.use_lidar_reconstruction:
+            _enable_stairs_lidar_reconstruction(self)
 
 
 @configclass
@@ -352,13 +361,21 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     """Play environment for the stair curriculum."""
 
     lidar_reliable_fusion: bool = False
+    use_lidar_reconstruction: bool = False
+    stairs_clearance_target_mode: str = "nearest"
 
     def __post_init__(self):
         super().__post_init__()
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
         self.scene.terrain.max_init_terrain_level = 3
         self.scene.terrain.terrain_generator.curriculum = False
-        _enable_stairs_lidar_reconstruction(self)
+        self.rewards.feet_stair_clearance.weight = 2.5
+        self.rewards.feet_stair_clearance.params.update(
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16,
+             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode}
+        )
+        if self.use_lidar_reconstruction:
+            _enable_stairs_lidar_reconstruction(self)
 
 
 @configclass
@@ -371,6 +388,7 @@ class RobotFlatEnvCfg(RobotRoughEnvCfg):
         # The flat task has no ray caster, so remove the terrain observation from both groups.
         self.observations.policy.height_scanner = None
         self.observations.critic.height_scanner = None
+        self.rewards.feet_stair_clearance = None
         self.curriculum.terrain_levels = None
         self.commands.base_velocity.resampling_time_range = (10, 10)
 

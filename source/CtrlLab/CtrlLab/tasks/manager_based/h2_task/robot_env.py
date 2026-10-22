@@ -17,7 +17,8 @@ class RobotEnv(ManagerBasedRLEnv):
 
         # feet buffer
         feet_body_names = getattr(cfg, "feet_body_names", ".*foot")
-        self.feet_id_b, feet_names = self.asset.find_bodies(feet_body_names)
+        # Match ContactSensor SceneEntityCfg(preserve_order=True) foot ordering.
+        self.feet_id_b, feet_names = self.asset.find_bodies(feet_body_names, preserve_order=True)
         self.num_feet = len(self.feet_id_b)
         if self.num_feet == 0:
             raise ValueError(f"No foot bodies matched feet_body_names={feet_body_names!r}; got {feet_names}.")
