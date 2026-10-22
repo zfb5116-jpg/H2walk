@@ -16,11 +16,19 @@ recurrent history beat matches the fixed lidar delay—not every 0.02 s alone.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .terrain_reconstructor import HB_NX, HB_NY, _RefineUNet
+from .terrain_fusion import (
+    edge_aware_median,
+    fuse_height_frames,
+    history_frame_indices,
+    project_confidence_bound,
+)
 
 
 def spherical_ray_dirs(
@@ -261,6 +269,14 @@ class LidarTerrainReconstructor(nn.Module):
         hb_res: float = 0.05,
         hb_offset_xy: tuple[float, float] = (0.3, 0.0),
         hb_size: tuple[float, float] = (1.6, 0.8),
+        # Experimental, parameter-free reliability path; old checkpoints keep
+        # their architecture and default numerical path unless explicitly enabled.
+        use_reliable_fusion: bool = False,
+        reliable_dispersion_scale_m: float = 0.01,
+        reliable_layer_scale_m: float = 0.015,
+        reliable_age_decay_steps: float = 50.0,
+        reliable_residual_limit_m: float = 0.08,
+        reliable_edge_threshold_m: float = 0.01,
         **_ignored,
     ):
         super().__init__()
@@ -309,8 +325,21 @@ class LidarTerrainReconstructor(nn.Module):
         self.refine = _RefineUNet(base_ch=32) if self.use_refine else None
         self.use_hb_splat = bool(use_hb_splat)
         self.use_height_splat = bool(use_height_splat)
+        self.use_reliable_fusion = bool(use_reliable_fusion)
         if self.use_hb_splat and self.use_height_splat:
             raise ValueError("use_hb_splat and use_height_splat are mutually exclusive")
+        if self.use_reliable_fusion and not self.use_height_splat:
+            raise ValueError("use_reliable_fusion requires use_height_splat=True")
+        for name, value in (
+            ("reliable_dispersion_scale_m", reliable_dispersion_scale_m),
+            ("reliable_layer_scale_m", reliable_layer_scale_m),
+            ("reliable_age_decay_steps", reliable_age_decay_steps),
+            ("reliable_residual_limit_m", reliable_residual_limit_m),
+            ("reliable_edge_threshold_m", reliable_edge_threshold_m),
+        ):
+            if not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+            setattr(self, name, float(value))
         self.hb_res = float(hb_res)
         self.hb_x0 = -0.5 * float(hb_size[0]) + float(hb_offset_xy[0])
         self.hb_y0 = -0.5 * float(hb_size[1]) + float(hb_offset_xy[1])
@@ -373,6 +402,11 @@ class LidarTerrainReconstructor(nn.Module):
         self._pose_quat: torch.Tensor | None = None
         self._pose_ptr: torch.Tensor | None = None
         self._pose_fill: torch.Tensor | None = None
+        # Diagnostics are transient tensors, never checkpoint state.
+        self._last_hit: torch.Tensor | None = None
+        self._last_confidence: torch.Tensor | None = None
+        self._last_frame_count: torch.Tensor | None = None
+        self._last_height_span: torch.Tensor | None = None
 
     def _as_range_image(self, rng: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         frame = self.n_ch * self.n_az
@@ -409,6 +443,12 @@ class LidarTerrainReconstructor(nn.Module):
         """Clear Δ token ring and yaw-splat pose ring (episode / terrain reset)."""
         self._reset_ring(self._tok_buf, self._tok_ptr, self._tok_fill, env_ids)
         self._reset_ring(self._pose_rng, self._pose_ptr, self._pose_fill, env_ids)
+        for diagnostic in (self._last_hit, self._last_confidence, self._last_frame_count, self._last_height_span):
+            if diagnostic is not None:
+                if env_ids is None:
+                    diagnostic.zero_()
+                else:
+                    diagnostic[env_ids.long().view(-1)] = 0
         if env_ids is None:
             if self._pose_mask is not None:
                 self._pose_mask.zero_()
@@ -626,6 +666,37 @@ class LidarTerrainReconstructor(nn.Module):
         than that stays out of the average. Mixed-pixel bridges are removed in
         the range image first.
         """
+        h, hit, _ = self._splat_upper_height_stats(
+            rng, mask, lidar_pos, lidar_quat, root_pos, root_quat, origin_b, band=band
+        )
+        return h, hit
+
+    def _splat_upper_height_stats(
+        self,
+        rng: torch.Tensor,
+        mask: torch.Tensor,
+        lidar_pos: torch.Tensor,
+        lidar_quat: torch.Tensor,
+        root_pos: torch.Tensor,
+        root_quat: torch.Tensor,
+        origin_b: torch.Tensor | None = None,
+        *,
+        band: float = 0.02,
+        collect_stats: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Upper-band mean plus preselection vertical span (metres).
+
+        ``collect_stats`` excludes invalid rays and measures max-minus-min
+        across *all* remaining returns, so a lower layer is not hidden by the
+        upper-band mean. It marks ambiguity; it does not reconstruct that layer.
+        The public two-return splat interface and legacy path remain unchanged.
+        """
+        if not math.isfinite(float(band)) or float(band) <= 0.0:
+            raise ValueError("band must be finite and positive")
+        if collect_stats:
+            finite = torch.isfinite(rng) & torch.isfinite(mask) & (rng > 0.0)
+            mask = torch.where(finite, mask, torch.zeros_like(mask))
+            rng = torch.where(finite, rng, torch.zeros_like(rng))
         rng, mask = _suppress_mixed_pixels(rng, mask, self.n_ch, self.n_az)
         b, n = rng.shape
         dirs = self.ray_dirs.reshape(3, -1).transpose(0, 1).to(device=rng.device, dtype=rng.dtype)
@@ -645,6 +716,8 @@ class LidarTerrainReconstructor(nn.Module):
         iy = torch.round((hit_b[..., 1] - self.hb_y0) / self.hb_res).long()
         valid = (mask > 0.5) & (ix >= 0) & (ix < self.hb_nx) & (iy >= 0) & (iy < self.hb_ny)
         flat = torch.where(valid, iy * self.hb_nx + ix, torch.zeros_like(ix)).clamp(0, self.hb_ny * self.hb_nx - 1)
+        if collect_stats:
+            valid = valid & torch.isfinite(hit_b).all(dim=-1)
         z = hit_b[..., 2]
         z_hi = torch.where(valid, z, torch.full_like(z, -1.0e4))
         acc_max = rng.new_full((b, self.hb_ny * self.hb_nx), -1.0e4)
@@ -657,8 +730,61 @@ class LidarTerrainReconstructor(nn.Module):
         acc_cnt.scatter_add_(1, flat, close.float())
         hit = acc_cnt > 0.0
         h = torch.where(hit, acc_sum / acc_cnt.clamp_min(1.0), torch.zeros_like(acc_sum))
+        span = torch.zeros_like(h)
+        if collect_stats:
+            acc_min = rng.new_full((b, self.hb_ny * self.hb_nx), 1.0e4)
+            acc_min.scatter_reduce_(1, flat, torch.where(valid, z, torch.full_like(z, 1.0e4)), reduce="amin", include_self=True)
+            span = torch.where(hit, (acc_max - acc_min).clamp_min(0.0), span)
         shape = (b, 1, self.hb_ny, self.hb_nx)
-        return h.view(*shape), hit.float().view(*shape)
+        return h.view(*shape), hit.float().view(*shape), span.view(*shape)
+
+    def _fuse_reliable_heights(
+        self,
+        rng: torch.Tensor,
+        mask: torch.Tensor,
+        lidar_pos: torch.Tensor,
+        lidar_quat: torch.Tensor,
+        root_pos: torch.Tensor,
+        root_quat: torch.Tensor,
+        origin_b: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Fuse current plus unique older frames, reprojected into the current yaw grid."""
+        h, hit, span = self._splat_upper_height_stats(
+            rng, mask, lidar_pos, lidar_quat, root_pos, root_quat, origin_b, collect_stats=True
+        )
+        self._last_height_span = span.detach().flatten(1)
+        heights, hits, spans, frame_ages = [h], [hit], [span], [0]
+        ring = self._pose_rng
+        if ring is not None and self.gru_delay_steps > 0:
+            # forward_height_splat has already pushed now: age 0 is the same
+            # physical observation and must never become a second support vote.
+            ages = [age for age in (10, 20, 30, 40, 50, 60, 70) if age < ring.shape[1]]
+            if ages:
+                assert self._pose_ptr is not None and self._pose_fill is not None
+                assert self._pose_mask is not None and self._pose_pos is not None and self._pose_quat is not None
+                age_tensor = torch.tensor(ages, device=rng.device, dtype=torch.long)
+                indices, alive = history_frame_indices(self._pose_ptr, self._pose_fill, ring.shape[1], age_tensor)
+                rows = torch.arange(rng.shape[0], device=rng.device)
+                for t, age in enumerate(ages):
+                    h_t, hit_t, span_t = self._splat_upper_height_stats(
+                        ring[rows, indices[:, t]], self._pose_mask[rows, indices[:, t]],
+                        self._pose_pos[rows, indices[:, t]], self._pose_quat[rows, indices[:, t]],
+                        root_pos, root_quat, origin_b, collect_stats=True,
+                    )
+                    heights.append(h_t)
+                    hits.append(hit_t * alive[:, t].view(-1, 1, 1, 1).to(hit_t.dtype))
+                    spans.append(span_t)
+                    frame_ages.append(age)
+        h_fused, hit_fused, confidence, count = fuse_height_frames(
+            torch.cat(heights, dim=1), torch.cat(hits, dim=1),
+            torch.tensor(frame_ages, device=rng.device), height_spans=torch.cat(spans, dim=1),
+            dispersion_scale_m=self.reliable_dispersion_scale_m,
+            layer_scale_m=self.reliable_layer_scale_m,
+            age_decay_steps=self.reliable_age_decay_steps,
+        )
+        self._last_confidence = confidence.detach().flatten(1)
+        self._last_frame_count = count.detach().flatten(1)
+        return h_fused, hit_fused, confidence
 
     def _fuse_recent_heights(
         self,
@@ -821,9 +947,11 @@ class LidarTerrainReconstructor(nn.Module):
         hidden: torch.Tensor | None = None,
         origin_b: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Median of recent upper-tread splats. Empty cells start from the nearest hit.
+        """Recent upper-tread splats; optional reliability-bounded residuals.
 
-        ``_last_hit`` is diagnostic.
+        ``use_reliable_fusion`` is an experimental opt-in with the same learned
+        parameters. ``_last_confidence`` is a heuristic, not a probability.
+        Replay/training validation is required before using its maps for control.
         """
         if not self.use_height_splat:
             raise RuntimeError("forward_height_splat requires use_height_splat=True")
@@ -831,12 +959,20 @@ class LidarTerrainReconstructor(nn.Module):
             lag_r, lag_m, lag_p, lag_q = self._push_pose_frame(rng, mask, lidar_pos, lidar_quat)
         else:
             lag_r, lag_m, lag_p, lag_q = rng, mask, lidar_pos, lidar_quat
-        h_n, hit_n = self._fuse_recent_heights(
-            rng, mask, lidar_pos, lidar_quat, root_pos, root_quat, origin_b
-        )
-        h_l, hit_l = self.splat_upper_height(
-            lag_r, lag_m, lag_p, lag_q, root_pos, root_quat, origin_b
-        )
+        if self.use_reliable_fusion:
+            h_n, hit_n, confidence = self._fuse_reliable_heights(
+                rng, mask, lidar_pos, lidar_quat, root_pos, root_quat, origin_b
+            )
+            h_l, hit_l, _ = self._splat_upper_height_stats(
+                lag_r, lag_m, lag_p, lag_q, root_pos, root_quat, origin_b, collect_stats=True
+            )
+        else:
+            h_n, hit_n = self._fuse_recent_heights(
+                rng, mask, lidar_pos, lidar_quat, root_pos, root_quat, origin_b
+            )
+            h_l, hit_l = self.splat_upper_height(
+                lag_r, lag_m, lag_p, lag_q, root_pos, root_quat, origin_b
+            )
         # Holes continue the last measured tread. A global mean paints one disk.
         near = _nearest_fill(h_n, hit_n).detach()
         h_n_in = torch.where(hit_n > 0.5, h_n, near)
@@ -865,6 +1001,29 @@ class LidarTerrainReconstructor(nn.Module):
         style = self.height_gru_to_style(out[:, -1])
         style_map = style.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hb_ny, self.hb_nx)
         delta = self.height_delta(torch.cat([feat, style_map], dim=1))
+        if self.use_reliable_fusion:
+            # Confident geometry permits only a small TOTAL correction. Unlike
+            # legacy hard locking, ambiguous measured cells can also be refined.
+            h_base = h_n_in
+            budget = (1.0 - confidence) * self.reliable_residual_limit_m
+            h_rough = h_base + budget * torch.tanh(delta)
+            self._last_hit = hit_n.detach().flatten(1)
+            candidate = h_rough
+            if self.refine is not None:
+                candidate = candidate + self.reliable_residual_limit_m * torch.tanh(self.refine(candidate))
+            if self.edge_clean is not None:
+                candidate = self.edge_clean(candidate)
+            refined = project_confidence_bound(
+                h_base, candidate, confidence, residual_limit_m=self.reliable_residual_limit_m
+            )
+            refined = edge_aware_median(
+                refined, threshold_m=self.reliable_edge_threshold_m, confidence=confidence
+            )
+            # Filtering must not bypass the same geometry bound.
+            refined = project_confidence_bound(
+                h_base, refined, confidence, residual_limit_m=self.reliable_residual_limit_m
+            )
+            return h_rough.flatten(1), refined.flatten(1), hidden
         # Measured cells stay on the splat. The learned heads were painting a
         # second edge on those treads. Only empty cells may move, by ±8 cm.
         seen = hit_n > 0.5
@@ -950,3 +1109,4 @@ class LidarTerrainReconstructor(nn.Module):
         if flat.shape[-1] > frame:
             flat = flat[..., -frame:]
         return flat.view(-1, self.n_ch, self.n_az)
+

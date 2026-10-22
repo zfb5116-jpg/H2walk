@@ -289,7 +289,12 @@ class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
 
 
 def _enable_stairs_lidar_reconstruction(cfg):
-    """Enable the frozen GO2-trained map reconstructor for H2 stair policies."""
+    """Enable frozen cross-embodiment perception with explicit map semantics.
+
+    Reliability fusion is opt-in; both paths return the height_scan convention
+    before ObservationManager applies the existing clipping and 0.2 scaling.
+    The zero velocity prior is explicit until a deployable estimate is supplied.
+    """
     lidar_pattern = YuHbLidarPatternCfg(
         channels=16,
         vertical_fov_range=(-45.0, 14.0),
@@ -319,6 +324,11 @@ def _enable_stairs_lidar_reconstruction(cfg):
         params={
             "sensor_cfg": SceneEntityCfg("lidar"),
             "checkpoint": str(H2_LIDAR_RECON_CHECKPOINT),
+            "use_reliable_fusion": bool(cfg.lidar_reliable_fusion),
+            "output_convention": "height_scan",
+            "height_scan_offset": 0.5,
+            "reference_sensor_cfg": SceneEntityCfg("height_scanner"),
+            "velocity_source": "zero",
         },
     )
 
@@ -326,6 +336,8 @@ def _enable_stairs_lidar_reconstruction(cfg):
 @configclass
 class RobotStairsEnvCfg(RobotRoughEnvCfg):
     """Curriculum training on ascending and descending stair terrains."""
+
+    lidar_reliable_fusion: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -338,6 +350,8 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
 @configclass
 class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     """Play environment for the stair curriculum."""
+
+    lidar_reliable_fusion: bool = False
 
     def __post_init__(self):
         super().__post_init__()

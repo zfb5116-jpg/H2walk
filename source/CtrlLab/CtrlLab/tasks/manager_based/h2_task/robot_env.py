@@ -6,6 +6,7 @@ from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg, VecEnvStepRet
 from isaaclab.utils.math import quat_apply_inverse
 
 from .manager import CtrlLabActionManager
+from .networks.lidar_observation import invalidate_lidar_observation
 
 
 class RobotEnv(ManagerBasedRLEnv):
@@ -26,6 +27,7 @@ class RobotEnv(ManagerBasedRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int]):
         super()._reset_idx(env_ids)
+        invalidate_lidar_observation(self, env_ids)
         self.update_feet_state()
         self.prev_feet_pos_b[env_ids] = self.feet_pos_b[env_ids]
         self.feet_vel_b[env_ids] = 0.0
