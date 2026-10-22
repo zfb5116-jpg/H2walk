@@ -330,8 +330,14 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
-        self.scene.terrain.max_init_terrain_level = 2
+        # Start at the shallowest row; lifetime curriculum only advances robots
+        # that complete an episode and travel across their tile.
+        self.scene.terrain.max_init_terrain_level = 0
         self.scene.terrain.terrain_generator.curriculum = True
+        self.rewards.feet_stair_clearance.weight = 2.5
+        self.rewards.feet_stair_clearance.params.update(
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16, "height_std": 0.08}
+        )
         _enable_stairs_lidar_reconstruction(self)
 
 
@@ -344,6 +350,10 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
         self.scene.terrain.max_init_terrain_level = 3
         self.scene.terrain.terrain_generator.curriculum = False
+        self.rewards.feet_stair_clearance.weight = 2.5
+        self.rewards.feet_stair_clearance.params.update(
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16, "height_std": 0.08}
+        )
         _enable_stairs_lidar_reconstruction(self)
 
 

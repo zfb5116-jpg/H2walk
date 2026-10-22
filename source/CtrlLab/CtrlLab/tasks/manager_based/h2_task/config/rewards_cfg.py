@@ -8,6 +8,7 @@ from .. import mdp as h2_mdp
 from ..assets import (
     H2_ARM_JOINT_NAMES,
     H2_BASE_BODY_NAMES,
+    H2_FALL_CONTACT_BODY_NAMES,
     H2_FOOT_BODY_NAMES,
     H2_LEG_JOINT_NAMES,
     H2_UNDESIRED_CONTACT_BODY_NAMES,
@@ -190,6 +191,14 @@ class RewardsCfg:
         params={
             "threshold": 1,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_UNDESIRED_CONTACT_BODY_NAMES),
+        },
+    )
+    fall_body_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-12.0,
+        params={
+            "threshold": 1,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FALL_CONTACT_BODY_NAMES),
         },
     )
     stand_still = RewTerm(

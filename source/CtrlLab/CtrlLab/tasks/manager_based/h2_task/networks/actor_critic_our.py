@@ -15,11 +15,7 @@ from torch.distributions import Normal
 
 CMD_DIM = 3
 HISTORY_LENGTH = 5
-NUM_JOINTS = 28
-TERM_DIM = 3 + 3 + NUM_JOINTS + NUM_JOINTS + NUM_JOINTS
-PROPRIO_HIST_DIM = HISTORY_LENGTH * TERM_DIM
 HEIGHT_SCAN_DIM = 33 * 17
-CUR_OBS_DIM = CMD_DIM + 3 + 3 + NUM_JOINTS * 3
 
 
 def _activation(name: str) -> nn.Module:
@@ -42,40 +38,75 @@ class MLP(nn.Module):
 
 
 class H2TerrainEncoderActor(nn.Module):
-    """TerProg fusion path adapted to H2's 28-joint proprioception."""
+    """TerProg fusion path with dimensions derived from the H2 action layout."""
 
-    def __init__(self, obs_dim: int, actions: int, hidden: list[int], activation: str):
+    def __init__(
+        self,
+        obs_dim: int,
+        actions: int,
+        hidden: list[int],
+        activation: str,
+        *,
+        history_length: int = HISTORY_LENGTH,
+        num_joints: int | None = None,
+        height_scan_dim: int = HEIGHT_SCAN_DIM,
+        detach_estimates: bool = False,
+    ):
         super().__init__()
+        self.num_joints = actions if num_joints is None else num_joints
+        if self.num_joints != actions:
+            raise ValueError(
+                f"H2 joint observation width ({self.num_joints}) must match action count ({actions})"
+            )
+        self.history_length = history_length
+        self.height_scan_dim = height_scan_dim
+        self.detach_estimates = detach_estimates
+        self.term_widths = (3, 3, self.num_joints, self.num_joints, self.num_joints)
+        self.proprio_hist_dim = self.history_length * sum(self.term_widths)
+        self.current_obs_dim = CMD_DIM + sum(self.term_widths)
+        expected_obs_dim = CMD_DIM + self.proprio_hist_dim + self.height_scan_dim
+        if obs_dim != expected_obs_dim:
+            raise ValueError(
+                f"H2 terrain actor observation layout mismatch: expected {expected_obs_dim} "
+                f"(3 commands + {self.history_length}x proprio + {self.height_scan_dim} height samples), "
+                f"got {obs_dim}. Check the configured joint order, history length, and height scanner."
+            )
         self.obs_dim = obs_dim
         self.proprio_start = CMD_DIM
-        self.proprio_end = CMD_DIM + PROPRIO_HIST_DIM
+        self.proprio_end = CMD_DIM + self.proprio_hist_dim
         self.scan_start = self.proprio_end
-        self.scan_end = self.scan_start + HEIGHT_SCAN_DIM
-        self.velocity_encoder = MLP(PROPRIO_HIST_DIM, 32, [128, 64], activation)
-        self.contact_encoder = MLP(PROPRIO_HIST_DIM, 32, [256, 128, 64], activation)
-        self.predict_encoder = MLP(PROPRIO_HIST_DIM, 32, [256, 128, 64], activation)
-        self.terrain_encoder = MLP(HEIGHT_SCAN_DIM, 32, [256, 128, 64], activation)
-        fusion_in = CUR_OBS_DIM + 32 + 32 + 32 + 32
+        self.scan_end = self.scan_start + self.height_scan_dim
+        self.velocity_encoder = MLP(self.proprio_hist_dim, 32, [128, 64], activation)
+        self.contact_encoder = MLP(self.proprio_hist_dim, 32, [256, 128, 64], activation)
+        self.predict_encoder = MLP(self.proprio_hist_dim, 32, [256, 128, 64], activation)
+        self.terrain_encoder = MLP(self.height_scan_dim, 32, [256, 128, 64], activation)
+        fusion_in = self.current_obs_dim + 32 + 32 + 32 + 32
         self.fusion = MLP(fusion_in, 64, [256, 128], activation)
-        self.actor = MLP(CUR_OBS_DIM + 32 + 64 + 32, actions, hidden, activation)
+        self.actor = MLP(self.current_obs_dim + 32 + 64 + 32, actions, hidden, activation)
 
     def _current_obs(self, obs: torch.Tensor) -> torch.Tensor:
         # ObservationManager appends each history with the newest frame last.
         p = obs[:, self.proprio_start : self.proprio_end]
         i = 0
         latest = []
-        for width in (3, 3, NUM_JOINTS, NUM_JOINTS, NUM_JOINTS):
-            latest.append(p[:, i + (HISTORY_LENGTH - 1) * width : i + HISTORY_LENGTH * width])
-            i += HISTORY_LENGTH * width
+        for width in self.term_widths:
+            latest.append(
+                p[:, i + (self.history_length - 1) * width : i + self.history_length * width]
+            )
+            i += self.history_length * width
         return torch.cat((obs[:, :CMD_DIM], *latest), dim=-1)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         proprio = obs[:, self.proprio_start : self.proprio_end]
         terrain = obs[:, self.scan_start : self.scan_end]
         current = self._current_obs(obs)
-        velocity = self.velocity_encoder(proprio).detach()
-        contact = self.contact_encoder(proprio).detach()
-        prediction = self.predict_encoder(proprio).detach()
+        velocity = self.velocity_encoder(proprio)
+        contact = self.contact_encoder(proprio)
+        prediction = self.predict_encoder(proprio)
+        if self.detach_estimates:
+            velocity = velocity.detach()
+            contact = contact.detach()
+            prediction = prediction.detach()
         terrain_latent = self.terrain_encoder(terrain)
         fusion = self.fusion(torch.cat((current, velocity, contact, prediction, terrain_latent), dim=-1))
         return self.actor(torch.cat((current, velocity, fusion, terrain_latent), dim=-1))
@@ -96,15 +127,23 @@ class H2ActorCriticOur(nn.Module):
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
+        num_joints: int | None = None,
+        history_length: int = HISTORY_LENGTH,
+        height_scan_dim: int = HEIGHT_SCAN_DIM,
+        detach_estimates: bool = False,
         **_: object,
     ):
         super().__init__()
-        if num_actor_obs < CMD_DIM + PROPRIO_HIST_DIM + HEIGHT_SCAN_DIM:
-            raise ValueError(
-                f"H2 terrain actor needs at least {CMD_DIM + PROPRIO_HIST_DIM + HEIGHT_SCAN_DIM} "
-                f"policy observations, got {num_actor_obs}"
-            )
-        self.actor = H2TerrainEncoderActor(num_actor_obs, num_actions, list(actor_hidden_dims), activation)
+        self.actor = H2TerrainEncoderActor(
+            num_actor_obs,
+            num_actions,
+            list(actor_hidden_dims),
+            activation,
+            history_length=history_length,
+            num_joints=num_joints,
+            height_scan_dim=height_scan_dim,
+            detach_estimates=detach_estimates,
+        )
         self.critic = MLP(num_critic_obs, 1, list(critic_hidden_dims), activation)
         self.noise_std_type = noise_std_type
         if noise_std_type == "scalar":

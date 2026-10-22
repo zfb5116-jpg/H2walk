@@ -100,6 +100,12 @@ H2_NUM_ACTIONS = len(H2_JOINT_NAMES)
 
 H2_FOOT_BODY_NAMES = ["left_ankle_pitch_link", "right_ankle_pitch_link"]
 H2_BASE_BODY_NAMES = ["pelvis"]
+H2_FALL_CONTACT_BODY_NAMES = [
+    ".*pelvis.*",
+    ".*torso.*",
+    ".*waist.*",
+    ".*head.*",
+]
 H2_UNDESIRED_CONTACT_BODY_NAMES = [
     ".*pelvis.*",
     ".*torso.*",

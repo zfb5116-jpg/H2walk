@@ -105,7 +105,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
 STAIR_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(6.0, 6.0),
     border_width=20.0,
-    num_rows=4,  # curriculum level
+    num_rows=6,  # more gradual H2 stair curriculum
     num_cols=6,  # terrain type number
     horizontal_scale=0.1,
     vertical_scale=0.005,
@@ -114,36 +114,37 @@ STAIR_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     sub_terrains={
         "stairs_low": terrain_gen.MeshPyramidStairsTerrainCfg(
-            step_height_range=(0.04, 0.08),
-            step_width=0.30,
+            # Begin around the reconstructed package's shallow L0 stair scale.
+            step_height_range=(0.02, 0.05),
+            step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
             holes=False,
         ),
         "stairs_mid": terrain_gen.MeshPyramidStairsTerrainCfg(
-            step_height_range=(0.08, 0.14),
-            step_width=0.30,
+            step_height_range=(0.04, 0.08),
+            step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
             holes=False,
         ),
         "stairs_high": terrain_gen.MeshPyramidStairsTerrainCfg(
-            step_height_range=(0.16, 0.22),
-            step_width=0.30,
+            step_height_range=(0.08, 0.14),
+            step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
             holes=False,
         ),
         "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            step_height_range=(0.08, 0.14),
-            step_width=0.30,
+            step_height_range=(0.02, 0.08),
+            step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
             holes=False,
         ),
         "stairs_down_high": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            step_height_range=(0.16, 0.22),
-            step_width=0.30,
+            step_height_range=(0.08, 0.14),
+            step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
             holes=False,
