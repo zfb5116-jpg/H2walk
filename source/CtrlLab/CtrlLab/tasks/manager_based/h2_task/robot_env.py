@@ -5,6 +5,7 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg, VecEnvStepReturn
 from isaaclab.utils.math import quat_apply_inverse
 
+from .command_progress import CommandProgressTracker
 from .manager import CtrlLabActionManager
 from .networks.lidar_observation import invalidate_lidar_observation
 
@@ -25,9 +26,27 @@ class RobotEnv(ManagerBasedRLEnv):
         self.feet_pos_b = torch.zeros(self.num_envs, self.num_feet, 3, dtype=torch.float32, device=self.device)
         self.prev_feet_pos_b = torch.zeros_like(self.feet_pos_b)
         self.feet_vel_b = torch.zeros_like(self.feet_pos_b)
+        self.command_progress_tracker = CommandProgressTracker(
+            self.num_envs,
+            self.device,
+            min_command_speed=getattr(cfg, "command_progress_min_speed", 0.1),
+            max_step_speed=getattr(cfg, "command_progress_max_step_speed", 5.0),
+        )
 
     def _reset_idx(self, env_ids: Sequence[int]):
+        tracker = getattr(self, "command_progress_tracker", None)
+        if tracker is not None:
+            # Curriculum runs inside the parent reset before the scene teleport.
+            # Include the terminal transition while its position is still valid.
+            tracker.finish_step(env_ids, self.asset.data.root_pos_w[:, :2], for_reset=True)
         super()._reset_idx(env_ids)
+        # Parent reset replaces extras["log"] after curriculum computation.
+        # Restore its diagnostics alongside, rather than over, manager logs.
+        progress_log = self.__dict__.pop("_command_progress_pending_log", None)
+        if progress_log is not None:
+            self.extras.setdefault("log", {}).update(progress_log)
+        if tracker is not None:
+            tracker.reset(env_ids, generation=getattr(self, "_command_progress_generation", 0))
         invalidate_lidar_observation(self, env_ids)
         self.update_feet_state()
         self.prev_feet_pos_b[env_ids] = self.feet_pos_b[env_ids]
@@ -45,6 +64,24 @@ class RobotEnv(ManagerBasedRLEnv):
         self.feet_vel_b[:] = (self.feet_pos_b - self.prev_feet_pos_b) / self.step_dt
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
-        self.prev_feet_pos_b[:] = self.feet_pos_b
-        self.update_feet_state()
-        return super().step(action)
+        tracker = self.command_progress_tracker
+        # The parent resamples commands after physics and resets. Capture the
+        # command/yaw applied to this transition, rather than the next command.
+        tracker.begin_step(
+            self.asset.data.root_pos_w[:, :2],
+            self.asset.data.root_quat_w,
+            self.command_manager.get_command("base_velocity"),
+            self.step_dt,
+        )
+        try:
+            self.prev_feet_pos_b[:] = self.feet_pos_b
+            self.update_feet_state()
+            result = super().step(action)
+            # Reset environments were consumed before their scene reset; only
+            # the remaining environments still have a pending transition.
+            env_ids = tracker.pending.nonzero(as_tuple=False).flatten()
+            tracker.finish_step(env_ids, self.asset.data.root_pos_w[:, :2])
+        except Exception:
+            tracker.abort_step()
+            raise
+        return result

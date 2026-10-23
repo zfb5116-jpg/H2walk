@@ -7,6 +7,7 @@ checkpoint or optimizer is constructed.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,7 +167,10 @@ def test_robot_resolves_feet_in_the_same_requested_order_as_contacts():
 
     extracted = ast.ClassDef(name="RobotEnv", bases=[ast.Name(id="Parent", ctx=ast.Load())], keywords=[], body=[initializer], decorator_list=[])
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
-    scope = {"torch": torch, "Parent": Parent}
+    spec = importlib.util.spec_from_file_location("actual_command_progress", TASK / "command_progress.py")
+    progress = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(progress)
+    scope = {"torch": torch, "Parent": Parent, "CommandProgressTracker": progress.CommandProgressTracker}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[future, extracted], type_ignores=[])), "production_robot_initializer", "exec"), scope)
     env = scope["RobotEnv"](SimpleNamespace(feet_body_names=["left", "right"]))
     assert env.feet_id_b == [2, 0]

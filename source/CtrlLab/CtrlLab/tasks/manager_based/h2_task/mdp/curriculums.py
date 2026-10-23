@@ -7,6 +7,8 @@ from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
 
+from ..progress_curriculum import ProgressCurriculum, expanded_x_range
+
 
 def terrain_levels_lifetime(
         env: ManagerBasedRLEnv, env_ids: Sequence[int], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
@@ -31,7 +33,7 @@ def terrain_levels_lifetime(
     return torch.mean(terrain.terrain_levels.float())
 
 
-def lin_vel_cmd_levels(
+def lin_vel_cmd_levels_legacy(
         env: ManagerBasedRLEnv,
         env_ids: Sequence[int],
         reward_term_name: str = "track_lin_vel_xy",
@@ -57,6 +59,78 @@ def lin_vel_cmd_levels(
                 limit_ranges.lin_vel_y[1],
             ).tolist()
 
+    return torch.tensor(ranges.lin_vel_x[1], device=env.device)
+
+
+def lin_vel_cmd_levels(
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        command_name: str = "base_velocity",
+        min_episodes: int = 32,
+        evaluation_interval_steps: int | None = None,
+        success_rate: float = 0.8,
+        min_progress_ratio: float = 0.8,
+        max_progress_ratio: float = 1.2,
+        min_episode_fraction: float = 0.98,
+        min_active_time: float = 2.0,
+        min_target_distance: float = 0.5,
+        expansion_step: float = 0.1,
+) -> torch.Tensor:
+    """Expand X speed only after completed episodes make commanded progress.
+
+    This replaces the reward-only gate; ``lin_vel_cmd_levels_legacy`` is the
+    explicit baseline. The progress tracker is wired through RobotEnv's actual
+    step/reset path, and missing integration is an error rather than fallback.
+    """
+    tracker = getattr(env, "command_progress_tracker", None)
+    if tracker is None:
+        raise RuntimeError("Progress command curriculum requires RobotEnv.command_progress_tracker")
+    command_term = env.command_manager.get_term(command_name)
+    ranges = command_term.cfg.ranges
+    next_x = expanded_x_range(ranges.lin_vel_x, command_term.cfg.limit_ranges.lin_vel_x, expansion_step)
+    interval = env.max_episode_length if evaluation_interval_steps is None else evaluation_interval_steps
+    settings = (command_name, interval, min_episodes, success_rate, min_progress_ratio,
+                max_progress_ratio, min_episode_fraction, min_active_time,
+                min_target_distance, expansion_step)
+    evaluator = getattr(env, "_command_progress_curriculum", None)
+    if evaluator is None:
+        evaluator = ProgressCurriculum(
+            interval_steps=interval, min_episodes=min_episodes, success_rate=success_rate,
+            min_progress_ratio=min_progress_ratio, max_progress_ratio=max_progress_ratio,
+            min_episode_fraction=min_episode_fraction, min_active_time=min_active_time,
+            min_target_distance=min_target_distance,
+            generation=getattr(env, "_command_progress_generation", 0),
+        )
+        env._command_progress_curriculum = evaluator
+        env._command_progress_curriculum_settings = settings
+    elif env._command_progress_curriculum_settings != settings:
+        raise ValueError("Do not change progress curriculum settings within a running environment")
+    if evaluator.generation != getattr(env, "_command_progress_generation", 0):
+        raise RuntimeError("Command progress generation is inconsistent")
+    result = evaluator.observe(
+        tracker, env_ids,
+        terminated=env.termination_manager.terminated,
+        time_outs=env.termination_manager.time_outs,
+        max_episode_length_s=env.max_episode_length_s,
+        current_step=env.common_step_counter,
+    )
+    if result is not None:
+        changed = result["passed"] and next_x != tuple(ranges.lin_vel_x)
+        if changed:
+            ranges.lin_vel_x = next_x
+            env._command_progress_generation = evaluator.advance_generation()
+        logs = {
+            "Curriculum/command_progress_episodes": result["episodes"],
+            "Curriculum/command_progress_success_rate": result["success_rate"],
+            "Curriculum/command_progress_mean_ratio": result["mean_progress_ratio"],
+            "Curriculum/command_progress_expanded": float(changed),
+            "Curriculum/command_progress_generation": evaluator.generation,
+            "Curriculum/command_progress_x_upper": ranges.lin_vel_x[1],
+        }
+        env.extras.setdefault("log", {}).update(logs)
+        # ManagerBasedRLEnv may rebuild extras during reset; RobotEnv merges
+        # this pending event after its parent reset has completed.
+        env._command_progress_pending_log = logs
     return torch.tensor(ranges.lin_vel_x[1], device=env.device)
 
 

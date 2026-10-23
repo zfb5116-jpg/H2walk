@@ -7,6 +7,7 @@ H2 人形机器人的 Isaac Lab 任务、控制网络与 LiDAR 地形重建源�
 - [算法依据、开关与兼容性](docs/算法优化方案.md)
 - [测试结果与验证边界](docs/验证记录.md)
 - [本轮步态诊断、论文依据与后续方向](docs/步态诊断与优化.md)
+- [按实际前进量扩速的命令课程](docs/命令课程优化.md)
 
 CPU 合成数据检查使用 Python、PyTorch、NumPy、pytest：
 

@@ -169,6 +169,8 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
     feet_body_names = H2_FOOT_BODY_NAMES
+    command_progress_min_speed: float = 0.1
+    command_progress_max_step_speed: float = 5.0
 
     def __post_init__(self):
         """Post initialization."""
