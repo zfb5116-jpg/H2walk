@@ -144,7 +144,12 @@ class RewardsCfg:
     feet_stumble = RewTerm(
         func=h2_mdp.feet_stumble_norm,
         weight=-1.5,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True)},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+            "force_ratio": 5.0,
+            # Set to "independent_max" to reproduce the previous reduction.
+            "temporal_mode": "per_sample",
+        },
     )
     feet_clearance = RewTerm(
         func=h2_mdp.feet_clearance_l2,

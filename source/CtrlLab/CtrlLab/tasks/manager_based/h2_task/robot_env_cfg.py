@@ -342,6 +342,7 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
     lidar_reliable_fusion: bool = False
     use_lidar_reconstruction: bool = False
     stairs_clearance_target_mode: str = "nearest"
+    stairs_clearance_height_reference: str = "sole"
 
     def __post_init__(self):
         super().__post_init__()
@@ -352,7 +353,8 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
             {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16,
-             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode}
+             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
+             "height_reference": self.stairs_clearance_height_reference}
         )
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)
@@ -365,6 +367,7 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     lidar_reliable_fusion: bool = False
     use_lidar_reconstruction: bool = False
     stairs_clearance_target_mode: str = "nearest"
+    stairs_clearance_height_reference: str = "sole"
 
     def __post_init__(self):
         super().__post_init__()
@@ -374,7 +377,8 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
             {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16,
-             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode}
+             "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
+             "height_reference": self.stairs_clearance_height_reference}
         )
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)

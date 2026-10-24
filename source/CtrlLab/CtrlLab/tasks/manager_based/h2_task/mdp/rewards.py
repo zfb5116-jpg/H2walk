@@ -7,6 +7,8 @@ import isaaclab.envs.mdp as mdp
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 from ..robot_env import RobotEnv
+from ..contact_events import stumble_from_force_history
+from ..foot_geometry import lowest_sole_height_world
 
 """
 Velocity-tracking rewards.
@@ -307,6 +309,8 @@ def feet_stair_clearance(
         max_rise: float = 0.24,
         height_std: float = 0.12,
         target_mode: str = "highest",
+        height_reference: str = "link",
+        sole_points_b=None,
 ) -> torch.Tensor:
     """Reward swing clearance using the existing ground-truth height scanner.
 
@@ -317,9 +321,18 @@ def feet_stair_clearance(
     Both modes require valid ground and front samples. Missing rays never
     establish a world-z=0 floor. Descending stairs and lateral/backward commands
     are outside the nearest-target experiment.
+
+    ``link`` keeps the previous ankle-link height reference. ``sole`` uses the
+    lowest world-Z point of each foot's oriented sole surface, with optional
+    custom local vertices [foot, point, 3]. It requires body world quaternions.
+    This surface-height correction does not measure actual support coverage.
     """
     if target_mode not in {"nearest", "highest"}:
         raise ValueError("target_mode must be 'nearest' or 'highest'")
+    if height_reference not in {"link", "sole"}:
+        raise ValueError("height_reference must be 'link' or 'sole'")
+    if height_reference == "link" and sole_points_b is not None:
+        raise ValueError("sole_points_b requires height_reference='sole'")
     if not (0.0 <= clearance < float("inf") and 0.0 < min_rise < max_rise < float("inf")
             and 0.0 < height_std < float("inf")):
         raise ValueError("Require clearance >= 0, 0 < min_rise < max_rise, height_std > 0")
@@ -374,7 +387,17 @@ def feet_stair_clearance(
     else:
         rise_weight = ((rise - min_rise) / (max_rise - min_rise)).clamp(0.0, 1.0)
     target_z = front_height + clearance
-    feet_z_w = torch.nan_to_num(feet_w[..., 2])
+    if height_reference == "sole":
+        body_quat_w = getattr(env.asset.data, "body_quat_w", None)
+        if body_quat_w is None:
+            raise ValueError("height_reference='sole' requires asset.data.body_quat_w")
+        sole_z_w = lowest_sole_height_world(
+            feet_w, body_quat_w[:, env.feet_id_b, :], sole_points_b=sole_points_b,
+        )
+        usable &= torch.isfinite(sole_z_w)
+        feet_z_w = torch.nan_to_num(sole_z_w)
+    else:
+        feet_z_w = torch.nan_to_num(feet_w[..., 2])
     swing = ~contacts
     swing_count = swing.sum(dim=1).clamp(min=1)
     height_score = torch.exp(-torch.square((feet_z_w - target_z) / height_std))
@@ -401,18 +424,19 @@ def feet_vel_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
 def feet_stumble_norm(
         env: ManagerBasedRLEnv,
         sensor_cfg: SceneEntityCfg,
+        force_ratio: float = 5.0,
+        temporal_mode: str = "per_sample",
 ) -> torch.Tensor:
+    """Detect lateral-dominant foot contact using time-aligned force samples.
+
+    Set ``temporal_mode='independent_max'`` for the original history reduction.
+    """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    net_contact_forces = contact_sensor.data.net_forces_w_history
-    # 水平方向力 (X, Y)
-    horizontal_force = torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids, :2], dim=-1).max(dim=1).values
-    # 垂直方向力 (Z)
-    vertical_force = torch.abs(net_contact_forces[:, :, sensor_cfg.body_ids, 2]).max(dim=1).values
-    # 如果水平力比垂直力大 5 倍，则视为“绊倒”
-    stumble_condition = horizontal_force > 5.0 * vertical_force
-    # 判断每个环境中是否有任意一个脚部满足这个条件
-    stumble = torch.any(stumble_condition, dim=-1)  # [num_envs], dtype: bool
-    return stumble
+    return stumble_from_force_history(
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :],
+        force_ratio=force_ratio,
+        temporal_mode=temporal_mode,
+    )
 
 
 def feet_clearance_l2(

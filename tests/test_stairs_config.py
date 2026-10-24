@@ -77,6 +77,8 @@ def test_stairs_default_uses_gt_without_enabling_reconstruction(configs, name):
     assert cfg.observations.policy.height_scanner == "gt_policy_scan"
     assert cfg.observations.critic.height_scanner == "gt_critic_scan"
     assert cfg.rewards.feet_stair_clearance.params["target_mode"] == "nearest"
+    assert cfg.stairs_clearance_height_reference == "sole"
+    assert cfg.rewards.feet_stair_clearance.params["height_reference"] == "sole"
     assert cfg.rewards.feet_stair_clearance.weight == 2.5
     assert cfg.scene.terrain.max_init_terrain_level == (0 if name == "RobotStairsEnvCfg" else 3)
     assert cfg.scene.terrain.terrain_generator.curriculum is (name == "RobotStairsEnvCfg")
@@ -100,6 +102,17 @@ def test_highest_baseline_reaches_the_reward_parameters(configs, name):
     cfg.stairs_clearance_target_mode = "highest"
     cfg.__post_init__()
     assert cfg.rewards.feet_stair_clearance.params["target_mode"] == "highest"
+    assert calls == []
+
+
+@pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
+def test_link_height_baseline_reaches_the_reward_parameters(configs, name):
+    namespace, calls = configs
+    cfg = namespace[name]()
+    cfg.stairs_clearance_height_reference = "link"
+    cfg.__post_init__()
+    assert cfg.rewards.feet_stair_clearance.params["height_reference"] == "link"
+    assert cfg.rewards.feet_stair_clearance.params["target_mode"] == "nearest"
     assert calls == []
 
 
