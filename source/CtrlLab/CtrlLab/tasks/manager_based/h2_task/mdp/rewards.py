@@ -4,7 +4,7 @@ from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 import isaaclab.envs.mdp as mdp
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 from ..robot_env import RobotEnv
 
@@ -364,6 +364,125 @@ def feet_stair_clearance(
     moving_forward = env.command_manager.get_command(command_name)[:, 0] > 0.15
     score = torch.sum(height_score * swing, dim=1) / swing_count
     return score * rise_weight * moving_forward
+
+
+def feet_edge_penalty(
+        env: ManagerBasedRLEnv,
+        terrain_sensor_cfg: SceneEntityCfg,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        edge_height_threshold: float = 0.035,
+        edge_radius: float = 0.05,
+        tolerance: float = 1e-4,
+        max_edges: int = 128,
+        grid_size: tuple[int, int] = (33, 17),
+        foot_x_range: tuple[float, float] = (-0.025, 0.12),
+        foot_y_range: tuple[float, float] = (-0.03, 0.03),
+        foot_z_range: tuple[float, float] = (-0.04, 0.0),
+        foot_grid_size: tuple[int, int, int] = (5, 3, 2),
+) -> torch.Tensor:
+    """Penalize fast volume points that penetrate detected terrain edges.
+
+    This is the H2-compatible form of the *Hiking in the Wild* foothold
+    penalty. The upstream implementation detects sharp mesh edges and queries
+    a volume-points sensor against edge cylinders. H2 already has a dense
+    height scanner, so adjacent scanner hits are used as the edge detector and
+    the same volume-point/cylinder query is performed in the robot base frame.
+    The returned value is positive and should be configured with a negative
+    reward weight:
+
+    ``sum_i 1[d_i > tolerance] * (||v_i|| + 1e-6) * d_i``.
+    """
+    if edge_height_threshold < 0.0 or edge_radius <= 0.0 or max_edges <= 0:
+        raise ValueError("edge_height_threshold and edge_radius must be non-negative and max_edges must be positive.")
+    if len(grid_size) != 2 or min(grid_size) < 2:
+        raise ValueError("grid_size must contain two dimensions of at least two rays.")
+    if len(foot_grid_size) != 3 or min(foot_grid_size) < 1:
+        raise ValueError("foot_grid_size must contain three positive dimensions.")
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    terrain_sensor = env.scene[terrain_sensor_cfg.name]
+    hits_w = terrain_sensor.data.ray_hits_w
+    num_envs = hits_w.shape[0]
+    ray_count = hits_w.shape[1]
+    grid_x, grid_y = grid_size
+    if ray_count != grid_x * grid_y:
+        # A mismatched scanner should not make training fail. It simply has
+        # no edge evidence until the configured scanner resolution is fixed.
+        return torch.zeros(num_envs, device=hits_w.device, dtype=hits_w.dtype)
+
+    root_pos_w = asset.data.root_pos_w
+    root_quat_w = asset.data.root_quat_w
+    ray_quat = root_quat_w.unsqueeze(1).expand(-1, ray_count, -1)
+    hits_b = quat_apply_inverse(
+        ray_quat.reshape(-1, 4),
+        (hits_w - root_pos_w.unsqueeze(1)).reshape(-1, 3),
+    ).view_as(hits_w).view(num_envs, grid_x, grid_y, 3)
+    valid = torch.isfinite(hits_b).all(dim=-1)
+
+    # Every adjacent pair of valid rays is a short terrain-edge candidate.
+    x_start, x_end = hits_b[:, :-1, :, :].reshape(num_envs, -1, 3), hits_b[:, 1:, :, :].reshape(num_envs, -1, 3)
+    x_valid = valid[:, :-1, :] & valid[:, 1:, :]
+    x_strength = torch.abs(x_end[..., 2] - x_start[..., 2])
+    x_strength = torch.where(x_valid.reshape(num_envs, -1) & (x_strength > edge_height_threshold), x_strength, -torch.inf)
+
+    y_start, y_end = hits_b[:, :, :-1, :].reshape(num_envs, -1, 3), hits_b[:, :, 1:, :].reshape(num_envs, -1, 3)
+    y_valid = valid[:, :, :-1] & valid[:, :, 1:]
+    y_strength = torch.abs(y_end[..., 2] - y_start[..., 2])
+    y_strength = torch.where(y_valid.reshape(num_envs, -1) & (y_strength > edge_height_threshold), y_strength, -torch.inf)
+
+    edge_start = torch.cat((x_start, y_start), dim=1)
+    edge_end = torch.cat((x_end, y_end), dim=1)
+    edge_strength = torch.cat((x_strength, y_strength), dim=1)
+    edge_count = edge_strength.shape[1]
+    select_count = min(max_edges, edge_count)
+    strength, edge_ids = torch.topk(edge_strength, k=select_count, dim=1)
+    batch_ids = torch.arange(num_envs, device=hits_b.device).unsqueeze(1)
+    edge_start = edge_start[batch_ids, edge_ids]
+    edge_end = edge_end[batch_ids, edge_ids]
+    edge_valid = torch.isfinite(strength)
+    # Do not let NaN/Inf coordinates from invalid scanner rays contaminate the
+    # distance calculation before the validity mask is applied.
+    edge_start = torch.where(edge_valid.unsqueeze(-1), edge_start, torch.zeros_like(edge_start))
+    edge_end = torch.where(edge_valid.unsqueeze(-1), edge_end, torch.zeros_like(edge_end))
+
+    # Match the official G1 volume-point footprint while keeping the H2 term
+    # independent of a custom sensor class.
+    x = torch.linspace(*foot_x_range, foot_grid_size[0], device=hits_b.device, dtype=hits_b.dtype)
+    y = torch.linspace(*foot_y_range, foot_grid_size[1], device=hits_b.device, dtype=hits_b.dtype)
+    z = torch.linspace(*foot_z_range, foot_grid_size[2], device=hits_b.device, dtype=hits_b.dtype)
+    local_points = torch.stack(torch.meshgrid(x, y, z, indexing="ij"), dim=-1).reshape(-1, 3)
+    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids]
+    body_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids]
+    body_lin_vel_w = asset.data.body_lin_vel_w[:, asset_cfg.body_ids]
+    body_ang_vel_w = asset.data.body_ang_vel_w[:, asset_cfg.body_ids]
+    num_bodies = body_pos_w.shape[1]
+    point_count = local_points.shape[0]
+    local_points = local_points.view(1, 1, point_count, 3).expand(num_envs, num_bodies, -1, -1)
+    body_quat_w = body_quat_w.unsqueeze(2).expand(-1, -1, point_count, -1)
+    rotated_offset_w = quat_apply(body_quat_w, local_points)
+    points_w = body_pos_w.unsqueeze(2) + rotated_offset_w
+    points_vel_w = body_lin_vel_w.unsqueeze(2) + torch.linalg.cross(
+        body_ang_vel_w.unsqueeze(2), rotated_offset_w, dim=-1
+    )
+    points_b = quat_apply_inverse(
+        root_quat_w.unsqueeze(1).unsqueeze(2).expand_as(body_quat_w),
+        points_w - root_pos_w.unsqueeze(1).unsqueeze(2),
+    ).flatten(1, 2)
+    points_speed = torch.linalg.vector_norm(points_vel_w, dim=-1).flatten(1, 2)
+
+    # Distance from every foot volume point to the nearest selected edge
+    # segment, equivalent to the edge-cylinder penetration query.
+    segment = edge_end - edge_start
+    segment_norm_sq = torch.sum(torch.square(segment), dim=-1).clamp_min(1e-8)
+    point_to_start = points_b.unsqueeze(2) - edge_start.unsqueeze(1)
+    projection = torch.sum(point_to_start * segment.unsqueeze(1), dim=-1) / segment_norm_sq.unsqueeze(1)
+    projection = projection.clamp(0.0, 1.0)
+    nearest = edge_start.unsqueeze(1) + projection.unsqueeze(-1) * segment.unsqueeze(1)
+    distance = torch.linalg.vector_norm(points_b.unsqueeze(2) - nearest, dim=-1)
+    penetration = (edge_radius - distance).clamp_min(0.0) * edge_valid.unsqueeze(1)
+    penetration = penetration.max(dim=-1).values
+    active = (penetration > tolerance).to(points_speed.dtype)
+    return torch.sum(active * (points_speed + 1e-6) * penetration, dim=1)
 
 
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

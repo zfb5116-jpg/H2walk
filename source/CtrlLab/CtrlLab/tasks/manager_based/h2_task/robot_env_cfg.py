@@ -228,6 +228,7 @@ class RobotRoughEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.feet_clearance.weight = -4.0
         self.rewards.feet_swing_height.weight = 0.75
         self.rewards.feet_stair_clearance.weight = 2.0
+        self.rewards.feet_edge_penalty.weight = -4.0
         self.rewards.support_force_z_axis.weight = -2e-4
 
         self.rewards.stand_still.weight = -2.0
@@ -366,6 +367,7 @@ class RobotFlatEnvCfg(RobotRoughEnvCfg):
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
         self.scene.height_scanner = None
+        self.rewards.feet_edge_penalty = None
         # The flat task has no ray caster, so remove the terrain observation from both groups.
         self.observations.policy.height_scanner = None
         self.observations.critic.height_scanner = None
