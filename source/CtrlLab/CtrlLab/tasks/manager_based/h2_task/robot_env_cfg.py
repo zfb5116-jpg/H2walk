@@ -348,7 +348,9 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
-        self.scene.terrain.max_init_terrain_level = 3
+        # Allow evaluation on the highest curriculum row, which contains the
+        # 20 cm stair band.
+        self.scene.terrain.max_init_terrain_level = 5
         self.scene.terrain.terrain_generator.curriculum = False
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
