@@ -335,7 +335,8 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
         self.scene.terrain.terrain_generator.curriculum = True
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
-            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16, "height_std": 0.08}
+            # Keep the clearance target valid for the 20 cm curriculum band.
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.24, "height_std": 0.08}
         )
         _enable_stairs_lidar_reconstruction(self)
 
@@ -351,7 +352,7 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
         self.scene.terrain.terrain_generator.curriculum = False
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
-            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16, "height_std": 0.08}
+            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.24, "height_std": 0.08}
         )
         _enable_stairs_lidar_reconstruction(self)
 

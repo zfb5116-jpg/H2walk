@@ -129,7 +129,10 @@ STAIR_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_high": terrain_gen.MeshPyramidStairsTerrainCfg(
-            step_height_range=(0.08, 0.14),
+            # The last curriculum band reaches the requested 20 cm step.
+            # Rows still progress from the shallow end of this range, so the
+            # policy is not exposed to the full height at the start of training.
+            step_height_range=(0.08, 0.20),
             step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
@@ -143,7 +146,7 @@ STAIR_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "stairs_down_high": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            step_height_range=(0.08, 0.14),
+            step_height_range=(0.08, 0.20),
             step_width=0.35,
             platform_width=3.0,
             border_width=0.3,
