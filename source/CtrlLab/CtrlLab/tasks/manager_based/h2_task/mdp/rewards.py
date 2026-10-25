@@ -50,18 +50,74 @@ def track_ang_vel_z_exp(
     return torch.exp(-ang_vel_error / std ** 2) * contacts.any(dim=-1)
 
 
-def track_forward_world_velocity(
+def tracking_lin_vel_x(
         env: ManagerBasedRLEnv,
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
 ) -> torch.Tensor:
-    """Keep a forward command aligned with the terrain's world-frame uphill axis."""
+    """Track the commanded forward velocity in the robot base frame.
+
+    The command is expressed in the base frame. Comparing it with world-frame
+    velocity makes a yawed robot appear to move in the wrong direction and
+    encourages diagonal/turning behavior on stairs.
+    """
+    if not 0.0 < std < float("inf"):
+        raise ValueError("std must be finite and positive.")
+    if not 0.0 <= command_threshold < float("inf"):
+        raise ValueError("command_threshold must be finite and non-negative.")
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_command(command_name)
-    forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
-    error = asset.data.root_lin_vel_w[:, 0] - command[:, 0]
-    return torch.exp(-torch.square(error / std)) * forward
+    moving = torch.linalg.vector_norm(command[:, :2], dim=1) > command_threshold
+    error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
+    return torch.exp(-torch.square(error / std)) * moving
+
+
+def heading_tracking(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        std: float = 0.5,
+        command_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Track the heading controller's yaw-rate command in the base frame.
+
+    A zero yaw command therefore rewards zero yaw rate, which prevents the
+    policy from turning while it is trying to climb straight ahead.
+    """
+    if not 0.0 < std < float("inf"):
+        raise ValueError("std must be finite and positive.")
+    if not 0.0 <= command_threshold < float("inf"):
+        raise ValueError("command_threshold must be finite and non-negative.")
+    asset: Articulation = env.scene["robot"]
+    command = env.command_manager.get_command(command_name)
+    error = asset.data.root_ang_vel_b[:, 2] - command[:, 2]
+    return torch.exp(-torch.square(error / std))
+
+
+def lin_vel_y_l2(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        command_threshold: float = 0.05,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize lateral base velocity during commanded locomotion.
+
+    Stair climbing should remain aligned with the target direction. The term
+    intentionally penalizes actual lateral motion instead of rewarding a
+    lateral command match, so small command noise cannot produce diagonal
+    walking.
+    """
+    if not 0.0 <= command_threshold < float("inf"):
+        raise ValueError("command_threshold must be finite and non-negative.")
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    moving = torch.linalg.vector_norm(command[:, :2], dim=1) > command_threshold
+    return torch.square(asset.data.root_lin_vel_b[:, 1]) * moving
+
+
+# Compatibility aliases for older configs and checkpoints.
+track_forward_velocity = tracking_lin_vel_x
+track_forward_world_velocity = tracking_lin_vel_x
 
 
 """

@@ -34,7 +34,7 @@ def terrain_levels_lifetime(
 def lin_vel_cmd_levels(
         env: ManagerBasedRLEnv,
         env_ids: Sequence[int],
-        reward_term_name: str = "track_lin_vel_xy",
+        reward_term_name: str = "tracking_lin_vel_x",
 ) -> torch.Tensor:
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
@@ -63,7 +63,7 @@ def lin_vel_cmd_levels(
 def ang_vel_cmd_levels(
         env: ManagerBasedRLEnv,
         env_ids: Sequence[int],
-        reward_term_name: str = "track_ang_vel_z",
+        reward_term_name: str = "heading_tracking",
 ) -> torch.Tensor:
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges

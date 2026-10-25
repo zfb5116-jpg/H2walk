@@ -21,30 +21,32 @@ class RewardsCfg:
     """Reward terms for the H2 locomotion MDP."""
 
     # -- task
-    track_lin_vel_xy = RewTerm(
-        func=mdp.track_lin_vel_xy_exp,
+    # Keep the three locomotion objectives separate. The former XY term
+    # rewarded lateral velocity and the former world-X term conflicted with
+    # base-frame commands after the robot yawed.
+    track_lin_vel_xy = None
+    track_ang_vel_z = None
+    track_forward_progress = None
+    tracking_lin_vel_x = RewTerm(
+        func=h2_mdp.tracking_lin_vel_x,
         weight=8.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "command_threshold": 0.05},
     )
-    track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp,
-        weight=2.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    lin_vel_y = RewTerm(
+        func=h2_mdp.lin_vel_y_l2,
+        weight=-0.8,
+        params={"command_name": "base_velocity", "command_threshold": 0.05},
     )
-    track_forward_progress = RewTerm(
-        func=h2_mdp.track_forward_world_velocity,
+    heading_tracking = RewTerm(
+        func=h2_mdp.heading_tracking,
         weight=2.0,
-        params={"command_name": "base_velocity", "std": 0.5},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "command_threshold": 0.05},
     )
 
     # -- base
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-2.0)
-    base_lateral_velocity = RewTerm(
-        func=h2_mdp.base_lateral_velocity_l2,
-        weight=-1.2,
-        params={"command_name": "base_velocity", "command_threshold": 0.15},
-    )
+    base_lateral_velocity = None
     base_lateral_acc = RewTerm(
         func=h2_mdp.base_lateral_acc_l2,
         weight=-1e-3,
