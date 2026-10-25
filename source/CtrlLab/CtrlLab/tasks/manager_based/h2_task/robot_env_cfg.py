@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -335,18 +337,44 @@ def _enable_stairs_lidar_reconstruction(cfg):
     )
 
 
+def _configure_walking_height_rewards(cfg):
+    """Choose shared foot-height shaping without changing observations or weights."""
+    if cfg.walking_height_mode not in {"terrain", "body_legacy"}:
+        raise ValueError("walking_height_mode must be 'terrain' or 'body_legacy'")
+    for term in (cfg.rewards.feet_clearance, cfg.rewards.feet_swing_height):
+        term.params.update({
+            "height_mode": cfg.walking_height_mode,
+            "min_clearance": 0.03,
+            "terrain_sensor_name": "height_scanner",
+            "ground_query_radius": 0.10,
+        })
+
+
+def _configure_walking_tracking_rewards(cfg):
+    """Select velocity-tracking bandwidth without changing weights or commands."""
+    if cfg.walking_tracking_mode not in ("absolute", "command_relative"):
+        raise ValueError("walking_tracking_mode must be 'absolute' or 'command_relative'")
+    for term in (cfg.rewards.track_lin_vel_xy, cfg.rewards.track_forward_progress):
+        term.params.update({"tracking_mode": cfg.walking_tracking_mode, "min_command_speed": 0.1})
+
+
 @configclass
 class RobotStairsEnvCfg(RobotRoughEnvCfg):
-    """Curriculum training on ascending and descending stair terrains."""
+    """Train one scanned-terrain policy on ordinary ground and stair terrains."""
 
     lidar_reliable_fusion: bool = False
     use_lidar_reconstruction: bool = False
     stairs_clearance_target_mode: str = "nearest"
     stairs_clearance_height_reference: str = "sole"
+    stairs_mixed_terrain: bool = True
+    walking_height_mode: str = "terrain"
+    walking_tracking_mode: str = "command_relative"
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = deepcopy(
+            MIXED_WALK_TERRAINS_CFG if self.stairs_mixed_terrain else STAIR_ROUGH_TERRAINS_CFG
+        )
         # Preserve upstream's shallow start and fall detection for H2.
         self.scene.terrain.max_init_terrain_level = 0
         self.scene.terrain.terrain_generator.curriculum = True
@@ -356,30 +384,44 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
              "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
              "height_reference": self.stairs_clearance_height_reference}
         )
+        _configure_walking_height_rewards(self)
+        _configure_walking_tracking_rewards(self)
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)
 
 
 @configclass
 class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
-    """Play environment for the stair curriculum."""
+    """Play the same scanned-terrain policy, retaining ordinary terrain coverage."""
 
     lidar_reliable_fusion: bool = False
     use_lidar_reconstruction: bool = False
     stairs_clearance_target_mode: str = "nearest"
     stairs_clearance_height_reference: str = "sole"
+    stairs_mixed_terrain: bool = True
+    walking_height_mode: str = "terrain"
+    walking_tracking_mode: str = "command_relative"
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = deepcopy(
+            MIXED_WALK_TERRAINS_CFG if self.stairs_mixed_terrain else STAIR_ROUGH_TERRAINS_CFG
+        )
         self.scene.terrain.max_init_terrain_level = 3
-        self.scene.terrain.terrain_generator.curriculum = False
+        # Generator curriculum fixes terrain families by column; runtime terrain
+        # progression is a separate manager term. Disable only that term for
+        # mixed play, so columns cannot randomly lose a family at evaluation.
+        self.scene.terrain.terrain_generator.curriculum = bool(self.stairs_mixed_terrain)
+        if self.stairs_mixed_terrain:
+            self.curriculum.terrain_levels = None
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
             {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.16,
              "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
              "height_reference": self.stairs_clearance_height_reference}
         )
+        _configure_walking_height_rewards(self)
+        _configure_walking_tracking_rewards(self)
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)
 

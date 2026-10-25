@@ -9,6 +9,7 @@ from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 from ..robot_env import RobotEnv
 from ..contact_events import stumble_from_force_history
 from ..foot_geometry import lowest_sole_height_world
+from ..terrain_clearance import local_ground_height
 
 """
 Velocity-tracking rewards.
@@ -52,22 +53,63 @@ def track_ang_vel_z_exp(
     return torch.exp(-ang_vel_error / std ** 2) * contacts.any(dim=-1)
 
 
+def track_command_lin_vel_xy_exp(
+        env: ManagerBasedRLEnv,
+        std: float,
+        command_name: str,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        tracking_mode: str = "absolute",
+        min_command_speed: float = 0.1,
+) -> torch.Tensor:
+    """Track base-frame XY velocity with an optional command-relative bandwidth.
+
+    ``absolute`` preserves the official ungated exponential reward. Relative
+    mode uses ``std * max(norm(command_xy), min_command_speed)`` as bandwidth,
+    so standing at a small walking command is not almost as good as tracking.
+    No contact gate is added; ``min_command_speed`` keeps stop commands finite.
+    """
+    if not 0.0 < std < float("inf"):
+        raise ValueError("std must be finite and positive.")
+    if not 0.0 < min_command_speed < float("inf"):
+        raise ValueError("min_command_speed must be finite and positive.")
+    if tracking_mode not in ("absolute", "command_relative"):
+        raise ValueError("tracking_mode must be 'absolute' or 'command_relative'.")
+    asset: Articulation = env.scene[asset_cfg.name]
+    command_xy = env.command_manager.get_command(command_name)[:, :2]
+    lin_vel_error = torch.sum(torch.square(command_xy - asset.data.root_lin_vel_b[:, :2]), dim=1)
+    if tracking_mode == "absolute":
+        return torch.exp(-lin_vel_error / std ** 2)
+    bandwidth = std * torch.linalg.vector_norm(command_xy, dim=1).clamp(min=min_command_speed)
+    return torch.exp(-lin_vel_error / bandwidth.square())
+
+
 def track_forward_velocity(
         env: ManagerBasedRLEnv,
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
+        tracking_mode: str = "absolute",
+        min_command_speed: float = 0.1,
 ) -> torch.Tensor:
-    """Track forward velocity in the same base frame as the velocity command."""
+    """Track forward velocity in the command frame, retaining its forward gate.
+
+    The optional relative mode scales bandwidth by the commanded X speed,
+    with a positive floor. Absolute mode preserves the previous formula.
+    """
     if not 0.0 < std < float("inf"):
         raise ValueError("std must be finite and positive.")
     if not 0.0 <= command_threshold < float("inf"):
         raise ValueError("command_threshold must be finite and non-negative.")
+    if not 0.0 < min_command_speed < float("inf"):
+        raise ValueError("min_command_speed must be finite and positive.")
+    if tracking_mode not in ("absolute", "command_relative"):
+        raise ValueError("tracking_mode must be 'absolute' or 'command_relative'.")
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_command(command_name)
     forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
     error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
-    return torch.exp(-torch.square(error / std)) * forward
+    bandwidth = std if tracking_mode == "absolute" else std * command[:, 0].abs().clamp(min=min_command_speed)
+    return torch.exp(-torch.square(error / bandwidth)) * forward
 
 
 def track_forward_world_velocity(
@@ -75,13 +117,15 @@ def track_forward_world_velocity(
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
+        tracking_mode: str = "absolute",
+        min_command_speed: float = 0.1,
 ) -> torch.Tensor:
     """Historical name retained for configs; uses corrected base-frame tracking.
 
     The old world-X comparison conflicted with base-frame commands after yaw
     rotations. This alias preserves imports, not that reward behavior.
     """
-    return track_forward_velocity(env, command_name, std, command_threshold)
+    return track_forward_velocity(env, command_name, std, command_threshold, tracking_mode, min_command_speed)
 
 
 """
@@ -278,20 +322,69 @@ def feet_air_vel_norm(env, sensor_cfg: SceneEntityCfg,
     return reward
 
 
+def _terrain_clearance_shortfall(
+        env: RobotEnv,
+        min_clearance: float,
+        terrain_sensor_name: str,
+        ground_query_radius: float,
+        sole_points_b=None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-foot sole clearance shortfall and validity, using observed local ground."""
+    if not 0.0 < min_clearance < float("inf"):
+        raise ValueError("min_clearance must be finite and positive")
+    body_quat_w = getattr(env.asset.data, "body_quat_w", None)
+    if body_quat_w is None:
+        raise ValueError("height_mode='terrain' requires asset.data.body_quat_w")
+    try:
+        terrain_sensor = env.scene[terrain_sensor_name]
+    except KeyError as error:
+        raise ValueError(f"height_mode='terrain' requires terrain sensor {terrain_sensor_name!r}") from error
+    feet_w = env.asset.data.body_pos_w[:, env.feet_id_b, :]
+    ground = local_ground_height(
+        terrain_sensor.data.ray_hits_w, feet_w, radius=ground_query_radius,
+    )
+    sole_z = lowest_sole_height_world(feet_w, body_quat_w[:, env.feet_id_b, :], sole_points_b=sole_points_b)
+    valid = torch.isfinite(ground) & torch.isfinite(sole_z)
+    clearance = torch.nan_to_num(sole_z) - torch.nan_to_num(ground)
+    shortfall = (min_clearance - clearance).clamp(min=0.0)
+    return torch.where(valid, shortfall, 0.0), valid
+
+
 def feet_swing_height(
         env: RobotEnv,
         command_name: str,
         sensor_cfg: SceneEntityCfg,
         target_feet_height: float = -0.67,
         height_std: float = 0.10,
+        height_mode: str = "body_legacy",
+        min_clearance: float = 0.03,
+        terrain_sensor_name: str = "height_scanner",
+        ground_query_radius: float = 0.10,
+        sole_points_b=None,
 ) -> torch.Tensor:
-    """Reward lifting each swinging foot to a useful stair-clearing height."""
+    """Reward swing height, optionally saturating after a local terrain clearance.
+
+    ``body_legacy`` preserves the fixed body-frame height peak. ``terrain``
+    rewards closing a minimum sole-to-ground clearance shortfall, then stays
+    flat: it does not pull a foot down from a higher stair-clearance target.
+    Existing contact and planar-command gates are retained in both modes.
+    """
+    if height_mode not in {"body_legacy", "terrain"}:
+        raise ValueError("height_mode must be 'body_legacy' or 'terrain'")
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
 
     env.update_feet_state()
-    feet_height_b = env.feet_pos_b[:, :, 2]
-    height_score = torch.exp(-torch.square((feet_height_b - target_feet_height) / height_std))
+    if height_mode == "terrain":
+        if not 0.0 < height_std < float("inf"):
+            raise ValueError("height_std must be finite and positive")
+        shortfall, valid = _terrain_clearance_shortfall(
+            env, min_clearance, terrain_sensor_name, ground_query_radius, sole_points_b,
+        )
+        height_score = torch.exp(-torch.square(shortfall / height_std)) * valid
+    else:
+        feet_height_b = env.feet_pos_b[:, :, 2]
+        height_score = torch.exp(-torch.square((feet_height_b - target_feet_height) / height_std))
     swing = ~contacts
     swing_count = swing.sum(dim=1).clamp(min=1)
     reward = torch.sum(height_score * swing, dim=1) / swing_count
@@ -444,14 +537,42 @@ def feet_clearance_l2(
         command_name: str,
         sensor_cfg: SceneEntityCfg,
         target_feet_height=-0.23,
+        height_mode: str = "body_legacy",
+        min_clearance: float = 0.03,
+        terrain_sensor_name: str = "height_scanner",
+        ground_query_radius: float = 0.10,
+        sole_points_b=None,
 ) -> torch.Tensor:
+    """Penalize moving-swing height shortfall, retaining the body-height baseline.
+
+    Terrain mode uses the same minimum sole clearance as ``feet_swing_height``.
+    Reaching that floor removes this penalty; higher stair targets stay free of
+    a conflicting fixed body-frame height preference. Velocity weighting and
+    the existing whole-command movement gate remain unchanged.
+    """
+    if height_mode not in {"body_legacy", "terrain"}:
+        raise ValueError("height_mode must be 'body_legacy' or 'terrain'")
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
 
     env.update_feet_state()
-    feet_vel_xy_b = torch.norm(env.feet_vel_b[:, :, :2], dim=-1, p=0.5)
-    feet_height_b = env.feet_pos_b[:, :, 2]
-    height_error = torch.square(torch.clip(feet_height_b - target_feet_height, max=0.0))
+    if height_mode == "terrain":
+        velocity_xy = env.feet_vel_b[:, :, :2]
+        valid_velocity = torch.isfinite(velocity_xy).all(dim=-1)
+        # Sanitize before the fractional norm: masking its NaN output later
+        # leaves invalid derivatives in a CPU backward diagnostic.
+        safe_velocity_xy = torch.where(valid_velocity.unsqueeze(-1), velocity_xy, 0.0)
+        feet_vel_xy_b = torch.norm(safe_velocity_xy, dim=-1, p=0.5)
+        shortfall, valid = _terrain_clearance_shortfall(
+            env, min_clearance, terrain_sensor_name, ground_query_radius, sole_points_b,
+        )
+        valid = valid & valid_velocity & torch.isfinite(feet_vel_xy_b)
+        feet_vel_xy_b = torch.where(valid, feet_vel_xy_b, 0.0)
+        height_error = shortfall.square() * valid
+    else:
+        feet_vel_xy_b = torch.norm(env.feet_vel_b[:, :, :2], dim=-1, p=0.5)
+        feet_height_b = env.feet_pos_b[:, :, 2]
+        height_error = torch.square(torch.clip(feet_height_b - target_feet_height, max=0.0))
     reward = torch.sum(~contacts * height_error * feet_vel_xy_b, dim=-1)
     # no reward for zero command
     reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) > 0.01

@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainGeneratorCfg
 
@@ -156,6 +158,31 @@ STAIR_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
     }
 )
+
+# Keep ordinary terrain represented at every curriculum row while retaining the
+# shallow H2 stair ranges. In Isaac Lab v2.2.1 curriculum generation, ten columns
+# with these weights allocate 3 flat, 1 slope, 1 rough and 5 stair columns.
+# This is an initial training mixture, not a measured optimal distribution.
+MIXED_WALK_TERRAINS_CFG = deepcopy(STAIR_ROUGH_TERRAINS_CFG)
+MIXED_WALK_TERRAINS_CFG.num_cols = 10
+for _sub_terrain in MIXED_WALK_TERRAINS_CFG.sub_terrains.values():
+    _sub_terrain.proportion = 1.0
+MIXED_WALK_TERRAINS_CFG.sub_terrains = {
+    "flat": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=3.0,
+        slope_range=(0.0, 0.0),
+        platform_width=3.0,
+        border_width=0.3,
+    ),
+    "gentle_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=1.0,
+        slope_range=(0.0, 0.10),
+        platform_width=3.0,
+        border_width=0.3,
+    ),
+    **MIXED_WALK_TERRAINS_CFG.sub_terrains,
+}
+
 
 SLOPE_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),

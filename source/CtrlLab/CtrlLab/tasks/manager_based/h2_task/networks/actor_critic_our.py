@@ -213,10 +213,16 @@ class H2ActorCriticOur(nn.Module):
 
 
 def register_rsl_rl_policy() -> None:
-    """Make the custom class discoverable by Isaac Lab's RSL-RL resolver."""
+    """Expose the class to both RSL-RL modules and runner-local resolvers."""
     try:
         import rsl_rl.modules as modules
     except ImportError as exc:
         raise ImportError("Install Isaac Lab/RSL-RL before importing H2ActorCriticOur") from exc
+    # v2.3.3 resolves the configured class with eval() in this runner module,
+    # not in rsl_rl.modules. Import failures must propagate instead of leaving
+    # registration apparently successful with only one resolver populated.
+    import rsl_rl.runners.on_policy_runner as on_policy_runner
+
     modules.H2ActorCriticOur = H2ActorCriticOur
+    on_policy_runner.H2ActorCriticOur = H2ActorCriticOur
 
