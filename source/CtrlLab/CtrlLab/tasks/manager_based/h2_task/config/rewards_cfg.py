@@ -180,6 +180,25 @@ class RewardsCfg:
             "height_std": 0.12,
         },
     )
+    feet_edge_penalty = RewTerm(
+        # The function returns a positive penalty magnitude; the negative
+        # weight makes it a reward deduction, as in the official repository.
+        func=h2_mdp.feet_edge_penalty,
+        weight=-4.0,
+        params={
+            "terrain_sensor_cfg": SceneEntityCfg("height_scanner"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+            "edge_height_threshold": 0.035,
+            "edge_radius": 0.05,
+            "tolerance": 1e-4,
+            "max_edges": 64,
+            "grid_size": (33, 17),
+            "foot_x_range": (-0.025, 0.12),
+            "foot_y_range": (-0.03, 0.03),
+            "foot_z_range": (-0.04, 0.0),
+            "foot_grid_size": (5, 3, 2),
+        },
+    )
     support_force_z_axis = RewTerm(
         func=h2_mdp.support_force_z_axis_norm,
         weight=-1e-4,
