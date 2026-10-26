@@ -36,22 +36,25 @@ class _ContainerBase:
             track_lin_vel_xy=SimpleNamespace(weight=8.0, params={"std": 0.5}),
             track_forward_progress=SimpleNamespace(weight=2.0, params={"std": 0.5}),
         )
-        self.curriculum = SimpleNamespace(terrain_levels=object())
+        self.curriculum = SimpleNamespace(
+            terrain_levels=object(),
+            lin_vel_cmd_levels=SimpleNamespace(func="progress_callback", params={"min_episodes": 32}),
+        )
         self.commands = SimpleNamespace(base_velocity=SimpleNamespace())
 
     def __post_init__(self):
         pass
 
 
-@pytest.fixture
-def configs():
+def _load_configs(terrain_templates=None):
     """Load actual class bodies while isolating the simulator's base classes."""
     names = {"RobotStairsEnvCfg", "RobotStairsPlayEnvCfg", "RobotFlatEnvCfg"}
     source = TASK / "robot_env_cfg.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in names]
     helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-               and node.name in {"_configure_walking_height_rewards", "_configure_walking_tracking_rewards"}]
+               and node.name in {"_configure_walking_height_rewards", "_configure_walking_tracking_rewards",
+                                 "_configure_stairs_height_profile", "_configure_walking_command_curriculum"}]
     assert {node.name for node in classes} == names
     for node in classes:
         node.decorator_list = []
@@ -68,17 +71,34 @@ def configs():
         "deepcopy": deepcopy,
         "STAIR_ROUGH_TERRAINS_CFG": SimpleNamespace(
             curriculum=None, num_cols=6,
-            sub_terrains={"stairs_low": SimpleNamespace(proportion=1.0)},
+            sub_terrains={
+                "stairs_low": SimpleNamespace(proportion=1.0, step_height_range=(0.02, 0.05)),
+                "stairs_high": SimpleNamespace(proportion=1.0, step_height_range=(0.08, 0.14)),
+                "stairs_down_high": SimpleNamespace(proportion=1.0, step_height_range=(0.08, 0.14)),
+            },
         ),
         "MIXED_WALK_TERRAINS_CFG": SimpleNamespace(
             curriculum=None, num_cols=10,
-            sub_terrains={"flat": SimpleNamespace(proportion=3.0)},
+            sub_terrains={
+                "flat": SimpleNamespace(proportion=3.0),
+                "stairs_low": SimpleNamespace(proportion=1.0, step_height_range=(0.02, 0.05)),
+                "stairs_high": SimpleNamespace(proportion=1.0, step_height_range=(0.08, 0.14)),
+                "stairs_down_high": SimpleNamespace(proportion=1.0, step_height_range=(0.08, 0.14)),
+            },
         ),
         "_enable_stairs_lidar_reconstruction": enable_reconstruction,
     }
+    if terrain_templates is not None:
+        namespace.update({name: terrain_templates[name]
+                          for name in ("STAIR_ROUGH_TERRAINS_CFG", "MIXED_WALK_TERRAINS_CFG")})
     module = ast.fix_missing_locations(ast.Module(body=[*helpers, *classes], type_ignores=[]))
     exec(compile(module, str(source), "exec"), namespace)
     return namespace, calls
+
+
+@pytest.fixture
+def configs():
+    return _load_configs()
 
 
 @pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
@@ -97,10 +117,12 @@ def test_stairs_default_uses_gt_without_enabling_reconstruction(configs, name):
     assert cfg.stairs_clearance_height_reference == "sole"
     assert cfg.rewards.feet_stair_clearance.params["height_reference"] == "sole"
     assert cfg.rewards.feet_stair_clearance.weight == 2.5
-    assert cfg.walking_tracking_mode == "command_relative"
+    assert cfg.walking_tracking_mode == "command_relative_mixed"
+    assert cfg.walking_tracking_relative_weight == 0.75
     for reward_name, weight in (("track_lin_vel_xy", 8.0), ("track_forward_progress", 2.0)):
         term = getattr(cfg.rewards, reward_name)
-        assert term.params == {"std": 0.5, "tracking_mode": "command_relative", "min_command_speed": 0.1}
+        assert term.params == {"std": 0.5, "tracking_mode": "command_relative_mixed",
+                               "min_command_speed": 0.1, "relative_weight": 0.75}
         assert term.weight == weight
     assert cfg.scene.terrain.max_init_terrain_level == (0 if name == "RobotStairsEnvCfg" else 3)
     assert cfg.scene.terrain.terrain_generator.curriculum is True
@@ -149,6 +171,7 @@ def test_absolute_tracking_baseline_reaches_both_reward_parameters(configs, name
     for reward_name in ("track_lin_vel_xy", "track_forward_progress"):
         assert getattr(cfg.rewards, reward_name).params == {
             "std": 0.5, "tracking_mode": "absolute", "min_command_speed": 0.1,
+            "relative_weight": 0.75,
         }
 
 
@@ -174,6 +197,7 @@ def test_flat_removes_terrain_reward_when_removing_its_sensor(configs):
     assert "tracking_mode" not in cfg.rewards.track_lin_vel_xy.params
     assert "tracking_mode" not in cfg.rewards.track_forward_progress.params
     assert "height_mode" not in cfg.rewards.feet_swing_height.params
+    assert cfg.curriculum.lin_vel_cmd_levels.params == {"min_episodes": 32}
 
 
 @pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
@@ -241,4 +265,100 @@ def test_walking_height_mode_validation_is_early(configs, name):
     cfg = namespace[name]()
     cfg.walking_height_mode = "unknown"
     with pytest.raises(ValueError, match="walking_height_mode"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
+@pytest.mark.parametrize("mode", ["absolute", "command_relative", "command_relative_mixed"])
+def test_tracking_modes_and_relative_weight_reach_both_terms(configs, name, mode):
+    namespace, _ = configs
+    cfg = namespace[name]()
+    cfg.walking_tracking_mode = mode
+    cfg.walking_tracking_relative_weight = 0.6
+    cfg.__post_init__()
+    for reward_name in ("track_lin_vel_xy", "track_forward_progress"):
+        params = getattr(cfg.rewards, reward_name).params
+        assert params["tracking_mode"] == mode
+        assert params["relative_weight"] == 0.6
+        assert params["min_command_speed"] == 0.1
+
+
+@pytest.mark.parametrize("weight", [0.0, 1.0])
+def test_relative_tracking_weight_accepts_closed_interval_endpoints(configs, weight):
+    namespace, _ = configs
+    cfg = namespace["RobotStairsEnvCfg"]()
+    cfg.walking_tracking_relative_weight = weight
+    cfg.__post_init__()
+    assert cfg.rewards.track_lin_vel_xy.params["relative_weight"] == weight
+    assert cfg.rewards.track_forward_progress.params["relative_weight"] == weight
+
+
+@pytest.mark.parametrize("weight", [-0.01, 1.01, float("nan"), float("inf"), -float("inf")])
+def test_relative_tracking_weight_rejects_nonfinite_and_out_of_range(configs, weight):
+    namespace, _ = configs
+    cfg = namespace["RobotStairsEnvCfg"]()
+    cfg.walking_tracking_relative_weight = weight
+    with pytest.raises(ValueError, match="walking_tracking_relative_weight"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
+@pytest.mark.parametrize("height_mode", ["terrain", "body_legacy"])
+@pytest.mark.parametrize("signal_mode", ["aligned", "legacy"])
+def test_foot_signal_mode_and_height_baseline_are_independent(configs, name, height_mode, signal_mode):
+    namespace, _ = configs
+    cfg = namespace[name]()
+    cfg.walking_height_mode = height_mode
+    cfg.walking_foot_signal_mode = signal_mode
+    cfg.__post_init__()
+    swing = cfg.rewards.feet_swing_height.params
+    aligned_terrain = height_mode == "terrain" and signal_mode == "aligned"
+    assert swing["height_std"] == (0.03 if aligned_terrain else 0.10)
+    assert swing["movement_threshold"] == (0.1 if aligned_terrain else 0.15)
+    assert swing["movement_gate_inclusive"] is aligned_terrain
+    stair = cfg.rewards.feet_stair_clearance.params
+    assert stair["command_gate_mode"] == ("progress" if signal_mode == "aligned" else "legacy")
+    assert stair["min_forward_command"] == 0.1
+    assert stair["max_lateral_command"] == 0.15
+    assert stair["max_yaw_command"] == 0.3
+
+
+@pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
+def test_unknown_foot_signal_mode_is_explicit(configs, name):
+    namespace, _ = configs
+    cfg = namespace[name]()
+    cfg.walking_foot_signal_mode = "auto"
+    with pytest.raises(ValueError, match="walking_foot_signal_mode"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("name,expected", [("RobotStairsEnvCfg", "terrain_columns"),
+                                           ("RobotStairsPlayEnvCfg", "global")])
+def test_command_curriculum_defaults_reach_existing_callback(configs, name, expected):
+    namespace, _ = configs
+    cfg = namespace[name]()
+    assert cfg.walking_command_curriculum_mode == expected
+    cfg.__post_init__()
+    term = cfg.curriculum.lin_vel_cmd_levels
+    assert term.func == "progress_callback"
+    assert term.params == {"min_episodes": 32, "grouping": expected, "min_group_episodes": 32}
+    if name == "RobotStairsEnvCfg":
+        assert cfg.scene.terrain.terrain_generator.curriculum is True
+
+
+def test_training_can_explicitly_restore_global_command_curriculum(configs):
+    namespace, _ = configs
+    cfg = namespace["RobotStairsEnvCfg"]()
+    cfg.walking_command_curriculum_mode = "global"
+    cfg.__post_init__()
+    assert cfg.curriculum.lin_vel_cmd_levels.params["grouping"] == "global"
+    assert cfg.curriculum.lin_vel_cmd_levels.params["min_group_episodes"] == 32
+
+
+@pytest.mark.parametrize("name", ["RobotStairsEnvCfg", "RobotStairsPlayEnvCfg"])
+def test_invalid_command_curriculum_mode_is_explicit(configs, name):
+    namespace, _ = configs
+    cfg = namespace[name]()
+    cfg.walking_command_curriculum_mode = "terrain_family"
+    with pytest.raises(ValueError, match="walking_command_curriculum_mode"):
         cfg.__post_init__()

@@ -60,6 +60,7 @@ def track_command_lin_vel_xy_exp(
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
         tracking_mode: str = "absolute",
         min_command_speed: float = 0.1,
+        relative_weight: float = 0.75,
 ) -> torch.Tensor:
     """Track base-frame XY velocity with an optional command-relative bandwidth.
 
@@ -67,20 +68,29 @@ def track_command_lin_vel_xy_exp(
     mode uses ``std * max(norm(command_xy), min_command_speed)`` as bandwidth,
     so standing at a small walking command is not almost as good as tracking.
     No contact gate is added; ``min_command_speed`` keeps stop commands finite.
+    ``command_relative_mixed`` combines that narrow score with the absolute
+    score to retain a broad error signal. Its endpoints exactly select either
+    existing score; this remains an unvalidated reward-shaping hypothesis.
     """
     if not 0.0 < std < float("inf"):
         raise ValueError("std must be finite and positive.")
     if not 0.0 < min_command_speed < float("inf"):
         raise ValueError("min_command_speed must be finite and positive.")
-    if tracking_mode not in ("absolute", "command_relative"):
-        raise ValueError("tracking_mode must be 'absolute' or 'command_relative'.")
+    if not 0.0 <= relative_weight <= 1.0:
+        raise ValueError("relative_weight must be finite and in [0, 1].")
+    if tracking_mode not in ("absolute", "command_relative", "command_relative_mixed"):
+        raise ValueError("tracking_mode must be 'absolute', 'command_relative', or 'command_relative_mixed'.")
     asset: Articulation = env.scene[asset_cfg.name]
     command_xy = env.command_manager.get_command(command_name)[:, :2]
     lin_vel_error = torch.sum(torch.square(command_xy - asset.data.root_lin_vel_b[:, :2]), dim=1)
-    if tracking_mode == "absolute":
+    if tracking_mode == "absolute" or (tracking_mode == "command_relative_mixed" and relative_weight == 0.0):
         return torch.exp(-lin_vel_error / std ** 2)
     bandwidth = std * torch.linalg.vector_norm(command_xy, dim=1).clamp(min=min_command_speed)
-    return torch.exp(-lin_vel_error / bandwidth.square())
+    relative_reward = torch.exp(-lin_vel_error / bandwidth.square())
+    if tracking_mode == "command_relative" or relative_weight == 1.0:
+        return relative_reward
+    absolute_reward = torch.exp(-lin_vel_error / std ** 2)
+    return (1.0 - relative_weight) * absolute_reward + relative_weight * relative_reward
 
 
 def track_forward_velocity(
@@ -90,11 +100,13 @@ def track_forward_velocity(
         command_threshold: float = 0.15,
         tracking_mode: str = "absolute",
         min_command_speed: float = 0.1,
+        relative_weight: float = 0.75,
 ) -> torch.Tensor:
     """Track forward velocity in the command frame, retaining its forward gate.
 
     The optional relative mode scales bandwidth by the commanded X speed,
     with a positive floor. Absolute mode preserves the previous formula.
+    Mixed mode retains an absolute-bandwidth component for large errors.
     """
     if not 0.0 < std < float("inf"):
         raise ValueError("std must be finite and positive.")
@@ -102,14 +114,22 @@ def track_forward_velocity(
         raise ValueError("command_threshold must be finite and non-negative.")
     if not 0.0 < min_command_speed < float("inf"):
         raise ValueError("min_command_speed must be finite and positive.")
-    if tracking_mode not in ("absolute", "command_relative"):
-        raise ValueError("tracking_mode must be 'absolute' or 'command_relative'.")
+    if not 0.0 <= relative_weight <= 1.0:
+        raise ValueError("relative_weight must be finite and in [0, 1].")
+    if tracking_mode not in ("absolute", "command_relative", "command_relative_mixed"):
+        raise ValueError("tracking_mode must be 'absolute', 'command_relative', or 'command_relative_mixed'.")
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_command(command_name)
     forward = (command[:, 0] > command_threshold) & (torch.abs(command[:, 1]) < command_threshold)
     error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
-    bandwidth = std if tracking_mode == "absolute" else std * command[:, 0].abs().clamp(min=min_command_speed)
-    return torch.exp(-torch.square(error / bandwidth)) * forward
+    if tracking_mode == "absolute" or (tracking_mode == "command_relative_mixed" and relative_weight == 0.0):
+        return torch.exp(-torch.square(error / std)) * forward
+    bandwidth = std * command[:, 0].abs().clamp(min=min_command_speed)
+    relative_reward = torch.exp(-torch.square(error / bandwidth)) * forward
+    if tracking_mode == "command_relative" or relative_weight == 1.0:
+        return relative_reward
+    absolute_reward = torch.exp(-torch.square(error / std)) * forward
+    return (1.0 - relative_weight) * absolute_reward + relative_weight * relative_reward
 
 
 def track_forward_world_velocity(
@@ -119,13 +139,16 @@ def track_forward_world_velocity(
         command_threshold: float = 0.15,
         tracking_mode: str = "absolute",
         min_command_speed: float = 0.1,
+        relative_weight: float = 0.75,
 ) -> torch.Tensor:
     """Historical name retained for configs; uses corrected base-frame tracking.
 
     The old world-X comparison conflicted with base-frame commands after yaw
     rotations. This alias preserves imports, not that reward behavior.
     """
-    return track_forward_velocity(env, command_name, std, command_threshold, tracking_mode, min_command_speed)
+    return track_forward_velocity(
+        env, command_name, std, command_threshold, tracking_mode, min_command_speed, relative_weight,
+    )
 
 
 """
@@ -361,16 +384,24 @@ def feet_swing_height(
         terrain_sensor_name: str = "height_scanner",
         ground_query_radius: float = 0.10,
         sole_points_b=None,
+        movement_threshold: float = 0.15,
+        movement_gate_inclusive: bool = False,
 ) -> torch.Tensor:
     """Reward swing height, optionally saturating after a local terrain clearance.
 
     ``body_legacy`` preserves the fixed body-frame height peak. ``terrain``
     rewards closing a minimum sole-to-ground clearance shortfall, then stays
     flat: it does not pull a foot down from a higher stair-clearance target.
-    Existing contact and planar-command gates are retained in both modes.
+    The historical planar-command gate is the default. An inclusive threshold
+    can explicitly align swing shaping with the command-progress speed floor.
+    Contact detection and the height score are unchanged by that choice.
     """
     if height_mode not in {"body_legacy", "terrain"}:
         raise ValueError("height_mode must be 'body_legacy' or 'terrain'")
+    if not 0.0 < movement_threshold < float("inf"):
+        raise ValueError("movement_threshold must be finite and positive")
+    if not isinstance(movement_gate_inclusive, bool):
+        raise ValueError("movement_gate_inclusive must be a bool")
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
 
@@ -388,7 +419,8 @@ def feet_swing_height(
     swing = ~contacts
     swing_count = swing.sum(dim=1).clamp(min=1)
     reward = torch.sum(height_score * swing, dim=1) / swing_count
-    moving = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.15
+    movement_speed = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1)
+    moving = movement_speed >= movement_threshold if movement_gate_inclusive else movement_speed > movement_threshold
     return reward * moving
 
 
@@ -404,6 +436,11 @@ def feet_stair_clearance(
         target_mode: str = "highest",
         height_reference: str = "link",
         sole_points_b=None,
+        command_gate_mode: str = "legacy",
+        min_forward_command: float = 0.1,
+        max_lateral_command: float = 0.15,
+        max_yaw_command: float = 0.3,
+        rise_weight_scale: float | None = None,
 ) -> torch.Tensor:
     """Reward swing clearance using the existing ground-truth height scanner.
 
@@ -419,6 +456,12 @@ def feet_stair_clearance(
     lowest world-Z point of each foot's oriented sole surface, with optional
     custom local vertices [foot, point, 3]. It requires body world quaternions.
     This surface-height correction does not measure actual support coverage.
+
+    ``legacy`` preserves the historical command gate. ``progress`` explicitly
+    includes the forward speed floor and the nearest-mode lateral/yaw limits;
+    commands outside those turn or side-step bounds still receive no shaping.
+    Optional ``rise_weight_scale`` decouples nearest-mode amplitude from the
+    obstacle eligibility ceiling. Highest-mode amplitude is unchanged.
     """
     if target_mode not in {"nearest", "highest"}:
         raise ValueError("target_mode must be 'nearest' or 'highest'")
@@ -426,6 +469,16 @@ def feet_stair_clearance(
         raise ValueError("height_reference must be 'link' or 'sole'")
     if height_reference == "link" and sole_points_b is not None:
         raise ValueError("sole_points_b requires height_reference='sole'")
+    if command_gate_mode not in ("legacy", "progress"):
+        raise ValueError("command_gate_mode must be 'legacy' or 'progress'")
+    if not 0.0 < min_forward_command < float("inf"):
+        raise ValueError("min_forward_command must be finite and positive")
+    if not 0.0 < max_lateral_command < float("inf"):
+        raise ValueError("max_lateral_command must be finite and positive")
+    if not 0.0 < max_yaw_command < float("inf"):
+        raise ValueError("max_yaw_command must be finite and positive")
+    if rise_weight_scale is not None and not 0.0 < rise_weight_scale < float("inf"):
+        raise ValueError("rise_weight_scale must be finite and positive when supplied")
     if not (0.0 <= clearance < float("inf") and 0.0 < min_rise < max_rise < float("inf")
             and 0.0 < height_std < float("inf")):
         raise ValueError("Require clearance >= 0, 0 < min_rise < max_rise, height_std > 0")
@@ -476,7 +529,7 @@ def feet_stair_clearance(
         # Do not skip an unreachably high near step in favor of a farther one.
         usable &= (rise >= min_rise - 1e-6) & (rise <= max_rise + 1e-6)
         # Nonzero shaping at min_rise also covers the 2 cm curriculum start.
-        rise_weight = (rise / max_rise).clamp(0.0, 1.0)
+        rise_weight = (rise / (max_rise if rise_weight_scale is None else rise_weight_scale)).clamp(0.0, 1.0)
     else:
         rise_weight = ((rise - min_rise) / (max_rise - min_rise)).clamp(0.0, 1.0)
     target_z = front_height + clearance
@@ -495,9 +548,15 @@ def feet_stair_clearance(
     swing_count = swing.sum(dim=1).clamp(min=1)
     height_score = torch.exp(-torch.square((feet_z_w - target_z) / height_std))
     command = env.command_manager.get_command(command_name)
-    moving_forward = command[:, 0] > 0.15
-    if target_mode == "nearest":
-        moving_forward &= (torch.abs(command[:, 1]) < 0.15) & (torch.abs(command[:, 2]) < 0.3)
+    if command_gate_mode == "legacy":
+        moving_forward = command[:, 0] > 0.15
+        if target_mode == "nearest":
+            moving_forward &= (torch.abs(command[:, 1]) < 0.15) & (torch.abs(command[:, 2]) < 0.3)
+    else:
+        moving_forward = command[:, 0] >= min_forward_command
+        if target_mode == "nearest":
+            moving_forward &= ((torch.abs(command[:, 1]) <= max_lateral_command)
+                               & (torch.abs(command[:, 2]) <= max_yaw_command))
     score = torch.sum(height_score * rise_weight * usable * swing, dim=1) / swing_count
     return score * moving_forward
 

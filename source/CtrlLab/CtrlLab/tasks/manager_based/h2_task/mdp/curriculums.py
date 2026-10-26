@@ -75,6 +75,8 @@ def lin_vel_cmd_levels(
         min_active_time: float = 2.0,
         min_target_distance: float = 0.5,
         expansion_step: float = 0.1,
+        grouping: str = "global",
+        min_group_episodes: int = 32,
 ) -> torch.Tensor:
     """Expand X speed only after completed episodes make commanded progress.
 
@@ -85,26 +87,54 @@ def lin_vel_cmd_levels(
     tracker = getattr(env, "command_progress_tracker", None)
     if tracker is None:
         raise RuntimeError("Progress command curriculum requires RobotEnv.command_progress_tracker")
+    if grouping not in ("global", "terrain_columns"):
+        raise ValueError("grouping must be 'global' or 'terrain_columns'")
+    group_ids = None
+    required_groups = None
+    if grouping == "terrain_columns":
+        terrain = getattr(getattr(env, "scene", None), "terrain", None)
+        generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+        if generator is None or not getattr(generator, "curriculum", False):
+            raise ValueError("terrain_columns requires a curriculum terrain generator with fixed columns")
+        columns = getattr(generator, "num_cols", None)
+        if isinstance(columns, bool) or not isinstance(columns, int) or columns <= 0:
+            raise ValueError("terrain generator num_cols must be a positive integer")
+        required_groups = tuple(range(columns))
+        group_ids = getattr(terrain, "terrain_types", None)
+        if (not isinstance(group_ids, torch.Tensor) or group_ids.dtype != torch.long
+                or group_ids.shape != tracker.elapsed_time.shape
+                or group_ids.device != tracker.elapsed_time.device):
+            raise ValueError("terrain_types must be a full-environment long tensor on the tracker device")
     command_term = env.command_manager.get_term(command_name)
     ranges = command_term.cfg.ranges
     next_x = expanded_x_range(ranges.lin_vel_x, command_term.cfg.limit_ranges.lin_vel_x, expansion_step)
     interval = env.max_episode_length if evaluation_interval_steps is None else evaluation_interval_steps
     settings = (command_name, interval, min_episodes, success_rate, min_progress_ratio,
                 max_progress_ratio, min_episode_fraction, min_active_time,
-                min_target_distance, expansion_step)
+                min_target_distance, expansion_step, grouping, required_groups, min_group_episodes)
     evaluator = getattr(env, "_command_progress_curriculum", None)
     if evaluator is None:
+        if group_ids is not None:
+            # Validate full expected topology once, never infer the required
+            # families from a partial reset batch. Fixed-column importer
+            # curricula only change rows, not these assignments.
+            if tuple(group_ids.unique().cpu().tolist()) != required_groups:
+                raise ValueError("terrain_types must cover every expected column; use global for undersized debug scenes")
+            env._command_progress_terrain_groups = group_ids
         evaluator = ProgressCurriculum(
             interval_steps=interval, min_episodes=min_episodes, success_rate=success_rate,
             min_progress_ratio=min_progress_ratio, max_progress_ratio=max_progress_ratio,
             min_episode_fraction=min_episode_fraction, min_active_time=min_active_time,
             min_target_distance=min_target_distance,
             generation=getattr(env, "_command_progress_generation", 0),
+            required_group_ids=required_groups, min_group_episodes=min_group_episodes,
         )
         env._command_progress_curriculum = evaluator
         env._command_progress_curriculum_settings = settings
     elif env._command_progress_curriculum_settings != settings:
         raise ValueError("Do not change progress curriculum settings within a running environment")
+    if group_ids is not None and group_ids is not env._command_progress_terrain_groups:
+        raise ValueError("Do not replace fixed terrain_types within a running curriculum")
     if evaluator.generation != getattr(env, "_command_progress_generation", 0):
         raise RuntimeError("Command progress generation is inconsistent")
     result = evaluator.observe(
@@ -113,24 +143,43 @@ def lin_vel_cmd_levels(
         time_outs=env.termination_manager.time_outs,
         max_episode_length_s=env.max_episode_length_s,
         current_step=env.common_step_counter,
+        group_ids=group_ids,
     )
+    changed = False
     if result is not None:
         changed = result["passed"] and next_x != tuple(ranges.lin_vel_x)
         if changed:
             ranges.lin_vel_x = next_x
             env._command_progress_generation = evaluator.advance_generation()
-        logs = {
-            "Curriculum/command_progress_episodes": result["episodes"],
-            "Curriculum/command_progress_success_rate": result["success_rate"],
-            "Curriculum/command_progress_mean_ratio": result["mean_progress_ratio"],
-            "Curriculum/command_progress_expanded": float(changed),
-            "Curriculum/command_progress_generation": evaluator.generation,
-            "Curriculum/command_progress_x_upper": ranges.lin_vel_x[1],
-        }
-        env.extras.setdefault("log", {}).update(logs)
-        # ManagerBasedRLEnv may rebuild extras during reset; RobotEnv merges
-        # this pending event after its parent reset has completed.
-        env._command_progress_pending_log = logs
+        env._command_progress_latest_result = result
+    latest = getattr(env, "_command_progress_latest_result", {})
+    logs = {
+        "Curriculum/command_progress_episodes": latest.get("episodes", 0),
+        "Curriculum/command_progress_success_rate": latest.get("success_rate", 0.0),
+        "Curriculum/command_progress_mean_ratio": latest.get("mean_progress_ratio", 0.0),
+        "Curriculum/command_progress_expanded": float(changed),
+        "Curriculum/command_progress_generation": evaluator.generation,
+        "Curriculum/command_progress_x_upper": ranges.lin_vel_x[1],
+        "Curriculum/command_progress_evaluation_id": evaluator.evaluation_count,
+        "Curriculum/command_progress_has_evaluation": float(evaluator.evaluation_count > 0),
+        "Curriculum/command_progress_pending_episodes": evaluator.episode_count,
+        "Curriculum/command_progress_grouped": float(required_groups is not None),
+    }
+    for metric in ("active_progress_sum", "inactive_error_sum", "target_distance_sum",
+                   "distance_weighted_active_ratio", "distance_weighted_inactive_error_ratio",
+                   "distance_weighted_effective_ratio", "min_group_success_rate"):
+        logs[f"Curriculum/command_progress_{metric}"] = latest.get(metric, 0.0)
+    for group in required_groups or ():
+        prefix = f"Curriculum/command_progress_group_{group}"
+        logs[f"{prefix}_episodes"] = latest.get("group_episodes", {}).get(group, 0)
+        logs[f"{prefix}_success_rate"] = latest.get("group_success_rates", {}).get(group, 0.0)
+        logs[f"{prefix}_pending_episodes"] = evaluator.group_episode_counts[group]
+    # Emit a fixed key set on every reset: the reference RSL logger uses the
+    # first info dictionary's keys. Latest-window metrics repeat deliberately;
+    # evaluation_id identifies genuine evaluations, expanded is only a pulse.
+    env.extras.setdefault("log", {}).update(logs)
+    # Parent reset rebuilds extras; RobotEnv merges this complete snapshot.
+    env._command_progress_pending_log = logs
     return torch.tensor(ranges.lin_vel_x[1], device=env.device)
 
 

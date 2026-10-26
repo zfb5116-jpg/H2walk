@@ -71,6 +71,89 @@ def test_relative_bandwidth_distinguishes_standing_from_tracking_a_slow_command(
     )
 
 
+def test_mixed_tracking_standing_score_keeps_a_broad_component():
+    env = _env([[0.2, 0.0, 0.0]], [[0.0, 0.0, 0.0]])
+    expected = 0.25 * math.exp(-0.16) + 0.75 * math.exp(-4.0)
+    torch.testing.assert_close(
+        _xy(env, tracking_mode="command_relative_mixed"), torch.tensor([expected], dtype=torch.float64),
+    )
+
+
+def test_mixed_tracking_retains_float32_signal_when_relative_underflows():
+    env = _env([[0.1, 0.0, 0.0]], [[1.1, 0.0, 0.0]], dtype=torch.float32)
+    relative = _xy(env, tracking_mode="command_relative")
+    mixed = _xy(env, tracking_mode="command_relative_mixed")
+    assert relative.item() == 0.0
+    assert mixed.item() > 0.0
+
+
+@pytest.mark.parametrize("name", ["track_command_lin_vel_xy_exp", "track_forward_velocity", "track_forward_world_velocity"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("relative_weight", [0.0, 0.25, 0.75, 1.0])
+def test_mixed_tracking_is_the_existing_score_mixture_with_exact_endpoints(name, dtype, relative_weight):
+    generator = torch.Generator().manual_seed(21)
+    env = _env(torch.randn(48, 3, generator=generator), torch.randn(48, 3, generator=generator), dtype)
+    function = getattr(REWARDS, name)
+    params = {"std": 0.5, "command_name": "base_velocity"}
+    absolute = function(env, **params, tracking_mode="absolute")
+    relative = function(env, **params, tracking_mode="command_relative")
+    mixed = function(env, **params, tracking_mode="command_relative_mixed", relative_weight=relative_weight)
+    if relative_weight == 0.0:
+        expected = absolute
+    elif relative_weight == 1.0:
+        expected = relative
+    else:
+        expected = (1 - relative_weight) * absolute + relative_weight * relative
+    torch.testing.assert_close(mixed, expected, rtol=0, atol=0)
+    assert mixed.dtype == dtype and mixed.device == env.velocity.device
+
+
+@pytest.mark.parametrize("name", ["track_forward_velocity", "track_forward_world_velocity"])
+def test_forward_mixture_retains_float32_signal_without_opening_its_gate(name):
+    env = _env([[0.2, 0.0, 0.0], [0.2, 0.15, 0.0], [-0.2, 0.0, 0.0]],
+               [[1.3, 0.0, 0.0]] * 3, dtype=torch.float32)
+    function = getattr(REWARDS, name)
+    relative = function(env, "base_velocity", tracking_mode="command_relative")
+    mixed = function(env, "base_velocity", tracking_mode="command_relative_mixed")
+    assert relative[0].item() == 0.0 and mixed[0].item() > 0.0
+    torch.testing.assert_close(mixed[1:], torch.zeros(2, dtype=torch.float32))
+
+
+def test_forward_alias_passes_the_mixture_weight_as_its_last_parameter():
+    env = _env([[0.2, 0.0, 0.0]], [[0.0, 0.0, 0.0]])
+    direct = REWARDS.track_forward_velocity(env, "base_velocity", 0.5, 0.15, "command_relative_mixed", 0.1, 0.25)
+    alias = REWARDS.track_forward_world_velocity(env, "base_velocity", 0.5, 0.15, "command_relative_mixed", 0.1, 0.25)
+    torch.testing.assert_close(alias, direct, rtol=0, atol=0)
+    expected = 0.75 * math.exp(-0.16) + 0.25 * math.exp(-4.0)
+    torch.testing.assert_close(alias, torch.tensor([expected], dtype=torch.float64))
+
+
+@pytest.mark.parametrize("name", ["track_command_lin_vel_xy_exp", "track_forward_velocity", "track_forward_world_velocity"])
+@pytest.mark.parametrize("weight", [-0.01, 1.01, float("nan"), float("inf"), -float("inf")])
+def test_invalid_mixture_weight_is_an_explicit_error(name, weight):
+    env = _env([[0.2, 0.0, 0.0]], [[0.0, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="relative_weight"):
+        getattr(REWARDS, name)(env, std=0.5, command_name="base_velocity",
+                               tracking_mode="command_relative_mixed", relative_weight=weight)
+
+
+@pytest.mark.parametrize("name", ["track_command_lin_vel_xy_exp", "track_forward_velocity", "track_forward_world_velocity"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_pure_relative_mode_stays_bitwise_equal_to_the_original_expression(name, dtype):
+    generator = torch.Generator().manual_seed(22)
+    env = _env(torch.randn(48, 3, generator=generator), torch.randn(48, 3, generator=generator), dtype)
+    if name == "track_command_lin_vel_xy_exp":
+        sigma = 0.5 * torch.linalg.vector_norm(env.command[:, :2], dim=1).clamp(min=0.1)
+        error = (env.command[:, :2] - env.velocity[:, :2]).square().sum(dim=1)
+        expected = torch.exp(-error / sigma.square())
+    else:
+        gate = (env.command[:, 0] > 0.15) & (env.command[:, 1].abs() < 0.15)
+        sigma = 0.5 * env.command[:, 0].abs().clamp(min=0.1)
+        expected = torch.exp(-((env.velocity[:, 0] - env.command[:, 0]) / sigma).square()) * gate
+    actual = getattr(REWARDS, name)(env, std=0.5, command_name="base_velocity", tracking_mode="command_relative")
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("mode", ["absolute", "command_relative"])
 def test_exact_tracking_is_one_for_forward_backward_sideways_and_stop(mode):
     command = [[0.2, 0.0, 0.8], [-0.2, 0.0, -0.8], [0.0, 0.2, 0.5],

@@ -109,6 +109,63 @@ def test_flat_walking_saturates_without_rewarding_extra_high_steps():
         torch.testing.assert_close(score, torch.ones(1, dtype=torch.float64))
 
 
+def test_swing_inclusive_gate_covers_the_progress_command_floor():
+    env = _env(0.03)
+    env.command[0, 0] = 0.1
+    torch.testing.assert_close(_call("feet_swing_height", env, height_mode="terrain"),
+                               torch.zeros(1, dtype=torch.float64))
+    torch.testing.assert_close(
+        _call("feet_swing_height", env, height_mode="terrain", movement_threshold=0.1,
+              movement_gate_inclusive=True), torch.ones(1, dtype=torch.float64),
+    )
+
+
+@pytest.mark.parametrize("command,legacy_active,progress_active", [
+    ([0.1, 0.0, 0.0], False, True), ([0.125, 0.0, 0.0], False, True),
+    ([0.15, 0.0, 0.0], False, True), ([0.150001, 0.0, 0.0], True, True),
+    ([-0.1, 0.0, 0.0], False, True), ([0.0, 0.1, 0.0], False, True),
+    ([0.09999, 0.0, 0.0], False, False), ([0.0, 0.0, 0.3], False, False),
+])
+def test_configurable_swing_gate_retains_legacy_and_opens_at_progress_speed(command, legacy_active, progress_active):
+    env = _env(0.03)
+    env.command[:] = env.command.new_tensor([command])
+    legacy = _call("feet_swing_height", env, height_mode="terrain")
+    progress = _call("feet_swing_height", env, height_mode="terrain", movement_threshold=0.1,
+                     movement_gate_inclusive=True)
+    torch.testing.assert_close(legacy, torch.tensor([float(legacy_active)], dtype=torch.float64), rtol=0, atol=0)
+    torch.testing.assert_close(progress, torch.tensor([float(progress_active)], dtype=torch.float64), rtol=0, atol=0)
+
+
+def test_swing_threshold_can_still_be_strict_when_customized():
+    env = _env(0.03)
+    env.command[0, 0] = 0.1
+    torch.testing.assert_close(
+        _call("feet_swing_height", env, height_mode="terrain", movement_threshold=0.1),
+        torch.zeros(1, dtype=torch.float64),
+    )
+
+
+@pytest.mark.parametrize("value", [0.0, -0.1, float("nan"), float("inf")])
+def test_swing_movement_threshold_must_be_finite_and_positive(value):
+    with pytest.raises(ValueError, match="movement_threshold"):
+        _call("feet_swing_height", _env(), movement_threshold=value)
+
+
+@pytest.mark.parametrize("value", [1, None, "yes"])
+def test_swing_gate_inclusivity_requires_an_explicit_boolean(value):
+    with pytest.raises(ValueError, match="movement_gate_inclusive"):
+        _call("feet_swing_height", _env(), movement_gate_inclusive=value)
+
+
+def test_narrower_terrain_swing_std_distinguishes_ground_level_from_three_centimeters():
+    at_ground = _call("feet_swing_height", _env(0.0), height_mode="terrain", height_std=0.03)
+    old_at_ground = _call("feet_swing_height", _env(0.0), height_mode="terrain")
+    clear = _call("feet_swing_height", _env(0.03), height_mode="terrain", height_std=0.03)
+    torch.testing.assert_close(at_ground, torch.tensor([math.exp(-1.0)], dtype=torch.float64))
+    torch.testing.assert_close(old_at_ground, torch.tensor([math.exp(-0.09)], dtype=torch.float64))
+    torch.testing.assert_close(clear, torch.ones(1, dtype=torch.float64))
+
+
 def test_terrain_penalty_has_zero_gradient_at_the_stair_clearance_target():
     env = _env(0.035, ground=(0.08, 0.08))
     env.asset.data.body_pos_w.requires_grad_()

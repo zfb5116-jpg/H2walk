@@ -341,6 +341,8 @@ def _configure_walking_height_rewards(cfg):
     """Choose shared foot-height shaping without changing observations or weights."""
     if cfg.walking_height_mode not in {"terrain", "body_legacy"}:
         raise ValueError("walking_height_mode must be 'terrain' or 'body_legacy'")
+    if cfg.walking_foot_signal_mode not in {"aligned", "legacy"}:
+        raise ValueError("walking_foot_signal_mode must be 'aligned' or 'legacy'")
     for term in (cfg.rewards.feet_clearance, cfg.rewards.feet_swing_height):
         term.params.update({
             "height_mode": cfg.walking_height_mode,
@@ -348,14 +350,57 @@ def _configure_walking_height_rewards(cfg):
             "terrain_sensor_name": "height_scanner",
             "ground_query_radius": 0.10,
         })
+    aligned_terrain = cfg.walking_height_mode == "terrain" and cfg.walking_foot_signal_mode == "aligned"
+    cfg.rewards.feet_swing_height.params.update({
+        "height_std": 0.03 if aligned_terrain else 0.10,
+        "movement_threshold": 0.1 if aligned_terrain else 0.15,
+        "movement_gate_inclusive": aligned_terrain,
+    })
+    cfg.rewards.feet_stair_clearance.params.update({
+        "command_gate_mode": "progress" if cfg.walking_foot_signal_mode == "aligned" else "legacy",
+        "min_forward_command": 0.1,
+        "max_lateral_command": 0.15,
+        "max_yaw_command": 0.3,
+    })
 
 
 def _configure_walking_tracking_rewards(cfg):
     """Select velocity-tracking bandwidth without changing weights or commands."""
-    if cfg.walking_tracking_mode not in ("absolute", "command_relative"):
-        raise ValueError("walking_tracking_mode must be 'absolute' or 'command_relative'")
+    if cfg.walking_tracking_mode not in ("absolute", "command_relative", "command_relative_mixed"):
+        raise ValueError("walking_tracking_mode must be 'absolute', 'command_relative' or 'command_relative_mixed'")
+    if not 0.0 <= cfg.walking_tracking_relative_weight <= 1.0:
+        raise ValueError("walking_tracking_relative_weight must be finite and in [0, 1]")
     for term in (cfg.rewards.track_lin_vel_xy, cfg.rewards.track_forward_progress):
-        term.params.update({"tracking_mode": cfg.walking_tracking_mode, "min_command_speed": 0.1})
+        term.params.update({
+            "tracking_mode": cfg.walking_tracking_mode,
+            "min_command_speed": 0.1,
+            "relative_weight": cfg.walking_tracking_relative_weight,
+        })
+
+
+def _configure_walking_command_curriculum(cfg):
+    """Require per-column progress for training while retaining a global baseline."""
+    if cfg.walking_command_curriculum_mode not in {"global", "terrain_columns"}:
+        raise ValueError("walking_command_curriculum_mode must be 'global' or 'terrain_columns'")
+    cfg.curriculum.lin_vel_cmd_levels.params.update({
+        "grouping": cfg.walking_command_curriculum_mode,
+        "min_group_episodes": 32,
+    })
+
+
+def _configure_stairs_height_profile(cfg):
+    """Apply a height profile only to an already copied per-instance generator."""
+    if cfg.stairs_height_profile not in {"progressive_20cm", "legacy_14cm"}:
+        raise ValueError("stairs_height_profile must be 'progressive_20cm' or 'legacy_14cm'")
+    progressive = cfg.stairs_height_profile == "progressive_20cm"
+    if progressive:
+        for terrain_name in ("stairs_high", "stairs_down_high"):
+            cfg.scene.terrain.terrain_generator.sub_terrains[terrain_name].step_height_range = (0.08, 0.20)
+    cfg.rewards.feet_stair_clearance.params.update({
+        "max_rise": 0.24 if progressive else 0.16,
+        # Keep shallow-step signal magnitude while widening the admissible rise.
+        "rise_weight_scale": 0.16 if progressive else None,
+    })
 
 
 @configclass
@@ -368,7 +413,11 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
     stairs_clearance_height_reference: str = "sole"
     stairs_mixed_terrain: bool = True
     walking_height_mode: str = "terrain"
-    walking_tracking_mode: str = "command_relative"
+    walking_tracking_mode: str = "command_relative_mixed"
+    walking_tracking_relative_weight: float = 0.75
+    walking_foot_signal_mode: str = "aligned"
+    stairs_height_profile: str = "progressive_20cm"
+    walking_command_curriculum_mode: str = "terrain_columns"
 
     def __post_init__(self):
         super().__post_init__()
@@ -384,8 +433,10 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
              "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
              "height_reference": self.stairs_clearance_height_reference}
         )
+        _configure_stairs_height_profile(self)
         _configure_walking_height_rewards(self)
         _configure_walking_tracking_rewards(self)
+        _configure_walking_command_curriculum(self)
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)
 
@@ -400,7 +451,11 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     stairs_clearance_height_reference: str = "sole"
     stairs_mixed_terrain: bool = True
     walking_height_mode: str = "terrain"
-    walking_tracking_mode: str = "command_relative"
+    walking_tracking_mode: str = "command_relative_mixed"
+    walking_tracking_relative_weight: float = 0.75
+    walking_foot_signal_mode: str = "aligned"
+    stairs_height_profile: str = "progressive_20cm"
+    walking_command_curriculum_mode: str = "global"
 
     def __post_init__(self):
         super().__post_init__()
@@ -420,8 +475,10 @@ class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
              "height_std": 0.08, "target_mode": self.stairs_clearance_target_mode,
              "height_reference": self.stairs_clearance_height_reference}
         )
+        _configure_stairs_height_profile(self)
         _configure_walking_height_rewards(self)
         _configure_walking_tracking_rewards(self)
+        _configure_walking_command_curriculum(self)
         if self.use_lidar_reconstruction:
             _enable_stairs_lidar_reconstruction(self)
 

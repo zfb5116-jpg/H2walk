@@ -96,13 +96,102 @@ def _env(near=0.08, far=0.14, foot_z=0.115, right_near=None, shift=0.0, yaw=0.0)
 
 
 def _score(env, mode="nearest", **params):
-    return reward(
-        env, command_name="base_velocity",
-        foot_sensor_cfg=SimpleNamespace(name="contact_forces", body_ids=[0, 1]),
-        terrain_sensor_cfg=SimpleNamespace(name="height_scanner"),
-        clearance=0.035, min_rise=0.02, max_rise=0.16,
-        height_std=0.08, target_mode=mode, **params,
+    settings = dict(command_name="base_velocity",
+                    foot_sensor_cfg=SimpleNamespace(name="contact_forces", body_ids=[0, 1]),
+                    terrain_sensor_cfg=SimpleNamespace(name="height_scanner"),
+                    clearance=0.035, min_rise=0.02, max_rise=0.16,
+                    height_std=0.08, target_mode=mode)
+    settings.update(params)
+    return reward(env, **settings)
+
+
+def test_progress_gate_accepts_heading_limit_without_removing_the_turn_limit():
+    env = _env()
+    env.command[:] = env.command.new_tensor([[0.2, 0.0, 0.3]])
+    torch.testing.assert_close(_score(env), torch.zeros(1))
+    torch.testing.assert_close(_score(env, command_gate_mode="progress"), torch.tensor([0.5]))
+
+
+@pytest.mark.parametrize("command,enabled", [
+    ([0.1, 0.0, 0.0], True), ([0.125, 0.0, 0.0], True), ([0.15, 0.0, 0.0], True),
+    ([0.2, 0.0, 0.2999], True), ([0.2, 0.0, 0.3], True), ([0.2, 0.0, -0.3], True),
+    ([0.2, 0.0, 0.30001], False), ([0.2, 0.0, -0.30001], False),
+    ([0.2, 0.15, 0.0], True), ([0.2, -0.15, 0.0], True),
+    ([0.2, 0.15001, 0.0], False), ([0.2, -0.15001, 0.0], False),
+    ([0.09999, 0.0, 0.0], False), ([0.0, 0.0, 0.0], False), ([-0.2, 0.0, 0.0], False),
+])
+def test_progress_stair_gate_includes_its_boundary_and_rejects_large_turns_and_side_steps(command, enabled):
+    env = _env()
+    env.command[:] = env.command.new_tensor([command])
+    expected = torch.tensor([0.5 if enabled else 0.0])
+    torch.testing.assert_close(_score(env, command_gate_mode="progress"), expected)
+
+
+@pytest.mark.parametrize("mode", ["nearest", "highest"])
+@pytest.mark.parametrize("command", [[0.15, 0.0, 0.0], [0.2, 0.0, 0.2999], [0.2, 0.0, 0.3],
+                                      [0.2, 0.15, 0.0], [0.1, 0.0, 0.0], [-0.2, 0.0, 0.0]])
+def test_explicit_legacy_stair_gate_retains_the_previous_formula(mode, command):
+    env = _env()
+    ungated = _score(env, mode)
+    env.command[:] = env.command.new_tensor([command])
+    cmd = env.command[0]
+    enabled = bool((cmd[0] > 0.15).item())
+    if mode == "nearest":
+        enabled = enabled and bool((cmd[1].abs() < 0.15).item()) and bool((cmd[2].abs() < 0.3).item())
+    expected = ungated if enabled else torch.zeros_like(ungated)
+    torch.testing.assert_close(_score(env, mode), expected, rtol=0, atol=0)
+    torch.testing.assert_close(
+        _score(env, mode, command_gate_mode="legacy", min_forward_command=0.05,
+               max_lateral_command=0.4, max_yaw_command=0.8), expected, rtol=0, atol=0,
     )
+
+
+def test_progress_stair_gate_uses_explicit_custom_thresholds():
+    env = _env()
+    settings = dict(command_gate_mode="progress", min_forward_command=0.2,
+                    max_lateral_command=0.1, max_yaw_command=0.2)
+    env.command[:] = env.command.new_tensor([[0.2, -0.1, -0.2]])
+    torch.testing.assert_close(_score(env, **settings), torch.tensor([0.5]))
+    env.command[0, 2] = -0.20001
+    torch.testing.assert_close(_score(env, **settings), torch.zeros(1))
+
+
+@pytest.mark.parametrize("parameter", ["min_forward_command", "max_lateral_command", "max_yaw_command", "rise_weight_scale"])
+@pytest.mark.parametrize("value", [0.0, -0.1, float("nan"), float("inf")])
+def test_stair_gate_and_rise_scale_require_finite_positive_parameters(parameter, value):
+    with pytest.raises(ValueError, match=parameter):
+        _score(_env(), command_gate_mode="progress", **{parameter: value})
+
+
+def test_unknown_stair_command_gate_is_explicit():
+    with pytest.raises(ValueError, match="command_gate_mode"):
+        _score(_env(), command_gate_mode="unrestricted")
+
+
+@pytest.mark.parametrize("rise", [0.18, 0.20])
+def test_expanded_rise_ceiling_can_score_eighteen_and_twenty_centimeter_steps(rise):
+    env = _env(near=rise, far=rise, foot_z=rise + 0.035)
+    torch.testing.assert_close(_score(env), torch.zeros(1))
+    torch.testing.assert_close(_score(env, max_rise=0.24, rise_weight_scale=0.16), torch.ones(1))
+
+
+def test_separate_rise_scale_retains_the_low_step_signal_when_eligibility_expands():
+    env = _env(near=0.02, far=0.02, foot_z=0.055)
+    old = _score(env)
+    wide_without_scale = _score(env, max_rise=0.24)
+    wide_with_scale = _score(env, max_rise=0.24, rise_weight_scale=0.16)
+    torch.testing.assert_close(old, torch.tensor([0.125]))
+    torch.testing.assert_close(wide_without_scale, torch.tensor([0.02 / 0.24]))
+    torch.testing.assert_close(wide_with_scale, old, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("max_rise", [0.16, 0.24])
+def test_highest_mode_keeps_its_original_amplitude_formula(max_rise):
+    env = _env(foot_z=0.175)
+    baseline = _score(env, "highest", max_rise=max_rise)
+    torch.testing.assert_close(_score(env, "highest", max_rise=max_rise, rise_weight_scale=0.08), baseline,
+                               rtol=0, atol=0)
+    torch.testing.assert_close(baseline, torch.tensor([(0.14 - 0.02) / (max_rise - 0.02)]))
 
 
 def test_nearest_target_ignores_distant_higher_steps():
