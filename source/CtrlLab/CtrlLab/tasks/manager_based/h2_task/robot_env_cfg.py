@@ -288,7 +288,7 @@ class RobotRoughPlayEnvCfg(RobotRoughEnvCfg):
         self._enable_sm60_cameras()
 
 
-def _enable_stairs_lidar_reconstruction(cfg):
+def _enable_stairs_lidar_reconstruction(cfg, *, corrupt_lateral_sides: bool = False):
     """Enable the frozen GO2-trained map reconstructor for H2 stair policies."""
     lidar_pattern = YuHbLidarPatternCfg(
         channels=16,
@@ -319,6 +319,9 @@ def _enable_stairs_lidar_reconstruction(cfg):
         params={
             "sensor_cfg": SceneEntityCfg("lidar"),
             "checkpoint": str(H2_LIDAR_RECON_CHECKPOINT),
+            "side_noise_probability": 0.5 if corrupt_lateral_sides else 0.0,
+            "side_noise_width": (1, 4),
+            "side_noise_std": 0.25,
         },
     )
 
@@ -327,6 +330,8 @@ def _enable_stairs_lidar_reconstruction(cfg):
 class RobotStairsEnvCfg(RobotRoughEnvCfg):
     """Curriculum training on ascending and descending stair terrains."""
 
+    lock_upper_body_during_training = True
+
     def __post_init__(self):
         super().__post_init__()
         self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
@@ -334,17 +339,36 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
         # that complete an episode and travel across their tile.
         self.scene.terrain.max_init_terrain_level = 0
         self.scene.terrain.terrain_generator.curriculum = True
+        # Train only the lower body; the upper body stays at the default ready pose.
+        self.rewards.joint_vel.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.joint_acc.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.joint_torques.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.joint_power.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.joint_power_var.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.dof_pos_limits.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
+        self.rewards.dof_vel_limits.params = {
+            "asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES), "soft_ratio": 0.75
+        }
+        self.rewards.dof_tor_limits.params = {
+            "asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES),
+            "soft_ratio": 0.75,
+            "effort_limit": 360.0,
+        }
+        self.rewards.joint_waist_deviation.weight = 0.0
+        self.rewards.joint_arm_deviation.weight = 0.0
         self.rewards.feet_stair_clearance.weight = 2.5
         self.rewards.feet_stair_clearance.params.update(
             # Keep the clearance target valid for the 20 cm curriculum band.
             {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.24, "height_std": 0.08}
         )
-        _enable_stairs_lidar_reconstruction(self)
+        _enable_stairs_lidar_reconstruction(self, corrupt_lateral_sides=True)
 
 
 @configclass
 class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
     """Play environment for the stair curriculum."""
+
+    lock_upper_body_during_training = False
 
     def __post_init__(self):
         super().__post_init__()

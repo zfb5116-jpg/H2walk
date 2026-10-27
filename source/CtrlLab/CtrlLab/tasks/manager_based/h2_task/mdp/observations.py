@@ -14,8 +14,17 @@ def reconstructed_lidar_height_scan(
         env: ManagerBasedEnv,
         sensor_cfg: SceneEntityCfg,
         checkpoint: str = "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt",
+        side_noise_probability: float = 0.0,
+        side_noise_width: tuple[int, int] = (1, 4),
+        side_noise_std: float = 0.25,
 ) -> torch.Tensor:
-    """Run the frozen stair LiDAR reconstructor and return its 17x33 body map."""
+    """Run the frozen reconstructor and optionally corrupt lateral map edges."""
+    if not 0.0 <= side_noise_probability <= 1.0:
+        raise ValueError("side_noise_probability must be in [0, 1].")
+    if len(side_noise_width) != 2 or side_noise_width[0] < 1 or side_noise_width[1] < side_noise_width[0]:
+        raise ValueError("side_noise_width must be an inclusive positive (min, max) pair.")
+    if side_noise_std < 0.0:
+        raise ValueError("side_noise_std must be non-negative.")
     raw = env.unwrapped
     sensor = raw.scene.sensors[sensor_cfg.name]
     cache = getattr(raw, "_h2_lidar_recon_cache", None)
@@ -140,6 +149,18 @@ def reconstructed_lidar_height_scan(
         )
     setattr(raw, "_h2_lidar_recon_hidden", hidden.detach())
     height_map = h_recon.view(n_env, -1)
+    if side_noise_probability > 0.0:
+        grid = height_map.view(n_env, model.hb_ny, model.hb_nx).clone()
+        width_min, width_max = side_noise_width
+        lateral_rows = torch.arange(model.hb_ny, device=height_map.device).unsqueeze(0)
+        for side in (0, 1):
+            selected = torch.rand(n_env, device=height_map.device) < side_noise_probability
+            widths = torch.randint(width_min, width_max + 1, (n_env,), device=height_map.device)
+            side_mask = lateral_rows < widths.unsqueeze(1) if side == 0 else lateral_rows >= (model.hb_ny - widths).unsqueeze(1)
+            side_mask &= selected.unsqueeze(1)
+            noise = torch.randn_like(grid) * side_noise_std
+            grid = torch.where(side_mask.unsqueeze(-1), noise, grid)
+        height_map = grid.reshape(n_env, -1)
     setattr(raw, "_h2_lidar_recon_cache", (step, height_map))
     return height_map
 
