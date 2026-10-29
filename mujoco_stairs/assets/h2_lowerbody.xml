@@ -1,0 +1,85 @@
+<mujoco model="ctrl_lab_h2_lowerbody_stairs">
+  <compiler angle="radian" autolimits="true" inertiafromgeom="true"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <default>
+    <joint damping="1.5" armature="0.02" limited="true"/>
+    <geom contype="1" conaffinity="1" friction="0.9 0.1 0.1" density="500"/>
+    <motor ctrllimited="true" ctrlrange="-3.14 3.14" gear="1"/>
+  </default>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="256" height="256" rgb1="0.15 0.15 0.15" rgb2="0.22 0.22 0.22"/>
+    <material name="ground" texture="grid" texrepeat="8 8"/>
+  </asset>
+  <worldbody>
+    <light name="top" pos="0 0 5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="30 10 0.1" material="ground"/>
+    <!-- Six 35 cm treads, each exactly 20 cm high. -->
+    <geom name="stair_01" type="box" pos="1.075 0 0.10" size="0.175 2 0.10"/>
+    <geom name="stair_02" type="box" pos="1.425 0 0.20" size="0.175 2 0.20"/>
+    <geom name="stair_03" type="box" pos="1.775 0 0.30" size="0.175 2 0.30"/>
+    <geom name="stair_04" type="box" pos="2.125 0 0.40" size="0.175 2 0.40"/>
+    <geom name="stair_05" type="box" pos="2.475 0 0.50" size="0.175 2 0.50"/>
+    <geom name="stair_06" type="box" pos="2.825 0 0.60" size="0.175 2 0.60"/>
+    <body name="pelvis" pos="0 0 1.03">
+      <freejoint name="root"/>
+      <geom name="pelvis_geom" type="box" size="0.16 0.12 0.18" mass="12"/>
+      <body name="torso" pos="0 0 0.32">
+        <geom type="capsule" fromto="0 0 0 0 0 0.48" size="0.16" mass="18"/>
+        <!-- Upper body joints are present so the lock is exercised in the
+             bundled model as well as in the full official H2 MJCF. -->
+        <body name="upper_locked" pos="0 0 0.48">
+          <joint name="waist_yaw_joint" axis="0 0 1" range="-1.0 1.0"/>
+          <joint name="waist_roll_joint" axis="1 0 0" range="-0.5 0.5"/>
+          <joint name="waist_pitch_joint" axis="0 1 0" range="-0.8 0.8"/>
+          <joint name="left_shoulder_pitch_joint" axis="0 1 0" range="-2.0 2.0"/>
+          <joint name="left_shoulder_roll_joint" axis="1 0 0" range="-1.5 1.5"/>
+          <joint name="left_shoulder_yaw_joint" axis="0 0 1" range="-1.5 1.5"/>
+          <joint name="left_elbow_joint" axis="0 1 0" range="0 2.5"/>
+          <joint name="left_wrist_roll_joint" axis="1 0 0" range="-1.5 1.5"/>
+          <joint name="left_wrist_pitch_joint" axis="0 1 0" range="-1.0 1.0"/>
+          <joint name="left_wrist_yaw_joint" axis="0 0 1" range="-1.5 1.5"/>
+          <joint name="right_shoulder_pitch_joint" axis="0 1 0" range="-2.0 2.0"/>
+          <joint name="right_shoulder_roll_joint" axis="1 0 0" range="-1.5 1.5"/>
+          <joint name="right_shoulder_yaw_joint" axis="0 0 1" range="-1.5 1.5"/>
+          <joint name="right_elbow_joint" axis="0 1 0" range="0 2.5"/>
+          <joint name="right_wrist_roll_joint" axis="1 0 0" range="-1.5 1.5"/>
+          <joint name="right_wrist_pitch_joint" axis="0 1 0" range="-1.0 1.0"/>
+          <joint name="right_wrist_yaw_joint" axis="0 0 1" range="-1.5 1.5"/>
+          <geom type="box" size="0.18 0.16 0.25" mass="8"/>
+        </body>
+      </body>
+      <body name="left_hip" pos="0 0.105 -0.12">
+        <joint name="left_hip_pitch_joint" axis="0 1 0" range="-2.2 1.0"/>
+        <joint name="left_hip_roll_joint" axis="1 0 0" range="-0.6 0.6"/>
+        <joint name="left_hip_yaw_joint" axis="0 0 1" range="-0.8 0.8"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.09" mass="5"/>
+        <body name="left_knee" pos="0 0 -0.42">
+          <joint name="left_knee_joint" axis="0 1 0" range="0 2.6"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.40" size="0.075" mass="4"/>
+          <body name="left_ankle_pitch_link" pos="0 0 -0.40">
+            <joint name="left_ankle_roll_joint" axis="1 0 0" range="-0.5 0.5"/>
+            <joint name="left_ankle_pitch_joint" axis="0 1 0" range="-0.8 0.8"/>
+            <geom name="left_ankle_geom" type="box" pos="0.05 0 -0.045" size="0.13 0.07 0.045" mass="1.5"/>
+            <site name="left_foot" pos="0.08 0 -0.07" size="0.025"/>
+          </body>
+        </body>
+      </body>
+      <body name="right_hip" pos="0 -0.105 -0.12">
+        <joint name="right_hip_pitch_joint" axis="0 1 0" range="-2.2 1.0"/>
+        <joint name="right_hip_roll_joint" axis="1 0 0" range="-0.6 0.6"/>
+        <joint name="right_hip_yaw_joint" axis="0 0 1" range="-0.8 0.8"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.42" size="0.09" mass="5"/>
+        <body name="right_knee" pos="0 0 -0.42">
+          <joint name="right_knee_joint" axis="0 1 0" range="0 2.6"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.40" size="0.075" mass="4"/>
+          <body name="right_ankle_pitch_link" pos="0 0 -0.40">
+            <joint name="right_ankle_roll_joint" axis="1 0 0" range="-0.5 0.5"/>
+            <joint name="right_ankle_pitch_joint" axis="0 1 0" range="-0.8 0.8"/>
+            <geom name="right_ankle_geom" type="box" pos="0.05 0 -0.045" size="0.13 0.07 0.045" mass="1.5"/>
+            <site name="right_foot" pos="0.08 0 -0.07" size="0.025"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
