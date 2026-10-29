@@ -55,6 +55,9 @@ def tracking_lin_vel_x(
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
+        command_relative: bool = False,
+        min_command_speed: float = 0.15,
+        relative_weight: float = 0.5,
 ) -> torch.Tensor:
     """Track the commanded forward velocity in the robot base frame.
 
@@ -66,11 +69,36 @@ def tracking_lin_vel_x(
         raise ValueError("std must be finite and positive.")
     if not 0.0 <= command_threshold < float("inf"):
         raise ValueError("command_threshold must be finite and non-negative.")
+    if not 0.0 < min_command_speed < float("inf"):
+        raise ValueError("min_command_speed must be finite and positive.")
+    if not 0.0 <= relative_weight <= 1.0:
+        raise ValueError("relative_weight must be finite and in [0, 1].")
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_command(command_name)
     moving = torch.linalg.vector_norm(command[:, :2], dim=1) > command_threshold
     error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
-    return torch.exp(-torch.square(error / std)) * moving
+    absolute_score = torch.exp(-torch.square(error / std))
+    if not command_relative or relative_weight == 0.0:
+        score = absolute_score
+    else:
+        bandwidth = std * command[:, 0].abs().clamp_min(min_command_speed)
+        relative_score = torch.exp(-torch.square(error / bandwidth))
+        score = (1.0 - relative_weight) * absolute_score + relative_weight * relative_score
+    return score * moving
+
+
+def forward_progress(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        command_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Reward forward motion toward positive forward commands, capped at target speed."""
+    asset: Articulation = env.scene["robot"]
+    command_x = env.command_manager.get_command(command_name)[:, 0]
+    target = command_x.clamp_min(0.0)
+    forward_speed = asset.data.root_lin_vel_b[:, 0].clamp_min(0.0)
+    score = torch.minimum(forward_speed, target) / target.clamp_min(command_threshold)
+    return score * (command_x > command_threshold)
 
 
 def heading_tracking(

@@ -64,3 +64,10 @@ class H2RoughPPORunnerCfg(H2FlatPPORunnerCfg):
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
+
+
+@configclass
+class H2StairsPPORunnerCfg(H2RoughPPORunnerCfg):
+    """Isolate 20 cm stair runs from rough-terrain checkpoints and logs."""
+
+    experiment_name = "h2_stairs_20cm_manager_based"

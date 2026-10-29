@@ -30,7 +30,18 @@ class RewardsCfg:
     tracking_lin_vel_x = RewTerm(
         func=h2_mdp.tracking_lin_vel_x,
         weight=8.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "command_threshold": 0.05},
+        params={
+            "command_name": "base_velocity",
+            "std": math.sqrt(0.25),
+            "command_threshold": 0.05,
+            "command_relative": False,
+            "min_command_speed": 0.15,
+        },
+    )
+    forward_progress = RewTerm(
+        func=h2_mdp.forward_progress,
+        weight=0.0,
+        params={"command_name": "base_velocity", "command_threshold": 0.05},
     )
     lin_vel_y = RewTerm(
         func=h2_mdp.lin_vel_y_l2,
