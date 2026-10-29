@@ -8,10 +8,15 @@ from isaaclab.utils.math import quat_apply_inverse
 from .command_progress import CommandProgressTracker
 from .manager import CtrlLabActionManager
 from .networks.lidar_observation import invalidate_lidar_observation
+from .walking_runtime import WalkingRuntime
+from .walking_profiles import validate_walking_profile
 
 
 class RobotEnv(ManagerBasedRLEnv):
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
+        if getattr(cfg, "staged_evidence", False):
+            # Reject stale post-init overrides before creating any scene.
+            validate_walking_profile(cfg)
         super().__init__(cfg, render_mode, **kwargs)
         self.asset: Articulation = self.scene["robot"]
         self.masses = torch.sum(self.asset.root_physx_view.get_masses(), dim=-1).to(self.device)
@@ -32,6 +37,9 @@ class RobotEnv(ManagerBasedRLEnv):
             min_command_speed=getattr(cfg, "command_progress_min_speed", 0.1),
             max_step_speed=getattr(cfg, "command_progress_max_step_speed", 5.0),
         )
+        self.walking_runtime = None
+        if getattr(cfg, "contact_source_diagnostics", False) or getattr(cfg, "staged_evidence", False):
+            self.walking_runtime = WalkingRuntime(self)
 
     def _reset_idx(self, env_ids: Sequence[int]):
         tracker = getattr(self, "command_progress_tracker", None)
@@ -39,14 +47,21 @@ class RobotEnv(ManagerBasedRLEnv):
             # Curriculum runs inside the parent reset before the scene teleport.
             # Include the terminal transition while its position is still valid.
             tracker.finish_step(env_ids, self.asset.data.root_pos_w[:, :2], for_reset=True)
+        walking = getattr(self, "walking_runtime", None)
+        walking_log, walking_sample = walking.before_reset(env_ids) if walking is not None else ({}, None)
         super()._reset_idx(env_ids)
         # Parent reset replaces extras["log"] after curriculum computation.
         # Restore its diagnostics alongside, rather than over, manager logs.
         progress_log = self.__dict__.pop("_command_progress_pending_log", None)
         if progress_log is not None:
             self.extras.setdefault("log", {}).update(progress_log)
+        self.extras.setdefault("log", {}).update(walking_log)
+        if walking_sample is not None:
+            self.extras["walking_diagnostics"] = walking_sample
         if tracker is not None:
             tracker.reset(env_ids, generation=getattr(self, "_command_progress_generation", 0))
+        if walking is not None:
+            walking.reset(env_ids)
         invalidate_lidar_observation(self, env_ids)
         self.update_feet_state()
         self.prev_feet_pos_b[env_ids] = self.feet_pos_b[env_ids]
@@ -73,7 +88,10 @@ class RobotEnv(ManagerBasedRLEnv):
             self.command_manager.get_command("base_velocity"),
             self.step_dt,
         )
+        walking = getattr(self, "walking_runtime", None)
         try:
+            if walking is not None:
+                walking.begin_step()
             self.prev_feet_pos_b[:] = self.feet_pos_b
             self.update_feet_state()
             result = super().step(action)
@@ -81,7 +99,11 @@ class RobotEnv(ManagerBasedRLEnv):
             # the remaining environments still have a pending transition.
             env_ids = tracker.pending.nonzero(as_tuple=False).flatten()
             tracker.finish_step(env_ids, self.asset.data.root_pos_w[:, :2])
+            if walking is not None:
+                walking.finish_step()
         except Exception:
             tracker.abort_step()
+            if walking is not None:
+                walking.abort_step()
             raise
         return result

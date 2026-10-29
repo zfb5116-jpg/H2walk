@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+from copy import deepcopy
+
 from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
@@ -64,3 +66,21 @@ class H2RoughPPORunnerCfg(H2FlatPPORunnerCfg):
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
+
+
+@configclass
+class H2WalkPPORunnerCfg(H2RoughPPORunnerCfg):
+    """New-run fixed-scale protocol shared by every explicit walking stage.
+
+    Start bootstrap from scratch. A normalized baseline checkpoint is not a
+    compatible resume even though actor/critic tensor widths are unchanged.
+    Subsequent stages retain these same observation scales and runner settings.
+    """
+
+    experiment_name = "h2_walk_staged_fixed_scale"
+    empirical_normalization = False
+
+    def __post_init__(self):
+        # Keep the original RND/normalization protocol available on old tasks.
+        self.algorithm = deepcopy(self.algorithm)
+        self.algorithm.rnd_cfg = None
