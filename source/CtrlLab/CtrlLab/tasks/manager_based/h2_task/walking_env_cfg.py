@@ -140,6 +140,10 @@ class RobotWalkBootstrapEnvCfg(RobotContactDiagnosticEnvCfg):
     walking_enable_domain_randomization: bool = False
     walking_enable_observation_noise: bool = False
     walking_enable_actuator_delay: bool = False
+    # Bound only the cross-duration squared component; preserve its legacy
+    # formula as an explicit fresh-config comparison rather than a hot toggle.
+    walking_cross_time_mode: str = "bounded"
+    walking_max_time_difference: float = .5
 
     def __post_init__(self):
         super().__post_init__()
@@ -157,6 +161,8 @@ class RobotWalkBootstrapEnvCfg(RobotContactDiagnosticEnvCfg):
             enable_domain_randomization=self.walking_enable_domain_randomization,
             enable_observation_noise=self.walking_enable_observation_noise,
             enable_actuator_delay=self.walking_enable_actuator_delay,
+            cross_time_mode=self.walking_cross_time_mode,
+            max_time_difference=self.walking_max_time_difference,
         )
 
 

@@ -83,6 +83,22 @@ def validate_walking_profile(cfg: Any) -> None:
         require(cfg.curriculum.terrain_levels is None and cfg.curriculum.lin_vel_cmd_levels is None,
                 "Legacy terrain or speed progression is enabled inside a fixed stage")
 
+        mode = cfg.walking_cross_time_mode
+        difference_limit = cfg.walking_max_time_difference
+        require(isinstance(mode, str) and mode in ("legacy", "bounded"), "Invalid resolved cross_time_mode")
+        require(not isinstance(difference_limit, bool) and isinstance(difference_limit, (int, float))
+                and math.isfinite(difference_limit) and difference_limit > 0,
+                "Invalid resolved max_time_difference")
+        timing_params = cfg.rewards.feet_air_time_variance.params
+        require(isinstance(timing_params, dict), "Resolved timing reward params must be a dictionary")
+        resolved_mode = timing_params.get("cross_time_mode")
+        resolved_limit = timing_params.get("max_time_difference")
+        require(isinstance(resolved_mode, str) and resolved_mode == mode,
+                "Resolved timing reward disagrees with walking_cross_time_mode")
+        require(not isinstance(resolved_limit, bool) and isinstance(resolved_limit, (int, float))
+                and math.isfinite(resolved_limit) and resolved_limit > 0 and resolved_limit == difference_limit,
+                "Resolved timing reward disagrees with walking_max_time_difference")
+
         speed = cfg.walking_forward_speed
         duration = cfg.episode_length_s
         require(not isinstance(speed, bool) and isinstance(speed, (int, float))
@@ -142,6 +158,8 @@ def apply_walking_profile(
     enable_domain_randomization: bool = False,
     enable_observation_noise: bool = False,
     enable_actuator_delay: bool = False,
+    cross_time_mode: str = "bounded",
+    max_time_difference: float = .5,
 ) -> None:
     """Apply one explicit stage while preserving the scan/action architecture.
 
@@ -160,13 +178,26 @@ def apply_walking_profile(
     when true, and disable it when false. They do not restore an event already
     removed by a different profile or Play parent. Train and Play should both
     derive from the same staged Train configuration and apply this helper.
-    Checkpoints, normalizers, rewards, terminations and actions are untouched.
+    Checkpoints, normalizers, terminations and actions are untouched. The timing
+    reward explicitly selects a bounded air/contact difference by default;
+    ``cross_time_mode='legacy'`` retains its previous cross-time formula for
+    comparison. Existing reward weights and the other reward terms are kept.
     """
     if not isinstance(stage, str) or stage not in STAGE_ORDER:
         raise ValueError(f"Unknown walking stage: {stage!r}; expected one of {STAGE_ORDER}")
     flags = (enable_push, enable_domain_randomization, enable_observation_noise, enable_actuator_delay)
     if any(type(value) is not bool for value in flags):
         raise ValueError("Walking profile ablation flags must be booleans")
+    if not isinstance(cross_time_mode, str) or cross_time_mode not in ("legacy", "bounded"):
+        raise ValueError("cross_time_mode must be 'legacy' or 'bounded'")
+    if (isinstance(max_time_difference, bool) or not isinstance(max_time_difference, (int, float))
+            or not math.isfinite(max_time_difference) or max_time_difference <= 0):
+        raise ValueError("max_time_difference must be finite and positive")
+    timing = getattr(getattr(cfg, "rewards", None), "feet_air_time_variance", None)
+    if timing is None or not isinstance(getattr(timing, "params", None), dict):
+        raise ValueError("Walking profile requires the existing feet_air_time_variance reward")
+    timing_params = deepcopy(timing.params)
+    timing_params.update(cross_time_mode=cross_time_mode, max_time_difference=float(max_time_difference))
     if isinstance(forward_speed, bool) or not isinstance(forward_speed, (int, float)):
         raise ValueError("forward_speed must be a finite speed in m/s")
     if not math.isfinite(forward_speed) or forward_speed < .1:
@@ -239,3 +270,6 @@ def apply_walking_profile(
     cfg.walking_stage = stage
     cfg.walking_stage_height_range = STAGE_HEIGHT_RANGES[stage]
     cfg.walking_stage_column_families = stage_column_families(stage)
+    cfg.walking_cross_time_mode = cross_time_mode
+    cfg.walking_max_time_difference = float(max_time_difference)
+    timing.params = timing_params

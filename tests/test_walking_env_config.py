@@ -332,3 +332,31 @@ def test_disabled_filtered_diagnostics_does_not_impose_a_terrain_protocol():
     assert cfg.scene.pelvis_ground is cfg.scene.pelvis_robot is None
     assert cfg.scene.left_foot_ground is cfg.scene.right_foot_ground is None
 
+
+@pytest.mark.parametrize("stem", [
+    "RobotWalkBootstrap", "RobotWalkShallow", "RobotWalkStairs08",
+    "RobotWalkStairs12", "RobotWalkStairs16", "RobotWalkStairs20",
+])
+@pytest.mark.parametrize("play", [False, True])
+def test_new_walk_configs_select_bounded_timing_and_preserve_legacy_diagnostic(stem, play):
+    namespace = _load_configs()
+    cfg = _new_cfg(namespace, stem + ("PlayEnvCfg" if play else "EnvCfg"))
+    assert cfg.walking_cross_time_mode == "bounded"
+    assert cfg.walking_max_time_difference == .5
+    assert cfg.rewards.feet_air_time_variance.params["cross_time_mode"] == "bounded"
+    assert cfg.rewards.feet_air_time_variance.params["max_time_difference"] == .5
+    legacy = _new_cfg(namespace, "RobotContactDiagnosticEnvCfg")
+    assert "cross_time_mode" not in legacy.rewards.feet_air_time_variance.params
+    assert "max_time_difference" not in legacy.rewards.feet_air_time_variance.params
+
+
+@pytest.mark.parametrize("play", [False, True])
+def test_legacy_cross_time_ablation_is_an_explicit_fresh_config_choice(play):
+    namespace = _load_configs()
+    cfg = namespace["RobotWalkBootstrap" + ("PlayEnvCfg" if play else "EnvCfg")]()
+    cfg.walking_cross_time_mode = "legacy"
+    cfg.walking_max_time_difference = .3
+    cfg.__post_init__()
+    assert cfg.rewards.feet_air_time_variance.params["cross_time_mode"] == "legacy"
+    assert cfg.rewards.feet_air_time_variance.params["max_time_difference"] == .3
+

@@ -287,13 +287,11 @@ feet
 def feet_air_time(
         env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:
-    """Reward long steps taken by the feet using L2-kernel.
+    """Return a nonpositive air-duration deviation loss at first contact.
 
-    This function rewards the agent for taking steps that are longer than a threshold. This helps ensure
-    that the robot lifts its feet off the ground and takes steps. The reward is computed as the sum of
-    the time for which the feet are in the air.
-
-    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
+    No event gives zero, and a touchdown at ``threshold`` also gives zero.
+    This is a fixed-duration preference, not a positive incentive to step.
+    Small commands disable the loss.
     """
     # extract the used quantities (to enable type-hinting)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -309,6 +307,10 @@ def feet_air_time(
 def feet_contact_time(
         env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:
+    """Return a nonpositive contact-duration deviation loss at first liftoff.
+
+    No event gives zero. This does not independently reward alternating steps.
+    """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     first_air = contact_sensor.compute_first_air(env.step_dt)[:, sensor_cfg.body_ids]
     last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
@@ -318,8 +320,29 @@ def feet_contact_time(
     return reward
 
 
-def air_time_variance_penalty(env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Penalize variance in the amount of time each foot spends in the air/on the ground relative to each other"""
+def air_time_variance_penalty(
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        sensor_cfg: SceneEntityCfg,
+        cross_time_mode: str = "legacy",
+        max_time_difference: float = 0.5,
+) -> torch.Tensor:
+    """Penalize inter-foot variance and air/contact duration differences.
+
+    ``legacy`` preserves the original unbounded squared difference. Opt-in
+    ``bounded`` clips the signed difference before squaring, so a late first
+    liftoff cannot amplify that component quadratically with stance duration.
+    Clipping each duration separately would erase differences between two
+    long timers; this mode deliberately retains small differences between them.
+    The two existing inter-foot variance terms and command gate are unchanged.
+    The bound limits only the cross-time component, not the whole reward or
+    the separate air/contact event losses. It is not a validated gait period.
+    """
+    if not isinstance(cross_time_mode, str) or cross_time_mode not in ("legacy", "bounded"):
+        raise ValueError("cross_time_mode must be 'legacy' or 'bounded'")
+    if (isinstance(max_time_difference, bool) or not isinstance(max_time_difference, (int, float))
+            or not 0.0 < max_time_difference < float("inf")):
+        raise ValueError("max_time_difference must be finite and positive")
     # extract the used quantities (to enable type-hinting)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     # compute the reward
@@ -327,7 +350,10 @@ def air_time_variance_penalty(env: ManagerBasedRLEnv, command_name: str, sensor_
     last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
     air_time_var = torch.var(torch.clip(last_air_time, max=0.5), dim=1, unbiased=False)
     contact_time_var = torch.var(torch.clip(last_contact_time, max=0.5), dim=1, unbiased=False)
-    air_contact_var = 0.25 * torch.mean(torch.square(last_air_time - last_contact_time), dim=1)
+    difference = last_air_time - last_contact_time
+    if cross_time_mode == "bounded":
+        difference = difference.clamp(min=-max_time_difference, max=max_time_difference)
+    air_contact_var = 0.25 * torch.mean(torch.square(difference), dim=1)
     reward = air_time_var + contact_time_var + air_contact_var
     # no reward for zero command
     reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) > 0.01

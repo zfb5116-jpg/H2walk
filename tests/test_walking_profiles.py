@@ -70,7 +70,10 @@ def _config():
         ),
         curriculum=SimpleNamespace(terrain_levels=object(), lin_vel_cmd_levels=object()),
         terminations=object(), actions=object(),
-        rewards=SimpleNamespace(feet_stair_clearance=SimpleNamespace(weight=2.5, params={})),
+        rewards=SimpleNamespace(
+            feet_stair_clearance=SimpleNamespace(weight=2.5, params={}),
+            feet_air_time_variance=SimpleNamespace(weight=-1., params={"command_name": "base_velocity"}),
+        ),
     )
 
 
@@ -333,4 +336,57 @@ def test_validator_accepts_the_resolved_production_config_class_bodies(profile_m
     cfg = namespace[stem + ("PlayEnvCfg" if play else "EnvCfg")]()
     cfg.__post_init__()
     profile_module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("stage", ["bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20"])
+@pytest.mark.parametrize("mode", ["legacy", "bounded"])
+def test_stage_timing_mode_is_explicit_and_keeps_existing_reward_parameters(profile_module, stage, mode):
+    cfg = _config()
+    original_params = cfg.rewards.feet_air_time_variance.params
+    original_params["sensor_cfg"] = "existing_sensor"
+    _apply(profile_module, cfg, stage, cross_time_mode=mode, max_time_difference=.3)
+    assert cfg.walking_cross_time_mode == mode
+    assert cfg.walking_max_time_difference == .3
+    assert cfg.rewards.feet_air_time_variance.params == {
+        "command_name": "base_velocity", "sensor_cfg": "existing_sensor",
+        "cross_time_mode": mode, "max_time_difference": .3,
+    }
+    assert cfg.rewards.feet_air_time_variance.weight == -1.
+    assert original_params == {"command_name": "base_velocity", "sensor_cfg": "existing_sensor"}
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"cross_time_mode": "clip"}, {"cross_time_mode": None}, {"cross_time_mode": []},
+    {"max_time_difference": 0.}, {"max_time_difference": -.5}, {"max_time_difference": True},
+    {"max_time_difference": float("nan")}, {"max_time_difference": float("inf")},
+    {"max_time_difference": "0.5"},
+])
+def test_invalid_timing_configuration_fails_before_profile_mutation(profile_module, kwargs):
+    cfg = _config()
+    with pytest.raises(ValueError, match="cross_time_mode|max_time_difference"):
+        _apply(profile_module, cfg, "shallow", **kwargs)
+    assert cfg.scene.terrain.terrain_generator is None
+    assert cfg.curriculum.terrain_levels is not None
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda cfg: setattr(cfg, "walking_cross_time_mode", "legacy"),
+    lambda cfg: setattr(cfg, "walking_max_time_difference", .3),
+    lambda cfg: cfg.rewards.feet_air_time_variance.params.update(cross_time_mode="legacy"),
+    lambda cfg: cfg.rewards.feet_air_time_variance.params.update(max_time_difference=.3),
+    lambda cfg: cfg.rewards.feet_air_time_variance.params.pop("cross_time_mode"),
+    lambda cfg: setattr(cfg.rewards, "feet_air_time_variance", None),
+])
+def test_post_init_timing_relabel_is_rejected(profile_module, mutate):
+    cfg = _resolved_profile(profile_module)
+    mutate(cfg)
+    with pytest.raises(ValueError, match="Invalid resolved walking profile"):
+        profile_module.validate_walking_profile(cfg)
+
+
+def test_resolved_timing_limit_cannot_use_boolean_equality_to_bypass_validation(profile_module):
+    cfg = _resolved_profile(profile_module, max_time_difference=1.)
+    cfg.rewards.feet_air_time_variance.params["max_time_difference"] = True
+    with pytest.raises(ValueError, match="walking_max_time_difference"):
+        profile_module.validate_walking_profile(cfg)
 
