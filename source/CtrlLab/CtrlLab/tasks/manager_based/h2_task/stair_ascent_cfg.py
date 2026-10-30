@@ -4,24 +4,30 @@ from copy import deepcopy
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 from .assets import H2_LEG_JOINT_NAMES
 from .direct_leg_action import DirectLegPositionAction
 from .robot_env_cfg import RobotStairsEnvCfg
+from .config.terminations_cfg import TerminationsCfg
+from .stair_ascent_safety import stair_below_floor, stair_out_of_tile
 from .stair_ascent_terrain import ascent_stair_generator
 from . import stair_ascent_rewards as rewards
 
 
 @configclass
 class StairAscentRewardsCfg:
+    world_forward = RewTerm(func=rewards.stair_signed_forward, weight=12.0)
+    heading_error = RewTerm(func=rewards.stair_heading_error, weight=-1.0)
+    platform_hold = RewTerm(func=rewards.stair_platform_hold, weight=1.5)
     potential = RewTerm(func=rewards.stair_event, weight=1.0, params={"name": "potential"})
     first_valid_foot = RewTerm(func=rewards.stair_event, weight=3.0, params={"name": "foot"})
     bilateral_level = RewTerm(func=rewards.stair_event, weight=8.0, params={"name": "pair"})
     high_foot_transfer = RewTerm(func=rewards.stair_event, weight=3.0, params={"name": "transfer"})
     stable_top = RewTerm(func=rewards.stair_event, weight=30.0, params={"name": "top"})
-    failure = RewTerm(func=rewards.stair_failure, weight=-15.0)
+    failure = RewTerm(func=rewards.stair_failure, weight=-50.0)
     stance_slip = RewTerm(func=rewards.stair_stance_slip, weight=-0.3)
     tilt_margin = RewTerm(func=rewards.stair_tilt_margin, weight=-0.5)
     drive_request = RewTerm(func=rewards.stair_drive_request, weight=-0.001)
@@ -34,6 +40,14 @@ class StairAscentRewardsCfg:
 class StairAscentCurriculumCfg:
     terrain_levels = CurrTerm(func=rewards.stair_height_curriculum)
     lin_vel_cmd_levels = None
+
+
+@configclass
+class StairAscentTerminationsCfg(TerminationsCfg):
+    # The original five terms remain intact. These are immediate failures,
+    # never successful timeouts or a standing-height/posture prescription.
+    stair_below_floor = DoneTerm(func=stair_below_floor)
+    stair_out_of_tile = DoneTerm(func=stair_out_of_tile)
 
 
 @configclass
@@ -54,6 +68,8 @@ class StairAscentEnvCfg(RobotStairsEnvCfg):
     stair_steps: int = 6
     stair_width: float = 2.4
     stair_approach_distance: float = 1.4
+    stair_below_floor_tolerance_m: float = 0.05
+    stair_domain_safety_inset_m: float = 0.10
 
     def __post_init__(self):
         # Reuse the measured native gains/limits/delay and existing 29-joint
@@ -68,6 +84,7 @@ class StairAscentEnvCfg(RobotStairsEnvCfg):
         self.scene.terrain.max_init_terrain_level = 0
         self.curriculum = StairAscentCurriculumCfg()
         self.rewards = StairAscentRewardsCfg()
+        self.terminations = StairAscentTerminationsCfg()
         action = self.actions.JointPositionAction
         action.class_type = DirectLegPositionAction
         action.joint_names = H2_LEG_JOINT_NAMES
@@ -89,6 +106,7 @@ class StairAscentEnvCfg(RobotStairsEnvCfg):
         self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
         # Both network terrain slots receive the same real LiDAR-derived map.
         # Simulator stair geometry is restricted to rewards/curriculum/evaluation.
+        self.observations.policy.enable_corruption = False
         self.observations.policy.height_scanner.params["side_noise_probability"] = 0.0
         self.observations.critic.height_scanner = deepcopy(self.observations.policy.height_scanner)
         for label, body in (("stair_ascent_left_ground", "left_ankle_pitch_link"),
@@ -110,4 +128,3 @@ class StairAscentPlayEnvCfg(StairAscentEnvCfg):
         self.curriculum.terrain_levels = None
         # Keep deterministic row construction; every row now has 15 cm risers.
         self.observations.policy.enable_corruption = False
-

@@ -14,6 +14,28 @@ def stair_failure(env):
     return env.termination_manager.terminated.float() / env.step_dt
 
 
+def stair_signed_forward(env):
+    env._update_stair_progress()
+    return env.stair_progress.current_signed_forward_m_s()
+
+
+def stair_heading_error(env):
+    """Face world+X; this adds no preferred roll, pitch or leg posture."""
+    q = env.scene["robot"].data.root_quat_w
+    yaw = torch.atan2(2*(q[:, 0]*q[:, 3]+q[:, 1]*q[:, 2]),
+                      1-2*(q[:, 2].square()+q[:, 3].square()))
+    return 1-torch.cos(yaw)
+
+
+def stair_platform_hold(env):
+    env._update_stair_progress()
+    # Continuous hold also matches the final net-rise goal. This applies only
+    # after reaching the platform, without prescribing an intermediate pose.
+    progress = env.stair_progress
+    rise_in_range = (progress.root_rise-progress.steps*progress.heights).abs() <= 0.10
+    return (progress.platform_stable & rise_in_range).float()
+
+
 def stair_stance_slip(env):
     env._update_stair_progress()
     return env.stair_progress.current_slip.square()
@@ -69,4 +91,3 @@ def stair_height_curriculum(env, env_ids):
             & (row > 0))
     terrain.update_env_origins(ids, up, down)
     return terrain.terrain_levels.float().mean()
-

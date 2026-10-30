@@ -118,7 +118,10 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=False)
     source_dir = log_dir / "training_source"
     source_dir.mkdir()
-    for name in ("train.py", "train.sh", "training_supervision.py"):
+    training_tool_names = ["train.py", "train.sh", "training_supervision.py"]
+    if args.task == "Unitree-H2-Stair-Ascent-Policy":
+        training_tool_names.append("stair_exploration.py")
+    for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)
     shutil.copy2(args.stop_policy, source_dir / "stop_policy.json")
     # Include the new task modules as well as tracked files in the reproducible snapshot.
@@ -174,11 +177,22 @@ def main():
             "action_scale": env_cfg.actions.JointPositionAction.scale,
             "init_noise_std": agent_cfg.policy.init_noise_std,
         },
+        "algorithm_settings": {
+            "name": agent_cfg.algorithm.class_name,
+            "gamma": agent_cfg.algorithm.gamma,
+            "entropy_coef": agent_cfg.algorithm.entropy_coef,
+            "learning_rate": agent_cfg.algorithm.learning_rate,
+            "desired_kl": agent_cfg.algorithm.desired_kl,
+        },
         "initialization_mode": "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch",
         "initial_policy": str(initial_policy) if initial_policy else None,
         "external_dependency_sha256": {
             str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in dependency_paths
+        },
+        "training_tool_sha256": {
+            name: hashlib.sha256((ROOT/"tools"/name).read_bytes()).hexdigest()
+            for name in training_tool_names
         },
         "source_snapshot": str(source_dir / "source"),
         "local_source_patch_sha256": hashlib.sha256(source_patch).hexdigest(),
@@ -224,6 +238,10 @@ def main():
                 "levels": raw.stair_progress.steps, "depth_m": raw.stair_progress.depth,
                 "width_m": raw.stair_progress.width, "approach_m": raw.stair_progress.approach,
                 "scripted_gait_installed": action_term.gait_reference is not None,
+                "domain_bounds_local": list(raw._stair_domain_bounds_local),
+                "below_floor_tolerance_m": raw.cfg.stair_below_floor_tolerance_m,
+                "termination_terms": list(raw.termination_manager.active_terms),
+                "episode_evidence_directory": str(raw.stair_episode_evidence_directory),
             }
         for name, value in {"policy": obs, **extras["observations"]}.items():
             if not torch.isfinite(value).all():
@@ -259,6 +277,19 @@ def main():
             runner.current_learning_iteration = completed_iterations
             runner.alg.learning_rate = runner.alg.optimizer.param_groups[0]["lr"]
             runner.tot_timesteps = completed_iterations * agent_cfg.num_steps_per_env * args.num_envs
+        budget_cfg = getattr(agent_cfg, "stair_exploration_budget", None)
+        if budget_cfg is not None:
+            from stair_exploration import StairExplorationBudget
+            ids = action_term._joint_ids
+            robot = env.unwrapped.scene["robot"]
+            runner.stair_exploration_budget = StairExplorationBudget(
+                runner.alg.policy, runner.alg.optimizer,
+                robot.data.soft_joint_pos_limits[:, ids],
+                initialize=checkpoint is None,
+                stiffness=robot.data.joint_stiffness[:, ids],
+                effort_limits=robot.data.joint_effort_limits[:, ids], **budget_cfg)
+            metadata["stair_exploration_budget"] = runner.stair_exploration_budget.snapshot()
+            metadata["variance_initialization_overrides_BC_std"] = initial_policy is not None
         metadata["initial_learning_state"] = {
             "checkpoint_loaded": checkpoint is not None,
             "behavior_policy_initialized": initial_policy is not None,

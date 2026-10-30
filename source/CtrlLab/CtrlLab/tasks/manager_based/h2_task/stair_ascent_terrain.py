@@ -1,11 +1,12 @@
 """A height curriculum made entirely of six-step straight ascending stairways."""
 
-from copy import copy
+import numpy as np
+import trimesh
 
 from isaaclab.terrains import TerrainGeneratorCfg
 from isaaclab.utils import configclass
 
-from .stair_terrain import StraightStairTerrainCfg, straight_stairs
+from .stair_terrain import StraightStairTerrainCfg
 
 
 def curriculum_riser(difficulty, minimum, maximum, levels):
@@ -17,10 +18,23 @@ def curriculum_riser(difficulty, minimum, maximum, levels):
 
 
 def ascent_stairs(difficulty, cfg):
-    local = copy(cfg)
-    local.riser_height = curriculum_riser(difficulty, cfg.minimum_riser_height,
-                                         cfg.maximum_riser_height, cfg.height_levels)
-    return straight_stairs(difficulty, local)
+    length, width = cfg.size
+    origin_x = cfg.spawn_origin_x
+    first = origin_x+cfg.approach_distance
+    height = curriculum_riser(difficulty, cfg.minimum_riser_height,
+                              cfg.maximum_riser_height, cfg.height_levels)
+    if first+(cfg.num_steps-1)*cfg.tread_depth >= length-cfg.top_end_margin:
+        raise ValueError("Stair treads do not fit inside their authored tile")
+    floor = trimesh.creation.box((length, width, 0.10))
+    floor.apply_translation((length/2, width/2, -0.05))
+    meshes = [floor]
+    for level in range(1, cfg.num_steps+1):
+        start = first+(level-1)*cfg.tread_depth
+        end = start+cfg.tread_depth if level < cfg.num_steps else length-cfg.top_end_margin
+        block = trimesh.creation.box((end-start, cfg.stair_width, level*height))
+        block.apply_translation(((start+end)/2, width/2, level*height/2))
+        meshes.append(block)
+    return meshes, np.array((origin_x, width/2, 0.0))
 
 
 @configclass
@@ -29,6 +43,8 @@ class AscentStairTerrainCfg(StraightStairTerrainCfg):
     minimum_riser_height: float = 0.03
     maximum_riser_height: float = 0.15
     height_levels: int = 8
+    spawn_origin_x: float = 2.0
+    top_end_margin: float = 0.25
 
 
 def ascent_stair_generator(*, levels=8, columns=4, minimum=0.03, maximum=0.15,

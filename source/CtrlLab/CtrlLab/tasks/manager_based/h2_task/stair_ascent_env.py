@@ -1,10 +1,12 @@
 """A policy-owned stair environment with pre-reset physical progress capture."""
 
 import torch
+from pathlib import Path
 
 from .direct_leg_action import DirectLegPositionAction
 from .robot_env import RobotEnv
 from .stair_ascent_progress import StairAscentProgress, foot_geometry, quaternion_matrix
+from .stair_ascent_safety import tile_domain_bounds
 
 
 class StairAscentEnv(RobotEnv):
@@ -24,6 +26,9 @@ class StairAscentEnv(RobotEnv):
         self._stair_height_rows = int(geometry.height_levels)
         if generator.num_rows != self._stair_height_rows:
             raise RuntimeError("Terrain row count and stair height metadata disagree")
+        self._stair_domain_bounds_local = tile_domain_bounds(
+            generator.size, geometry.spawn_origin_x, geometry.top_end_margin,
+            cfg.stair_domain_safety_inset_m)
         self._stair_foot_ids, names = self.asset.find_bodies(cfg.feet_body_names, preserve_order=True)
         if len(names) != 2:
             raise RuntimeError("Stair progress requires the two actual ankle-pitch foot bodies")
@@ -31,11 +36,17 @@ class StairAscentEnv(RobotEnv):
             cfg.feet_body_names, preserve_order=True)
         self._stair_sensors = [self.scene["stair_ascent_left_ground"], self.scene["stair_ascent_right_ground"]]
         self._stair_sole_offset, _ = foot_geometry(self.device)
+        output = getattr(cfg, "io_descriptors_output_dir", None)
+        self.stair_episode_evidence_directory = str(Path(output)/"stair_episode_evidence") if output else None
         self.stair_progress = StairAscentProgress(
             self.num_envs, self.device, self.masses, steps=int(geometry.num_steps),
             depth=float(geometry.tread_depth), width=float(geometry.stair_width),
             approach=float(geometry.approach_distance), episode_length_s=cfg.episode_length_s,
             gamma=float(cfg.stair_shaping_gamma),
+            domain_bounds=self._stair_domain_bounds_local,
+            floor_tolerance=cfg.stair_below_floor_tolerance_m,
+            record_directory=self.stair_episode_evidence_directory,
+            contact_body_names=self.scene["contact_forces"].body_names,
         )
         expected = {"policy": (1029,), "critic": (866,), "rnd_state": (73,)}
         for name, shape in expected.items():
@@ -70,6 +81,8 @@ class StairAscentEnv(RobotEnv):
         self.stair_progress.update(
             self.common_step_counter, self.asset.data.root_pos_w, self.asset.data.root_lin_vel_w,
             tilt, sole, rotation, filtered, unfiltered, self.termination_manager.terminated, self.step_dt,
+            body_forces=self.scene["contact_forces"].data.net_forces_w,
+            body_contact_time=self.scene["contact_forces"].data.current_contact_time,
         )
 
     def _reset_idx(self, env_ids):
@@ -78,7 +91,9 @@ class StairAscentEnv(RobotEnv):
             # Curriculum runs inside super()._reset_idx, so it reads this exact
             # terminal epoch rather than reset positions or a later sensor map.
             self.stair_progress.record_episodes(
-                env_ids, self.termination_manager.terminated, self.termination_manager.time_outs)
+                env_ids, self.termination_manager.terminated, self.termination_manager.time_outs,
+                termination_bits={name: self.termination_manager.get_term(name)
+                                  for name in self.termination_manager.active_terms})
         super()._reset_idx(env_ids)
         if hasattr(self, "stair_progress"):
             self.stair_progress.reset(env_ids)
@@ -87,5 +102,15 @@ class StairAscentEnv(RobotEnv):
         sole, _ = self._stair_foot_pose()
         self.stair_progress.begin_step(
             self.asset.data.root_pos_w, sole, self.scene.terrain.env_origins,
-            self._stair_heights(), self.scene.terrain.terrain_levels, self.episode_length_buf)
-        return super().step(action)
+            self._stair_heights(), self.scene.terrain.terrain_levels, self.episode_length_buf,
+            control_counter=self.common_step_counter)
+        result = super().step(action)
+        self.stair_progress.episode_evidence.maybe_flush(self.common_step_counter)
+        return result
+
+    def close(self):
+        try:
+            if hasattr(self, "stair_progress"):
+                self.stair_progress.episode_evidence.close()
+        finally:
+            super().close()

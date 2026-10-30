@@ -184,6 +184,9 @@ class SupervisedRunner(OnPolicyRunner):
             raise RuntimeError("Non-finite optimization losses")
         if not torch.isfinite(self.alg.policy.action_std).all():
             raise RuntimeError("Non-finite policy action noise")
+        exploration_budget = getattr(self, "stair_exploration_budget", None)
+        if exploration_budget is not None:
+            exploration_budget.assert_valid()
         super().log(locs, *args, **kwargs)
         iteration = int(locs["it"])
         completed = iteration + 1
@@ -202,6 +205,8 @@ class SupervisedRunner(OnPolicyRunner):
             raise RuntimeError("Non-finite physical episode metrics")
         point = {"iteration": iteration, "completed_iterations": completed, "checked_at_epoch": time.time(),
                  "losses": {name: float(value) for name, value in locs["loss_dict"].items()}, "motion": motion}
+        if exploration_budget is not None:
+            point["exploration"] = exploration_budget.snapshot()
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():
@@ -210,6 +215,8 @@ class SupervisedRunner(OnPolicyRunner):
         self.update_state(status="training", checked_at_epoch=time.time(), iteration=iteration,
                           completed_iterations=completed, motion=motion,
                           telemetry=str(self.telemetry_path), effect_assessments=str(self.assessments_path))
+        if exploration_budget is not None:
+            self.update_state(exploration=point["exploration"])
         if completed % self.stop_policy["assessment_interval_iterations"] or completed < self.stop_policy["warmup_iterations"]:
             return
         if motion.get("window_episode_count", 0) < 1000:

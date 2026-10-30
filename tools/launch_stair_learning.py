@@ -385,6 +385,11 @@ def startup_contract(metadata, request):
     runtime = metadata.get("runtime_stair_geometry") or {}
     expect(runtime.get("terrain_rows") == 8 and runtime.get("levels") == 6
            and runtime.get("scripted_gait_installed") is False, "runtime is not a six-level direct-policy stair task")
+    expect({"stair_below_floor", "stair_out_of_tile"}.issubset(runtime.get("termination_terms", [])),
+           "physical-domain termination terms are absent")
+    expect(runtime.get("domain_bounds_local") == [-1.9, 9.65, -2.9, 2.9]
+           and runtime.get("below_floor_tolerance_m") == .05, "physical-domain geometry disagrees with the reviewed task")
+    expect(bool(runtime.get("episode_evidence_directory")), "per-episode physical evidence recorder is absent")
     for key, value in (("riser_min_m", .03), ("riser_max_m", .15), ("current_riser_min_m", .03),
                        ("current_riser_max_m", .03), ("depth_m", .35), ("width_m", 2.4), ("approach_m", 1.4)):
         expect(isinstance(runtime.get(key), (int, float)) and math.isclose(runtime[key], value, abs_tol=1e-6),
@@ -397,6 +402,17 @@ def startup_contract(metadata, request):
     expect(set(initial.get("normalizer_counts", {})) == {"actor", "critic"}, "dual BC normalizers are missing")
     expect(all(math.isfinite(float(v)) and float(v) >= 0 for group in initial.get("normalizer_counts", {}).values()
                for v in group.values()), "invalid BC normalization counts")
+    exploration=metadata.get("stair_exploration_budget", {})
+    std=initial.get("policy_std", [])
+    low,high=exploration.get("minimum_raw_std", []),exploration.get("maximum_raw_std", [])
+    expect(len(std)==len(low)==len(high)==12 and all(
+        math.isfinite(s) and 0<lo<=s<=hi for s,lo,hi in zip(std,low,high)),
+        "actual initial std is outside the per-joint physical exploration budget")
+    expect(exploration.get("policy_mean_and_soft_range_unrestricted") is True
+           and exploration.get("network_structure_changed") is False,
+           "exploration projection changed mean authority or network design")
+    expect(metadata.get("algorithm_settings",{}).get("entropy_coef")==1e-4,
+           "raw-coordinate entropy coefficient does not match the angular exploration scale")
     return {"status": "passed" if not errors else "failed", "errors": errors,
             "normalizer_counts": initial.get("normalizer_counts"), "nonzero_BC_counts_are_expected": True,
             "fresh_optimizer_and_RND": not errors, "network_architecture_unchanged": not errors}
