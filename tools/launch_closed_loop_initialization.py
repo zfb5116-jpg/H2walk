@@ -354,6 +354,10 @@ def manage(case, slot_fd):
             time.sleep(1); gpu = gpu_snapshot()
         result_file = Path(request["output"])/"result.json"
         result = read(result_file) if result_file.exists() else {}
+        if result.get("status") == "failed" and not error:
+            # Kit shutdown can leave the wrapper exit code at zero even when
+            # the job recorded a failed runtime result. Preserve that evidence.
+            error = result.get("error") or "Job recorded a failed runtime result"
         final_changes = check_inputs(request)
         if final_changes:
             error = (error+"; " if error else "")+"Frozen input changed: "+repr(final_changes)

@@ -48,6 +48,16 @@ def config(entry):
     return getattr(importlib.import_module(module), name)()
 
 
+def resolved_joint_ids(index, articulation_joint_count):
+    """Normalize SDK Tensor scalar identities before set membership/diagnostics."""
+    total = int(articulation_joint_count)
+    result = (list(range(total)[index]) if isinstance(index,slice)
+              else [int(value) for value in index])
+    if len(set(result)) != len(result) or any(value < 0 or value >= total for value in result):
+        raise ValueError("Joint index selector is duplicated or outside the actual articulation")
+    return result
+
+
 def parse_args():
     from isaaclab.app import AppLauncher
     parser = argparse.ArgumentParser(description=__doc__)
@@ -169,7 +179,8 @@ def main():
         if extras["observations"]["rnd_state"].shape != (1024,73) or wrapped.num_actions != 12:
             raise RuntimeError("Initialization RND/action dimensions drift")
         term = raw.action_manager.get_term("JointPositionAction")
-        robot, ids = raw.scene["robot"], list(term._joint_ids)
+        robot = raw.scene["robot"]
+        ids = resolved_joint_ids(term._joint_ids,robot.num_joints)
         if type(term).__name__ != "DirectLegPositionAction" or term.gait_reference is not None:
             raise RuntimeError("The physical plant must be the original direct-position action, without a reference")
         if any(getattr(act,"support_priority_buffer",None) is not None for act in robot.actuators.values()):
@@ -275,8 +286,26 @@ def main():
         oracle_trace_fields = ("state","valid","invalid_reason_bits","reset_generation","control_step",
             "new_query_mask","reference_time","reference_steps","reference_stance","reference_anchors",
             "reference_q","reference_qdot","reference_failure","reference_load","reference_ik_error","reference_foot_target")
-        for name, actuator in robot.actuators.items():
-            native = list(range(robot.num_joints)) if isinstance(actuator.joint_indices,slice) else list(actuator.joint_indices)
+        native_groups = []
+        mapping = dict(articulation_joint_count=int(robot.num_joints),
+            policy_selector_type=type(term._joint_ids).__module__+"."+type(term._joint_ids).__qualname__,
+            policy_ids=ids,groups={})
+        for name,actuator in robot.actuators.items():
+            selector = actuator.joint_indices
+            native = resolved_joint_ids(selector,robot.num_joints)
+            eligible = bool(set(native) <= set(ids))
+            mapping["groups"][name] = dict(
+                selector_type=type(selector).__module__+"."+type(selector).__qualname__,
+                selector_repr=repr(selector),native_ids=native,
+                actuator_class=type(actuator).__name__,stiffness_shape=list(actuator.stiffness.shape),
+                policy_group=eligible,policy_overlap_ids=sorted(set(native)&set(ids)))
+            native_groups.append((name,actuator,native))
+        mapping["covered_policy_ids"] = sorted(set().union(*[
+            set(item["native_ids"]) for item in mapping["groups"].values() if item["policy_group"]]))
+        mapping["missing_policy_ids"] = sorted(set(ids)-set(mapping["covered_policy_ids"]))
+        write(args.output/"native_packet_groups.json",mapping)
+        update(native_packet_groups=mapping)
+        for name, actuator, native in native_groups:
             if not set(native) <= set(ids): continue
             observed_ids.update(native)
             original_compute = actuator.compute
