@@ -33,8 +33,6 @@ SLOT = ROOT / "logs/stair_learning/formal_evaluation.slot.lock"
 ENTRY = str(ROOT / "tools/evaluate_stair_policy.py")
 SHELL = ROOT / "tools/evaluate_stair_policy.sh"
 KIND = "stair_policy_formal_evaluation"
-SOURCE_COMMIT = "1a03fbc9b48880bc1bcf53eba95eccd6c0f881c9"
-CHECKPOINT_SHA = "1e5a778f56f691719a748f580d3d444c091bbf8a31e2f7e7edf72249602d51b1"
 TERMINAL = {"completed", "failed", "finished", "accepted", "rejected", "stopped_no_improvement"}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -182,29 +180,44 @@ def preflight(checkpoint=None, validation=None):
     pointer = read(POINTER)
     require(not pointer.get("active_formal_evaluation"), "A formal evaluation is already recorded as active")
     previous = old_job_finished(pointer)
-    checkpoint = inside(checkpoint or pointer["final_checkpoint"])
-    require(checkpoint.parent == inside(pointer["run_dir"]), "Only this stopped PPO run's weights are authorized")
-    require(checkpoint.name == "model_1000.pt", "This request is specifically for the retained model_1000.pt")
-    require(digest(checkpoint) == CHECKPOINT_SHA, "Retained checkpoint differs from the reviewed PT1000 hash")
+    checkpoint = inside(checkpoint or pointer["final_checkpoint"], ROOT/"logs/rsl_rl")
+    match = re.fullmatch(r"model_(\d+)(?:_early_stop)?\.pt", checkpoint.name)
+    require(match is not None, "Expected an iteration-labelled PPO checkpoint from its preserved run")
+    iteration = int(match.group(1))
+    checkpoint_sha = digest(checkpoint)
     receipt_path = inside(validation or checkpoint.with_suffix(".validation.json"))
     receipt = read(receipt_path)
-    require(receipt.get("status") == "passed" and receipt.get("sha256") == CHECKPOINT_SHA,
+    require(receipt.get("status") == "passed" and receipt.get("sha256") == checkpoint_sha,
             "Strict CPU checkpoint validation did not pass for these exact bytes")
-    require(Path(receipt["checkpoint"]).resolve() == checkpoint and receipt.get("iteration") == 1000,
+    require(Path(receipt["checkpoint"]).resolve() == checkpoint and receipt.get("iteration") == iteration,
             "Validation receipt is for a different checkpoint/iteration")
+    require(receipt.get("completed_iterations") == iteration+1 and receipt.get("size") == checkpoint.stat().st_size,
+            "Validation receipt iteration count or checkpoint size differs")
     require(all(receipt.get(key) is True for key in ("weights_only", "all_tensors_finite", "model_strict_load",
         "optimizer_state_shapes_valid", "normalizers_strict_load", "rnd_strict_load", "rnd_optimizer_state_shapes_valid")),
         "Validation receipt is incomplete")
     require([receipt.get(key) for key in ("actor_dim", "critic_dim", "rnd_dim", "actions")] == [1029, 866, 73, 12],
             "Checkpoint dimensions changed")
-    metadata = read(checkpoint.parent/"run.json")
+    run_file = inside(checkpoint.parent/"run.json")
+    metadata = read(run_file)
     require(metadata.get("task") == "Unitree-H2-Stair-Ascent-Policy" and metadata.get("status") in TERMINAL,
-            "Checkpoint source run is not the stopped direct stair PPO job")
-    require(metadata.get("git_commit") == SOURCE_COMMIT, "Expected the original1a03 training source")
+            "Checkpoint source run is not a terminal direct stair PPO job")
+    source_commit = metadata.get("git_commit", "")
+    require(isinstance(source_commit, str) and re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None,
+            "Checkpoint run has no recorded training commit")
+    require(int(metadata.get("starting_iteration", 0)) <= iteration
+            and int(metadata.get("completed_iterations", -1)) >= iteration+1,
+            "Checkpoint iteration lies outside the source run's completed training")
     source = inside(checkpoint.parent/"training_source/source")
     require(Path(metadata["source_snapshot"]).resolve() == source, "Source must be run/training_source/source")
+    manifest = inside(source.parent/"main_source_sha256.json")
     hashes = source_hashes(source)
-    require(hashes == read(source.parent/"main_source_sha256.json"), "Preserved source fingerprint changed")
+    require(hashes == read(manifest), "Preserved source fingerprint changed")
+    # The evaluator also reads these run-local files. Bind their exact bytes so
+    # a later pointer/checkout change cannot silently retarget this request.
+    run_files = [run_file, manifest, inside(checkpoint.parent/"params/agent.yaml"),
+                 inside(checkpoint.parent/"params/env.yaml")]
+    run_hashes = {str(path): digest(path) for path in run_files}
     dependencies = metadata.get("external_dependency_sha256", {})
     require(bool(dependencies), "The training-time external dependency manifest is missing")
     for path, expected in dependencies.items():
@@ -219,9 +232,12 @@ def preflight(checkpoint=None, validation=None):
         if fields[0] == "0":
             require(int(fields[1]) <= 512, "cuda:0 is not empty enough for this1024-env formal replay")
     return dict(checked_at=now(), previous=previous, previous_pointer=pointer, checkpoint=str(checkpoint),
-                checkpoint_sha256=CHECKPOINT_SHA, checkpoint_validation=str(receipt_path),
-                checkpoint_validation_sha256=digest(receipt_path), checkpoint_iteration=1000,
-                checkpoint_completed_iterations=1001, training_source=str(source), source_commit=SOURCE_COMMIT,
+                checkpoint_sha256=checkpoint_sha, checkpoint_validation=str(receipt_path),
+                checkpoint_validation_sha256=digest(receipt_path), checkpoint_iteration=iteration,
+                checkpoint_completed_iterations=iteration+1, training_run=str(checkpoint.parent),
+                training_run_metadata=str(run_file), training_run_files_sha256=run_hashes,
+                training_source=str(source), source_commit=source_commit,
+                source_branch=metadata.get("source_branch"),
                 source_hashes=hashes, external_dependency_sha256=dependencies, evaluator_tools_sha256=tools,
                 accepted_flat_baseline=pointer.get("accepted_flat_baseline"), gpu=gpu)
 
@@ -270,6 +286,7 @@ def changed_inputs(request):
     changed = []
     files = {request["checkpoint"]: request["checkpoint_sha256"],
              request["checkpoint_validation"]: request["checkpoint_validation_sha256"],
+             **request.get("training_run_files_sha256", {}),
              **request["external_dependency_sha256"], **request["evaluator_tools_sha256"]}
     for path, expected in files.items():
         if not Path(path).is_file() or digest(path) != expected:
@@ -630,10 +647,10 @@ def launch(args):
             "acceptance":dict(levels=6,height_m=.15,depth_m=.35,width_m=2.4,approach_m=1.4,
                               required_successful_envs=922, first_episodes_only=True),
             "training_updates":0, "automatic_restart_allowed":False,
-            "scope":"PT1000 frozen original1a03 snapshot; not the last1428 PPO state or revised ROOT source"}
+            "scope":"Frozen checkpoint with its own validated bytes and preserved training source; no training or current ROOT fallback"}
         immutable(case/"request.json", request)
         immutable(case/"launch.lock", dict(launch_id=request["launch_id"], request_sha256=digest(case/"request.json"),
-            created_at=now(), checkpoint_sha256=CHECKPOINT_SHA, command=command, independent_duplicate_guard=True))
+            created_at=now(), checkpoint_sha256=checked["checkpoint_sha256"], command=command, independent_duplicate_guard=True))
         write(case/"supervision.json", {**request, "status":"starting", "stairs_acceptance_passed":False})
         write(case/"manager_state.json", dict(status="starting", created_at=now()))
         with locked(POINTER.with_suffix(".evaluation.write.lock")):
@@ -648,9 +665,13 @@ def launch(args):
                 single_launch_guard=request["single_launch_guard"], monitor_record=request["monitor_record"],
                 stop_policy_path=request["stop_policy_path"], monitor_snapshot_tool=str(SELF),
                 monitor_snapshot_command=[sys.executable,str(SELF),"--monitor",str(case)],
-                checkpoint=checked["checkpoint"], final_checkpoint=checked["checkpoint"], checkpoint_sha256=CHECKPOINT_SHA,
-                frozen_checkpoint_iteration=1000, frozen_checkpoint_completed_iterations=1001,
-                source_snapshot=checked["training_source"], source_commit=SOURCE_COMMIT,
+                checkpoint=checked["checkpoint"], final_checkpoint=checked["checkpoint"],
+                checkpoint_sha256=checked["checkpoint_sha256"],
+                final_checkpoint_validation=checked["checkpoint_validation"], run_dir=checked["training_run"],
+                frozen_checkpoint_iteration=checked["checkpoint_iteration"],
+                frozen_checkpoint_completed_iterations=checked["checkpoint_completed_iterations"],
+                source_snapshot=checked["training_source"], source_commit=checked["source_commit"],
+                source_branch=checked["source_branch"],
                 stairs_acceptance_passed=False, formal_acceptance_passed=False,
                 accepted_flat_baseline=checked["accepted_flat_baseline"], automatic_restart_allowed=False)
             write(POINTER, pointer)
@@ -685,9 +706,9 @@ def main():
     modes.add_argument("--start", action="store_true", help="Explicitly dispatch exactly one formal frozen evaluation")
     modes.add_argument("--monitor", nargs="?", const="current", help="Write a bounded incremental pending inspection; no signals")
     modes.add_argument("--manage", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--checkpoint", type=Path, help="Default: current stopped PPO model_1000.pt")
+    parser.add_argument("--checkpoint", type=Path, help="Default: current final_checkpoint; use this checkpoint's own run.json/source snapshot")
     parser.add_argument("--validation", type=Path, help="Default: checkpoint.with_suffix('.validation.json')")
-    parser.add_argument("--label", default="pt1000_original_source")
+    parser.add_argument("--label", default="frozen_training_source")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--commit-monitor", action="store_true", help="Commit an existing pending inspection exactly; no signals")
     parser.add_argument("--pending", type=Path, help="Exact pending JSON returned by --monitor; avoids racing the manager")
