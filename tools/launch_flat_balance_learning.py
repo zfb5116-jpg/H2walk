@@ -132,6 +132,11 @@ def preflight(args):
         path = inside(value)
         require(read(path).get("status") == "passed", "Necessary implementation contract failed: " + str(path))
         frozen[str(path)] = digest(path)
+    boundary = inside(plan.parent / "startup_monitor_boundary_contract.json")
+    boundary_receipt = read(boundary)
+    require(boundary_receipt.get("status") == "passed"
+            and boundary_receipt.get("manager_sha256") == digest(SELF), "Current monitor startup/checkpoint boundary contract is missing")
+    frozen[str(boundary)] = digest(boundary)
     dataset = initial.parent / "dataset"
     if args.validate:
         parent = inside(args.validate)
@@ -271,6 +276,17 @@ def startup_contract(metadata, request):
     return dict(status="passed" if not errors else "failed", errors=errors)
 
 
+def overdue_checkpoint(iteration, starting_iteration, interval, saved_iterations):
+    """RSL saves global zero-based multiples; no save is due before learning."""
+    require(interval > 0 and starting_iteration >= 0, "Invalid checkpoint schedule")
+    if iteration < starting_iteration:
+        return None
+    due = iteration // interval * interval
+    if due < starting_iteration:
+        return None
+    return due if iteration > due + 250 and due not in saved_iterations else None
+
+
 def sample(case, commit=False, reviewed_pending=None):
     case, request = request_for(case)
     with (case / "monitor.write.lock").open("a") as lock:
@@ -291,6 +307,7 @@ def sample(case, commit=False, reviewed_pending=None):
         parsed = parse_training_log(text, previous)
         fatal, known = fatal_lines(text)
         state = read(case / "supervision.json")
+        active_job = read(case / "manager_state.json").get("status") != "finished"
         if state.get("status") == "stopped_functional_guard":
             fatal = [line for line in fatal if "FunctionalUpdateRejected" not in line]
         run = Path(state["run_dir"]) if state.get("run_dir") else None
@@ -309,17 +326,19 @@ def sample(case, commit=False, reviewed_pending=None):
         advanced = (time.time() if parsed["iteration"] > previous.get("iteration", -1)
                     else previous.get("advanced_at_epoch", time.time()))
         changes = check_inputs(request)
-        reasons = (["new fatal runtime evidence"] if fatal else []) + (["frozen input changed"] if changes else [])
-        if startup["errors"]:
+        reasons = ((["new fatal runtime evidence"] if fatal else [])
+                   + (["frozen input changed"] if changes else [])) if active_job else []
+        if active_job and startup["errors"]:
             reasons.append("runtime startup contract failed")
-        if request["job_kind"] == KIND:
+        if active_job and request["job_kind"] == KIND:
             latest = parsed["iteration"]
-            due = latest // 500 * 500
-            if latest > due + 250 and not any(x["iteration"] == due for x in files):
+            due = overdue_checkpoint(latest, request["starting_iteration"], request["save_interval"],
+                                     {x["iteration"] for x in files})
+            if due is not None:
                 reasons.append("expected500-iteration checkpoint missing for over250 iterations")
             if latest > 999:
                 reasons.append("bounded1000 iteration budget exceeded")
-        if (state.get("status") not in TERMINAL and time.time() - advanced >= 600
+        if (active_job and state.get("status") not in TERMINAL and time.time() - advanced >= 600
                 and log.exists() and time.time() - log.stat().st_mtime >= 600):
             reasons.append("log and iteration jointly stalled10min")
         point = dict(checked_at=now(), checked_at_epoch=time.time(), case=str(case),
@@ -328,6 +347,7 @@ def sample(case, commit=False, reviewed_pending=None):
                      log_mtime_epoch=log.stat().st_mtime if log.exists() else None,
                      log_caught_up=offset + len(data) == size, advanced_at_epoch=advanced,
                      state_status=state.get("status"), checkpoints=files,
+                     active_job_monitoring=active_job,
                      new_checkpoints=[x for x in files if x["path"] not in {c["path"] for c in previous.get("checkpoints", [])}],
                      processes=checks, gpu=gpu_snapshot(), changed_frozen_inputs=changes,
                      startup_contract=startup, fatal_log_candidates=list(dict.fromkeys(fatal))[-30:],
