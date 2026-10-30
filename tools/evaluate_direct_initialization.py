@@ -91,6 +91,115 @@ def parse_args():
     return args, AppLauncher
 
 
+def cpu_imitation_budget(optim, refit_kind=None):
+    """Two declared budgets only; the refit also needs external provenance."""
+    if refit_kind is None:
+        expected = (3200, 1024)
+    elif refit_kind == "offline_direct_imitation_refit_v1":
+        expected = (6400, 4096)
+    else:
+        raise RuntimeError("Unrecognized imitation producer protocol")
+    require((optim.get("updates"), optim.get("batch_size")) == expected,
+            "Incomplete or undeclared bounded imitation update budget")
+    return expected
+
+
+def cpu_refit_provenance(args, saved, optim):
+    """Bind a refit to the reviewed immutable plan and completed producer.
+
+    The kind/update numbers in a checkpoint alone never authorize the6400
+    branch. The authorized plan, request/guard and exact parent bytes must
+    independently agree before any parent state is loaded for comparison.
+    """
+    refit = saved["metadata"].get("refit_protocol")
+    if refit is None:
+        require(optim.get("refit_protocol") is None, "Optimizer claims refit without candidate provenance")
+        cpu_imitation_budget(optim)
+        return None
+    kind = "offline_direct_imitation_refit_v1"
+    require(refit.get("kind") == kind and optim.get("refit_protocol") == refit,
+            "Candidate/optimizer refit provenance mismatch")
+    cpu_imitation_budget(optim, kind)
+    plan_path = ROOT/"logs/stairs_work/fixed_dataset_calibration_20261031_060313/plan.json"
+    plan_sha = "52f0ad5e35bd7e03852163291eac43d5dea52c41dff090eaf037bea36094c1f3"
+    require(Path(refit["plan_path"]).resolve(strict=True) == plan_path and
+            sha(plan_path) == refit["plan_sha256"] == plan_sha,
+            "Refit is not bound to the immutable authorized calibration plan")
+    plan = json.loads(plan_path.read_text())
+    protocol = plan["protocol"]
+    require(protocol["kind"] == kind and
+            (protocol["parent_actor_updates"], protocol["additional_actor_updates"],
+             protocol["cumulative_actor_updates"], protocol["batch_size"], protocol["physics_controls"]) ==
+            (3200, 3200, 6400, 4096, 0), "Authorized refit plan budget changed")
+    case = Path(refit["producer_case"]).resolve(strict=True)
+    require(case.is_relative_to(ROOT/"logs/stair_learning") and args.checkpoint.parent == case/"output",
+            "Refit producer/output identity mismatch")
+    request_path = Path(refit["request_path"]).resolve(strict=True)
+    require(request_path == case/"request.json" and sha(request_path) == refit["request_sha256"],
+            "Refit immutable producer request changed")
+    request = json.loads(request_path.read_text())
+    guard = json.loads((case/"launch.lock").read_text())
+    require(guard["request_sha256"] == refit["request_sha256"], "Refit request/launch guard mismatch")
+    require(request["case"] == str(case) and request["output"] == str(case/"output") and
+            request["protocol"] == protocol and request["plan_sha256"] == plan_sha and
+            Path(request["plan_path"]).resolve(strict=True) == plan_path,
+            "Refit request does not declare the authorized protocol")
+    require(Path(request["source_root"]).resolve(strict=True) == Path(plan["source_root"]).resolve(strict=True),
+            "Refit request uses another source")
+    require(Path(refit["parent_collection"]).resolve(strict=True) == Path(plan["parent_collection"]).resolve(strict=True),
+            "Refit parent collection changed")
+    for name in ("parent_candidate", "parent_optimizer"):
+        path = Path(plan[name]).resolve(strict=True)
+        expected = plan[name+"_sha256"]
+        require(Path(refit[name]).resolve(strict=True) == path and refit[name+"_sha256"] == expected and
+                Path(request[name]).resolve(strict=True) == path and request[name+"_sha256"] == expected and
+                sha(path) == expected, "Refit parent bytes/provenance changed: "+name)
+    manifest = Path(plan["dataset_manifest"]).resolve(strict=True)
+    require(Path(refit["frozen_dataset_manifest_path"]).resolve(strict=True) == manifest and
+            refit["frozen_dataset_manifest_sha256"] == sha(manifest), "Refit frozen dataset manifest changed")
+    for path in (plan_path, Path(plan["parent_candidate"]), Path(plan["parent_optimizer"]), manifest):
+        require(request["frozen_files"].get(str(path)) == sha(path), "Request omits a fixed refit input binding")
+    if "duplicate_guard" in request:
+        require(json.loads(Path(request["duplicate_guard"]).read_text())["request_sha256"] == refit["request_sha256"],
+                "Independent refit deduplication guard changed")
+    manager = json.loads((case/"manager_state.json").read_text())
+    exit_record = json.loads((case/"exit.json").read_text())
+    result_path = case/"output/result.json"
+    result = json.loads(result_path.read_text())
+    require(manager.get("status") == "finished" and manager.get("exit_code") == 0 and
+            exit_record.get("wrapper_exit_code") == 0 and not manager.get("error"),
+            "Refit producer has not confirmed successful process completion")
+    require(result.get("status") == "completed" and result.get("physics_controls") == 0 and
+            result.get("simulation_started") is False and result.get("actor_updates") == 3200 and
+            result.get("cumulative_actor_updates") == 6400,
+            "Refit producer did not complete the fixed offline-only budget")
+    require(Path(result["candidate"]).resolve(strict=True) == args.checkpoint and
+            result["candidate_sha256"] == sha(args.checkpoint), "Refit result does not bind these candidate bytes")
+    require(saved["metadata"].get("actor_updates") == 6400 and
+            saved["metadata"].get("additional_actor_updates") == 3200 and
+            saved["metadata"].get("cumulative_actor_updates") == 6400 and
+            saved["metadata"].get("physics_controls") == 0,
+            "Candidate refit metadata budget mismatch")
+    for name, expected in (("parent_actor_updates", 3200), ("additional_actor_updates", 3200),
+                           ("cumulative_actor_updates", 6400), ("batch_size", 4096), ("physics_controls", 0)):
+        require(refit.get(name) == expected, "Refit provenance has an undeclared budget: "+name)
+    quality = result.get("quality_gate_passed")
+    require(type(quality) is bool and saved["metadata"].get("quality_gate_passed") is quality,
+            "Producer/candidate quality-gate record disagrees or is absent")
+    require(all(math.isclose(float(group["lr"]), 1e-5, rel_tol=1e-7, abs_tol=1e-12)
+                for group in optim["optimizer_state_dict"]["param_groups"]),
+            "Refit final Adam learning rate differs from the authorized schedule")
+    return dict(kind=kind, plan_path=str(plan_path), plan_sha256=plan_sha,
+        request_path=str(request_path), request_sha256=refit["request_sha256"], producer_case=str(case),
+        producer_result_path=str(result_path), producer_result_sha256=sha(result_path), producer_completed=True,
+        quality_gate_passed=quality, parent_candidate=plan["parent_candidate"],
+        parent_candidate_sha256=plan["parent_candidate_sha256"], parent_optimizer=plan["parent_optimizer"],
+        parent_optimizer_sha256=plan["parent_optimizer_sha256"],
+        dataset_manifest_path=str(manifest), dataset_manifest_sha256=sha(manifest),
+        parent_actor_updates=3200, additional_actor_updates=3200, cumulative_actor_updates=6400,
+        physics_controls=0, batch_size=4096)
+
+
 def validate_cpu(args):
     # The CPU path imports no Isaac/SimulationApp and hides accelerators before
     # importing Torch. It never instantiates a PPO optimizer or RND learner.
@@ -151,7 +260,7 @@ def validate_cpu(args):
     require(sha(optimizer_path) == saved["metadata"]["optimizer_sha256"], "Imitation optimizer fingerprint mismatch")
     optim = torch.load(optimizer_path, map_location="cpu", weights_only=True)
     require(optim["format"] == "h2_direct_imitation_optimizer_v1", "Wrong optimizer artifact format")
-    require(optim["updates"] == 3200 and optim["batch_size"] == 1024, "Incomplete bounded imitation update budget")
+    provenance = cpu_refit_provenance(args, saved, optim)
     require(optim.get("PPO_updates", optim.get("ppo_updates")) == 0
             and optim.get("RND_updates", optim.get("rnd_updates")) == 0, "Optimizer artifact claims PPO/RND updates")
     parameters = list(actor.actor.named_parameters())
@@ -168,11 +277,56 @@ def validate_cpu(args):
             if name in item:
                 require(item[name].shape == parameter.shape, "Adam moment shape mismatch")
     finite(optim)
+    if provenance is not None:
+        require(len(parameters) == 44, "Refit changed the original44 actor-parameter layout")
+        parent = torch.load(provenance["parent_candidate"], map_location="cpu", weights_only=True)
+        parent_optim = torch.load(provenance["parent_optimizer"], map_location="cpu", weights_only=True)
+        require(parent.get("format") == "h2_direct_policy_initialization_v1" and
+                parent.get("ppo_completed_iterations") == 0 and parent.get("policy_dimensions") == [1029,866,73,12] and
+                parent.get("action_semantics") == saved["action_semantics"], "Parent initialization package mismatch")
+        require(parent["source_sha256"] == saved["source_sha256"] and parent["source_commit"] == saved["source_commit"] and
+                parent["external_dependency_sha256"] == dependencies, "Refit changed model source or dependencies")
+        require(parent["model_state_dict"].keys() == saved["model_state_dict"].keys(), "Refit changed model tensor layout")
+        protected = [name for name in saved["model_state_dict"] if not name.startswith("actor.")]
+        require(all(torch.equal(saved["model_state_dict"][name], parent["model_state_dict"][name]) for name in protected),
+                "Refit changed the frozen critic/std or another non-actor tensor")
+        for key in ("obs_norm_state_dict", "privileged_obs_norm_state_dict"):
+            require(saved[key].keys() == parent[key].keys() and
+                    all(torch.equal(value, parent[key][name]) for name,value in saved[key].items()),
+                    "Refit changed a saved normalization tensor")
+        require(parent_optim.get("format") == "h2_direct_imitation_optimizer_v1", "Parent optimizer format mismatch")
+        cpu_imitation_budget(parent_optim)
+        require(parent_optim["actor_parameter_names"] == optim["actor_parameter_names"], "Parent/refit actor order changed")
+        parent_state = parent_optim["optimizer_state_dict"]
+        parent_order = [pid for group in parent_state["param_groups"] for pid in group["params"]]
+        require(len(parent_order) == len(parameters) and set(parent_state["state"]) == set(parent_order),
+                "Parent Adam state is incomplete")
+        for pid,(_,parameter) in zip(parent_order,parameters):
+            item = parent_state["state"][pid]
+            require({"step","exp_avg","exp_avg_sq"}.issubset(item) and item["step"].numel() == 1 and
+                    int(item["step"]) == 3200 and item["exp_avg"].shape == item["exp_avg_sq"].shape == parameter.shape,
+                    "Parent Adam3200 moments/steps are incomplete")
+        require(len(parent_state["param_groups"]) == len(state["param_groups"]), "Refit Adam groups changed")
+        for old,new in zip(parent_state["param_groups"],state["param_groups"]):
+            require({key:value for key,value in old.items() if key not in ("params","lr")} ==
+                    {key:value for key,value in new.items() if key not in ("params","lr")},
+                    "Refit changed an undeclared Adam hyperparameter")
+        finite({key:parent[key] for key in ("model_state_dict","obs_norm_state_dict","privileged_obs_norm_state_dict")})
+        finite(parent_optim)
+        provenance.update(non_actor_and_both_normalizers_bitwise_unchanged=True,
+            actor_parameters_allowed_to_change=len(parameters), actual_changed_actor_tensors=sum(
+                not torch.equal(value,parent["model_state_dict"][name])
+                for name,value in saved["model_state_dict"].items() if name.startswith("actor.")),
+            real_parent_Adam_step=3200,real_candidate_Adam_step=6400)
     require(not torch.cuda.is_initialized(), "CPU validation initialized CUDA")
     receipt.update(status="passed", finite_tensors=tensors, source_sha256=hashes,
         external_dependency_sha256=dependencies, optimizer_path=str(optimizer_path),
         optimizer_sha256=sha(optimizer_path), actor_optimizer_parameters=len(parameters), imitation_updates=optim["updates"],
         source_commit=saved.get("source_commit"), torch_threads=torch.get_num_threads(), cuda_initialized=False,
+        imitation_batch_size=optim["batch_size"], producer_kind=(provenance["kind"] if provenance else "bounded_direct_imitation_v1"),
+        refit_provenance=provenance, producer_completed=(provenance["producer_completed"] if provenance else None),
+        quality_gate_passed=(provenance["quality_gate_passed"] if provenance else
+            saved["metadata"].get("quality",{}).get("regression_quality_passed")),
         interpretation="CPU model/dualnorm/imitation-Adam integrity only; not physical initialization readiness")
     write(args.validation_output, receipt)
     print("[DIRECT_INIT_VALIDATION] CPU "+json.dumps(receipt), flush=True)

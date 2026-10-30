@@ -30,6 +30,7 @@ POINTER = ROOT / "logs/launches/current_main_training.json"
 SLOT = ROOT / "logs/stair_learning/closed_loop_initialization.slot.lock"
 COLLECTOR = ROOT / "tools/collect_closed_loop_initialization.py"
 VALIDATOR = ROOT / "tools/evaluate_direct_initialization.py"
+REFITTER = ROOT / "tools/refit_direct_initialization.py"
 BRANCH = "codex/h2-stair-ascent-20261030"
 PROTOCOL = dict(num_envs=1024, seed=42, interface_controls=150,
                 round_controls=400, rounds=4, teacher_probabilities=[.75, .5, .25, 0.],
@@ -70,6 +71,21 @@ def source_hashes(source):
             and "__pycache__" not in p.parts and p.suffix != ".pyc"}
 
 
+def dataset_fingerprints(directory):
+    """Monitor immutable replay identities; entry verifies full array hashes.
+
+    Full content is checked before/after fitting against the producer manifest.
+    Stat identities detect changes during fitting without hashing1GiB every2s.
+    """
+    result = {}
+    for path in sorted(Path(directory).rglob("*")):
+        if path.is_file():
+            info = path.stat()
+            result[str(path)] = dict(size=info.st_size, inode=info.st_ino, device=info.st_dev,
+                                    mtime_ns=info.st_mtime_ns, ctime_ns=info.st_ctime_ns)
+    return result
+
+
 def check_inputs(request):
     changed = [name for name, value in request["frozen_files"].items()
                if not Path(name).is_file() or digest(name) != value]
@@ -77,6 +93,8 @@ def check_inputs(request):
         changed.append("ROOT source/tools file set or bytes")
     if source_hashes(Path(request["source_root"])) != request["source_hashes"]:
         changed.append(request["source_root"])
+    if request.get("dataset") and dataset_fingerprints(request["dataset"]) != request["dataset_fingerprints"]:
+        changed.append("Frozen dataset file set/identity/size/timestamps changed")
     return changed
 
 
@@ -106,12 +124,61 @@ def preflight(args):
             "7f3432d01756efaeb6d4337536a3ead5a9d0c2f4130654bd43a353012b6c2dbd", "Original USD changed")
     require(dependencies[str(ROOT/"logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt")] ==
             "d260001c9850941c95d1ba83196076f27e118e687e72586d0a2bff84f1674c50", "Frozen LiDAR changed")
-    if args.validate:
+    protocol = dict(PROTOCOL)
+    dataset, repair_plan, replay = None, None, {}
+    if args.refit:
+        require(not args.validate, "Choose collection, offline refit, or physical validation")
+        parent = inside(args.refit)
+        parent_request = read(parent/"request.json")
+        parent_result = read(parent/"output/result.json")
+        require(read(parent/"manager_state.json")["status"] == "finished", "Parent collector is active")
+        require(parent_request["job_kind"] == "closed_loop_initialization_learning"
+                and parent_result.get("status") == "completed"
+                and parent_result.get("physics_controls") == 1750
+                and parent_result.get("actor_updates") == 3200, "Expected the reviewed completed collector")
+        repair_plan = inside(args.repair_plan or pointer["initializer_refit_plan"])
+        plan = read(repair_plan)
+        require(inside(plan["parent_collection"]) == parent, "Calibration plan targets a different collector")
+        p = plan["protocol"]
+        require(p["kind"] == "offline_direct_imitation_refit_v1"
+                and [p[key] for key in ("physics_controls", "additional_actor_updates", "parent_actor_updates",
+                                       "cumulative_actor_updates", "batch_size")] == [0,3200,3200,6400,4096]
+                and p["learning_rate_start"] == .0001 and p["learning_rate_end"] == .00001,
+                "Refit must follow the reviewed fixed calibration budget")
+        initial = inside(plan["parent_candidate"])
+        require(initial == inside(parent/"output/candidate_initial_policy.pt")
+                and digest(initial) == plan["parent_candidate_sha256"], "Parent candidate binding changed")
+        validation = inside(initial.with_suffix(".validation.json"))
+        receipt = read(validation)
+        require(receipt.get("status") == "passed" and receipt["sha256"] == digest(initial),
+                "Parent candidate needs its actual CPU integrity receipt")
+        optimizer = inside(plan["parent_optimizer"])
+        require(digest(optimizer) == plan["parent_optimizer_sha256"] == receipt["optimizer_sha256"],
+                "Parent Adam state changed")
+        dataset = inside(plan["dataset"])
+        require(dataset == inside(parent/"output/dataset"), "Refit dataset is not the immutable producer replay")
+        manifest = read(dataset/"manifest.json")
+        require(manifest.get("status") == "completed" and manifest.get("fit_updates") == [800]*4,
+                "Producer replay is incomplete")
+        source = inside(receipt["source_root"])
+        require(source == inside(parent/"output/training_source/source")
+                and source_hashes(source) == parent_request["source_hashes"], "Parent source binding changed")
+        frozen = {str(path):digest(path) for path in (initial, validation, optimizer, repair_plan,
+            parent/"request.json", parent/"output/result.json", parent/"output/params/agent.yaml",
+            parent/"output/params/env.yaml", dataset/"manifest.json")}
+        replay = dataset_fingerprints(dataset)
+        protocol = dict(p)
+        entry, kind = REFITTER, "offline_direct_imitation_refit"
+        source_commit = parent_request["source_commit"]
+    elif args.validate:
         parent = inside(args.validate)
         request = read(parent/"request.json")
         result = read(parent/"output/result.json")
         require(read(parent/"manager_state.json")["status"] == "finished", "Collection manager is active")
         require(result.get("status") == "completed", "Collection did not complete fitting")
+        if request["job_kind"] == "offline_direct_imitation_refit":
+            require(result.get("quality_gate_passed") is True,
+                    "Offline calibration did not pass its declared fixed-heldout quality gate; do not start a simulator")
         initial = inside(parent/"output/candidate_initial_policy.pt")
         validation = inside(initial.with_suffix(".validation.json"))
         receipt = read(validation)
@@ -141,15 +208,22 @@ def preflight(args):
     hashes = source_hashes(source)
     frozen.update(dependencies)
     key = hashlib.sha256(json.dumps(dict(kind=kind, files=roots, initial=digest(initial),
-        teacher=digest(teacher), source=hashes, protocol=PROTOCOL), sort_keys=True).encode()).hexdigest()[:20]
+        teacher=digest(teacher), source=hashes, protocol=protocol), sort_keys=True).encode()).hexdigest()[:20]
     guard = ROOT/"logs/stair_learning"/("closed_loop_"+key+".launch.lock")
     require(not guard.exists(), "Identical inputs/protocol already dispatched; no blind retry")
     return dict(checked_at=now(), previous=previous, previous_pointer=pointer, job_kind=kind,
                 entrypoint=str(entry), source_commit=source_commit, launcher_commit=commit, source_branch=branch,
                 source_root=str(source), source_hashes=hashes, root_hashes=roots,
                 frozen_files=frozen, initial_policy=str(initial), teacher_checkpoint=str(teacher),
-                accepted_flat_baseline=baseline, protocol=PROTOCOL, duplicate_guard=str(guard),
-                parent_collection=str(parent) if parent else None, gpu=gpu)
+                accepted_flat_baseline=baseline, protocol=protocol, duplicate_guard=str(guard),
+                parent_collection=str(parent) if parent else None, dataset=str(dataset) if dataset else None,
+                dataset_fingerprints=replay, repair_plan=str(repair_plan) if repair_plan else None,
+                plan_path=str(repair_plan) if repair_plan else None,
+                plan_sha256=digest(repair_plan) if repair_plan else None,
+                parent_candidate=str(initial) if args.refit else None,
+                parent_candidate_sha256=digest(initial) if args.refit else None,
+                parent_optimizer=str(optimizer) if args.refit else None,
+                parent_optimizer_sha256=digest(optimizer) if args.refit else None, gpu=gpu)
 
 
 def request_for(case):
@@ -312,7 +386,8 @@ def manage(case, slot_fd):
                 point = snapshot(case)
                 reasons = (["fatal runtime log"] if point["fatal_log_candidates"] else [])
                 reasons += (["frozen source/input changed"] if point["changed_frozen_inputs"] else [])
-                if point["progress"][0] > 1750 or point["progress"][1] > 3200:
+                physics_limit = 0 if request["job_kind"] == "offline_direct_imitation_refit" else 1750
+                if point["progress"][0] > physics_limit or point["progress"][1] > 3200:
                     reasons.append("fixed collection/optimization budget exceeded")
                 for line in point["gpu"]["compute_processes"].splitlines():
                     fields = [x.strip() for x in line.split(",")]
@@ -402,7 +477,7 @@ def launch(args):
         checked = preflight(args)
         if not args.start:
             print(json.dumps({key:value for key,value in checked.items()
-                  if key not in ("previous_pointer", "root_hashes", "source_hashes", "frozen_files")}, indent=2)); return
+                  if key not in ("previous_pointer", "root_hashes", "source_hashes", "frozen_files", "dataset_fingerprints")}, indent=2)); return
         previous = checked.pop("previous_pointer")
         stamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
         case = ROOT/"logs/stair_learning"/("closed_loop_"+stamp+"_"+uuid.uuid4().hex[:8])
@@ -410,24 +485,29 @@ def launch(args):
         snapshot_dir = case/"snapshot"; snapshot_dir.mkdir()
         for name in ("source", "tools"):
             shutil.copytree(ROOT/name, snapshot_dir/name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        if not args.validate:
+        if not args.validate and not args.refit:
             checked["source_root"] = str(snapshot_dir/"source")
         output = case/"output"
-        command = ["bash", str(Path(checked["entrypoint"]).with_suffix(".sh")), "--headless", "--device", "cuda:0",
-                   "--num_envs", "1024", "--seed", "42", "--source_root", checked["source_root"], "--output", str(output)]
-        if args.validate:
+        command = ["bash", str(Path(checked["entrypoint"]).with_suffix(".sh")), "--device", "cuda:0",
+                   "--seed", "42", "--source_root", checked["source_root"], "--output", str(output)]
+        if args.refit:
+            command += ["--plan", checked["plan_path"], "--initial_policy", checked["initial_policy"],
+                        "--dataset", checked["dataset"], "--state", str(case/"supervision.json")]
+        elif args.validate:
+            command += ["--headless", "--num_envs", "1024"]
             command += ["--checkpoint", checked["initial_policy"], "--duration", "20", "--speed", ".3", "--video"]
         else:
+            command += ["--headless", "--num_envs", "1024"]
             command += ["--initial_policy", checked["initial_policy"], "--teacher_checkpoint", checked["teacher_checkpoint"],
                         "--state", str(case/"supervision.json")]
         request = {**checked, "case":str(case), "created_at":now(), "command":command,
-                   "output":str(output), "max_wall_seconds":3600 if not args.validate else 1800,
+                   "output":str(output), "max_wall_seconds":3600 if not (args.validate or args.refit) else 1800,
                    "source_hashes":source_hashes(Path(checked["source_root"])), "automatic_restart_allowed":False}
         immutable(case/"request.json", request)
         guard = dict(request_sha256=digest(case/"request.json"), created_at=now())
         immutable(case/"launch.lock", guard); immutable(request["duplicate_guard"], guard)
         immutable(case/"previous_pointer.json", previous)
-        immutable(case/"stop_policy.json", dict(max_wall_seconds=request["max_wall_seconds"], protocol=PROTOCOL,
+        immutable(case/"stop_policy.json", dict(max_wall_seconds=request["max_wall_seconds"], protocol=request["protocol"],
             signal="Re-read exact birth identities; learner INT, then TERM", automatic_retry_allowed=False))
         write(case/"supervision.json", {**request, "status":"starting", "physics_controls":0, "actor_updates":0})
         write(case/"manager_state.json", dict(status="starting", created_at=now()))
@@ -470,6 +550,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--validate", type=Path)
+    parser.add_argument("--refit", type=Path)
+    parser.add_argument("--repair-plan", type=Path)
     parser.add_argument("--initial_policy", type=Path)
     parser.add_argument("--teacher_checkpoint", type=Path)
     parser.add_argument("--monitor", type=Path)
