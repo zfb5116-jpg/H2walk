@@ -58,6 +58,16 @@ def resolved_joint_ids(index, articulation_joint_count):
     return result
 
 
+def native_compute_observer(original_compute, enabled, recorder):
+    """Match the SDK binding and pass through its exact returned command object."""
+    def observed(self, control_action, joint_pos, joint_vel):
+        output = original_compute(control_action, joint_pos=joint_pos, joint_vel=joint_vel)
+        if enabled():
+            recorder(self, output, joint_pos, joint_vel)
+        return output
+    return observed
+
+
 def parse_args():
     from isaaclab.app import AppLauncher
     parser = argparse.ArgumentParser(description=__doc__)
@@ -309,35 +319,38 @@ def main():
             if not set(native) <= set(ids): continue
             observed_ids.update(native)
             original_compute = actuator.compute
-            def observed(act, command, q, qd, original_compute=original_compute, name=name, native=native):
+            def record_native(act, output, joint_pos, joint_vel, name=name, native=native):
                 nonlocal trace_bytes
-                output = original_compute(command,q,qd)
-                if collection_enabled:
-                    if (not torch.equal(act.positions_delay_buffer.time_lags,act.velocities_delay_buffer.time_lags)
-                            or not torch.equal(act.positions_delay_buffer._circular_buffer._num_pushes,
-                                               act.velocities_delay_buffer._circular_buffer._num_pushes)):
-                        raise RuntimeError("Native q/v transport no longer shares lag/compute-call history")
-                    if bool((output.joint_velocities != 0).any() | (output.joint_efforts != 0).any()):
-                        raise RuntimeError("Actual initialization plant received nonzero velocity/effort")
-                    key = (active_stage,name)
-                    count = trace_writes.get(key,0)
-                    if count < 8:
-                        data = dict(q_received=cpu(output.joint_positions),v_received=cpu(output.joint_velocities),
-                            e_received=cpu(output.joint_efforts),q_actual=cpu(q),qd_actual=cpu(qd),
-                            stiffness=cpu(act.stiffness),damping=cpu(act.damping),caps=cpu(act.effort_limit),
-                            lag=cpu(act.positions_delay_buffer.time_lags),
-                            pushes=cpu(act.positions_delay_buffer._circular_buffer._num_pushes),
-                            control_step=np.asarray(global_controls+1,dtype=np.int64),
-                            native_control_counter=np.asarray(raw.common_step_counter,dtype=np.int64),
-                            physics_counter=np.asarray(raw._sim_step_counter,dtype=np.int64),native_ids=np.asarray(native,dtype=np.int32))
-                        data["pre_physics_counter_compatible"] = np.asarray(
-                            int(raw.common_step_counter)==(int(raw._sim_step_counter)-1)//int(raw.cfg.decimation))
-                        path = trace_dir/f"stage{active_stage}_{name}_{count:02d}.npz"
-                        np.savez_compressed(path,**data); trace_bytes += path.stat().st_size
-                        if trace_bytes > 20*2**20: raise OSError("Native packet trace exceeded20MiB")
-                        trace_writes[key] = count+1
-                return output
-            actuator.compute = types.MethodType(observed,actuator)
+                for field in ("joint_positions","joint_velocities","joint_efforts"):
+                    value = getattr(output,field,None)
+                    if (not torch.is_tensor(value) or value.shape != joint_pos.shape
+                            or not torch.isfinite(value).all()):
+                        raise RuntimeError("Direct implicit actuator returned an absent, nonfinite or mismatched command field: "+field)
+                if (not torch.equal(act.positions_delay_buffer.time_lags,act.velocities_delay_buffer.time_lags)
+                        or not torch.equal(act.positions_delay_buffer._circular_buffer._num_pushes,
+                                           act.velocities_delay_buffer._circular_buffer._num_pushes)):
+                    raise RuntimeError("Native q/v transport no longer shares lag/compute-call history")
+                if bool((output.joint_velocities != 0).any() | (output.joint_efforts != 0).any()):
+                    raise RuntimeError("Actual initialization plant received nonzero velocity/effort")
+                key = (active_stage,name)
+                count = trace_writes.get(key,0)
+                if count < 8:
+                    data = dict(q_received=cpu(output.joint_positions),v_received=cpu(output.joint_velocities),
+                        e_received=cpu(output.joint_efforts),q_actual=cpu(joint_pos),qd_actual=cpu(joint_vel),
+                        stiffness=cpu(act.stiffness),damping=cpu(act.damping),caps=cpu(act.effort_limit),
+                        lag=cpu(act.positions_delay_buffer.time_lags),
+                        pushes=cpu(act.positions_delay_buffer._circular_buffer._num_pushes),
+                        control_step=np.asarray(global_controls+1,dtype=np.int64),
+                        native_control_counter=np.asarray(raw.common_step_counter,dtype=np.int64),
+                        physics_counter=np.asarray(raw._sim_step_counter,dtype=np.int64),native_ids=np.asarray(native,dtype=np.int32))
+                    data["pre_physics_counter_compatible"] = np.asarray(
+                        int(raw.common_step_counter)==(int(raw._sim_step_counter)-1)//int(raw.cfg.decimation))
+                    path = trace_dir/f"stage{active_stage}_{name}_{count:02d}.npz"
+                    np.savez_compressed(path,**data); trace_bytes += path.stat().st_size
+                    if trace_bytes > 20*2**20: raise OSError("Native packet trace exceeded20MiB")
+                    trace_writes[key] = count+1
+            actuator.compute = types.MethodType(native_compute_observer(
+                original_compute,lambda:collection_enabled,record_native),actuator)
         if observed_ids != set(ids):
             raise RuntimeError("Native packet observation did not cover all12 original lower-limb drives")
 
