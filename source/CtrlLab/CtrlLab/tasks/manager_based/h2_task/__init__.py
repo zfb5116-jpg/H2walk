@@ -85,3 +85,14 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
     },
 )
+
+# Independent direct plant used only by the bounded closed-loop initializer.
+gym.register(
+    id="Unitree-H2-Direct-Flat-Initialization",
+    entry_point=f"{__name__}.direct_initialization:DirectInitializationEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.direct_initialization:DirectInitializationEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
+    },
+)
