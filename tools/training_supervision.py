@@ -109,7 +109,8 @@ class MotionProbe:
                                   progress.clamp(-2, 2), active.float(), bilateral.float(),
                                   success.float(), (success & bilateral).float(),
                                   self.error_integral[ids] / self.age[ids],
-                                  self.slip_integral[ids] / self.age[ids]), dim=1).cpu().numpy()
+                                  self.slip_integral[ids] / self.age[ids],
+                                  (self.age[ids] >= 20.0-1e-4).float()), dim=1).cpu().numpy()
             self.rows.extend(values)
             self.completed_episodes += len(values)
         for value in (self.age, self.target_distance, self.projected_distance,
@@ -126,7 +127,8 @@ class MotionProbe:
         return {
             "window_episode_count": len(rows), "completed_episode_count": self.completed_episodes,
             "mean_episode_s": float(rows[:, 0].mean()), "median_episode_s": float(np.median(rows[:, 0])),
-            "survival20s_fraction": float(rows[:, 1].mean()), "early_termination_fraction": float(rows[:, 2].mean()),
+            "survival20s_fraction": float(rows[:, 10].mean()),
+            "survival_horizon_fraction": float(rows[:, 1].mean()), "early_termination_fraction": float(rows[:, 2].mean()),
             "moving_episode_count": int(active.sum()),
             "command_progress_ratio": float(rows[active, 3].mean()) if active.any() else 0.0,
             "bilateral_landings_fraction": float(rows[:, 5].mean()),
@@ -188,6 +190,9 @@ class SupervisedRunner(OnPolicyRunner):
         if iteration != 0 and completed % 100:
             return
         motion = self.env.motion_probe.summary()
+        stair_progress = getattr(self.env.unwrapped, "stair_progress", None)
+        if stair_progress is not None:
+            motion.update(stair_progress.summary())
         terrain = self.env.unwrapped.scene.terrain
         if getattr(terrain, "terrain_levels", None) is not None:
             motion["terrain_level"] = float(terrain.terrain_levels.float().mean())

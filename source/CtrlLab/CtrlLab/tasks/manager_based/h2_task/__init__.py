@@ -63,3 +63,25 @@ gym.register(
 )
 from .robot_env import RobotEnv
 from .robot_env_cfg import RobotFlatPlayEnvCfg, RobotRoughPlayEnvCfg
+
+# Independent, policy-owned stair learning. Existing reference and flat tasks
+# retain their original configuration and entry points.
+gym.register(
+    id="Unitree-H2-Stair-Ascent-Policy",
+    entry_point=f"{__name__}.stair_ascent_env:StairAscentEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.stair_ascent_cfg:StairAscentEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Unitree-H2-Stair-Ascent-Policy-Play",
+    entry_point=f"{__name__}.stair_ascent_env:StairAscentEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.stair_ascent_cfg:StairAscentPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
+    },
+)

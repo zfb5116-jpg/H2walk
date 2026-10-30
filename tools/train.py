@@ -18,7 +18,8 @@ from isaaclab.app import AppLauncher
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", default="Unitree-H2-Velocity-Stairs",
-                    choices=[f"Unitree-H2-Velocity-{name}" for name in ("Flat", "Rough", "Stairs")])
+                    choices=[f"Unitree-H2-Velocity-{name}" for name in ("Flat", "Rough", "Stairs")]
+                            + ["Unitree-H2-Stair-Ascent-Policy"])
 parser.add_argument("--num_envs", type=int, default=1024)
 parser.add_argument("--max_iterations", type=int, default=None,
                     help="Number of additional learning iterations in this run.")
@@ -27,6 +28,8 @@ parser.add_argument("--save_interval", type=int, default=None,
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--run_name", default="")
 parser.add_argument("--checkpoint", type=Path, default=None)
+parser.add_argument("--initial_policy", type=Path, default=None,
+                    help="Behavior-cloned direct-policy initialization; PPO/Adam/RND start fresh.")
 parser.add_argument("--expected_completed_iterations", type=int, default=None,
                     help="Require the checkpoint to contain this many completed iterations.")
 parser.add_argument("--supervision_state", type=Path, required=True)
@@ -42,6 +45,8 @@ if args.expected_completed_iterations is not None and (
     args.checkpoint is None or args.expected_completed_iterations < 1
 ):
     parser.error("expected_completed_iterations requires a checkpoint and must be positive")
+if args.initial_policy is not None and (args.checkpoint is not None or args.task != "Unitree-H2-Stair-Ascent-Policy"):
+    parser.error("initial_policy is only for a fresh Stair-Ascent-Policy run, not checkpoint resume")
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
@@ -69,7 +74,7 @@ def load_config(entry_point):
 def main():
     current_commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     if current_commit != args.expected_git_commit:
-        raise RuntimeError(f"Expected main source {args.expected_git_commit}, found {current_commit}")
+        raise RuntimeError(f"Expected source {args.expected_git_commit}, found {current_commit}")
     stop_policy = json.loads(args.stop_policy.read_text())
     state = json.loads(args.supervision_state.read_text())
     spec = gym.spec(args.task)
@@ -88,6 +93,7 @@ def main():
     agent_cfg.logger = "tensorboard"
     agent_cfg.resume = args.checkpoint is not None
     checkpoint = args.checkpoint.resolve(strict=True) if args.checkpoint else None
+    initial_policy = args.initial_policy.resolve(strict=True) if args.initial_policy else None
     completed_iterations = 0
     if checkpoint:
         saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -129,6 +135,24 @@ def main():
     dump_yaml(str(log_dir / "params/agent.yaml"), agent_cfg)
     dump_pickle(str(log_dir / "params/env.pkl"), env_cfg)
     dump_pickle(str(log_dir / "params/agent.pkl"), agent_cfg)
+    dependency_paths = [Path(env_cfg.scene.robot.spawn.usd_path)]
+    lidar_checkpoint = env_cfg.observations.policy.height_scanner.params.get("checkpoint")
+    if lidar_checkpoint:
+        dependency_paths.append(Path(lidar_checkpoint))
+    generator = env_cfg.scene.terrain.terrain_generator
+    task_geometry = None if generator is None else {
+        "rows": generator.num_rows, "columns": generator.num_cols,
+        "size_m": list(generator.size), "curriculum": generator.curriculum,
+        "sub_terrains": {
+            name: {"function": getattr(term.function, "__module__", "")+"."
+                               +getattr(term.function, "__qualname__", type(term.function).__name__),
+                   **{key: getattr(term, key) for key in
+                      ("num_steps", "minimum_riser_height", "maximum_riser_height", "height_levels",
+                       "riser_height", "tread_depth", "stair_width", "approach_distance")
+                      if hasattr(term, key)}}
+            for name, term in generator.sub_terrains.items()
+        },
+    }
     metadata = {
         "task": args.task, "task_source": h2_task.__file__,
         "asset": env_cfg.scene.robot.spawn.usd_path,
@@ -136,19 +160,26 @@ def main():
         "num_steps_per_env": agent_cfg.num_steps_per_env,
         "save_interval": agent_cfg.save_interval, "seed": args.seed,
         "device": agent_cfg.device, "checkpoint": str(checkpoint) if checkpoint else None,
+        "task_geometry": task_geometry,
         "starting_iteration": completed_iterations,
         "target_total_iterations": completed_iterations + agent_cfg.max_iterations,
-        "source_branch": "main", "motion_supervision": True,
+        "source_branch": subprocess.check_output(["git", "-C", str(ROOT), "branch", "--show-current"], text=True).strip(), "motion_supervision": True,
         "control_settings": {
             "stance_preload_torques": getattr(env_cfg, "stance_preload_torques", None),
             "stance_orientation_feedback": getattr(env_cfg, "stance_orientation_feedback", None),
             "lateral_com_feedback": getattr(env_cfg, "lateral_com_feedback", None),
             "contact_gait_reference": getattr(env_cfg, "contact_gait_reference", None),
+            "stair_reference": getattr(env_cfg, "stair_reference", None),
             "progressive_walking_curriculum": getattr(env_cfg, "progressive_walking_curriculum", False),
             "action_scale": env_cfg.actions.JointPositionAction.scale,
             "init_noise_std": agent_cfg.policy.init_noise_std,
         },
-        "initialization_mode": "checkpoint_resume" if checkpoint else "from_scratch",
+        "initialization_mode": "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch",
+        "initial_policy": str(initial_policy) if initial_policy else None,
+        "external_dependency_sha256": {
+            str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in dependency_paths
+        },
         "source_snapshot": str(source_dir / "source"),
         "local_source_patch_sha256": hashlib.sha256(source_patch).hexdigest(),
         "local_source_patch": str(source_dir / "main_runtime_fix.patch"),
@@ -182,6 +213,18 @@ def main():
             "articulation_joint_ids": list(action_term._joint_ids),
             "held_upper_body_joint_ids": list(getattr(action_manager, "held_joint_ids", [])),
         }
+        if hasattr(env.unwrapped, "stair_progress"):
+            raw = env.unwrapped
+            metadata["runtime_stair_geometry"] = {
+                "terrain_rows": raw.scene.terrain.cfg.terrain_generator.num_rows,
+                "riser_min_m": raw._stair_minimum_height,
+                "riser_max_m": raw._stair_maximum_height,
+                "current_riser_min_m": float(raw._stair_heights().min()),
+                "current_riser_max_m": float(raw._stair_heights().max()),
+                "levels": raw.stair_progress.steps, "depth_m": raw.stair_progress.depth,
+                "width_m": raw.stair_progress.width, "approach_m": raw.stair_progress.approach,
+                "scripted_gait_installed": action_term.gait_reference is not None,
+            }
         for name, value in {"policy": obs, **extras["observations"]}.items():
             if not torch.isfinite(value).all():
                 raise ValueError(f"Non-finite initial observations in {name}")
@@ -191,6 +234,22 @@ def main():
         runner = SupervisedRunner(env, agent_cfg.to_dict(), log_dir=str(log_dir), device=agent_cfg.device,
                                   supervision_path=args.supervision_state, policy=stop_policy)
         runner.add_git_repo_to_log(__file__)
+        if initial_policy:
+            boot = torch.load(initial_policy, map_location=agent_cfg.device, weights_only=True)
+            if (boot.get("format") != "h2_direct_policy_initialization_v1"
+                    or boot.get("ppo_completed_iterations") != 0
+                    or boot.get("action_semantics") != "full_soft_tanh_position_v1"
+                    or boot.get("policy_dimensions") != [1029, 866, 73, 12]):
+                raise ValueError("Initial policy does not match the direct-action contract")
+            receipt = json.loads((initial_policy.parent / "result.json").read_text())
+            if not receipt.get("initialization_ready", False):
+                raise ValueError("Behavior initialization did not pass its declared quality gate")
+            runner.alg.policy.load_state_dict(boot["model_state_dict"], strict=True)
+            runner.obs_normalizer.load_state_dict(boot["obs_norm_state_dict"], strict=True)
+            runner.privileged_obs_normalizer.load_state_dict(boot["privileged_obs_norm_state_dict"], strict=True)
+            metadata["initial_policy_sha256"] = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
+            metadata["behavior_initialization_quality"] = boot["metadata"]
+            del boot
         if checkpoint:
             runner.load(str(checkpoint), load_optimizer=True)
             # RSL-RL 2.3.3 stores the last completed zero-based iteration and
@@ -202,6 +261,7 @@ def main():
             runner.tot_timesteps = completed_iterations * agent_cfg.num_steps_per_env * args.num_envs
         metadata["initial_learning_state"] = {
             "checkpoint_loaded": checkpoint is not None,
+            "behavior_policy_initialized": initial_policy is not None,
             "iteration": int(runner.current_learning_iteration),
             "policy_optimizer_state_entries": len(runner.alg.optimizer.state),
             "rnd_optimizer_state_entries": len(runner.alg.rnd_optimizer.state) if runner.alg.rnd else None,
@@ -241,6 +301,7 @@ def main():
             return
         metadata["status"] = "completed"
         metadata["completed_iterations"] = int(runner.current_learning_iteration) + 1
+        metadata["total_timesteps"] = int(runner.tot_timesteps)
         metadata["final_checkpoint"] = str(log_dir / f"model_{runner.current_learning_iteration}.pt")
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         runner.update_state(status="completed", completed_iterations=metadata["completed_iterations"],
