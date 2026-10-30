@@ -1,0 +1,19 @@
+# Generated local runtime and experiment data.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.agent-state/
+logs/
+outputs/
+.venv/
+venv/
+
+# Machine-local configuration and credentials.
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# A published, explicit artifact bundle is kept under artifacts/.
+*.tmp
+*.pending.json

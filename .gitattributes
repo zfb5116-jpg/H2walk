@@ -1,0 +1,9 @@
+# Preserve the exact source and artifact bytes covered by SHA256 receipts.
+source/** -text
+artifacts/** -text
+tools/** -text
+*.sh text eol=lf
+*.usd binary
+*.pt binary
+*.mp4 binary
+*.png binary

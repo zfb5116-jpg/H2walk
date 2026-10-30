@@ -6,6 +6,7 @@ from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg, VecEnvStepRet
 from isaaclab.utils.math import quat_apply_inverse
 
 from .manager import CtrlLabActionManager
+from .locomotion_progress import LocomotionProgress
 
 
 class RobotEnv(ManagerBasedRLEnv):
@@ -23,9 +24,26 @@ class RobotEnv(ManagerBasedRLEnv):
         self.feet_pos_b = torch.zeros(self.num_envs, self.num_feet, 3, dtype=torch.float32, device=self.device)
         self.prev_feet_pos_b = torch.zeros_like(self.feet_pos_b)
         self.feet_vel_b = torch.zeros_like(self.feet_pos_b)
+        self._progress_sensor = self.scene["contact_forces"]
+        self._progress_foot_ids, _ = self._progress_sensor.find_bodies(feet_body_names, preserve_order=True)
+        if len(self._progress_foot_ids) != 2:
+            raise ValueError("H2 locomotion curriculum requires two ordered foot contact bodies")
+        self.locomotion_progress = LocomotionProgress(
+            self.num_envs, self.device, episode_length_s=cfg.episode_length_s)
+
+    def _finish_progress_step(self, env_ids=None):
+        contact = self._progress_sensor.data.net_forces_w[:, self._progress_foot_ids, :].norm(dim=-1) > 5.0
+        self.locomotion_progress.finish_step(self.asset.data.root_pos_w[:, :2], contact, env_ids)
 
     def _reset_idx(self, env_ids: Sequence[int]):
+        if hasattr(self, "locomotion_progress"):
+            # Capture the terminal displacement/contact before terrain origins or
+            # root state change. The curriculum then sees complete episodes.
+            self._finish_progress_step(env_ids)
+            self.locomotion_progress.record_episodes(env_ids, self.termination_manager.terminated)
         super()._reset_idx(env_ids)
+        if hasattr(self, "locomotion_progress"):
+            self.locomotion_progress.reset(env_ids)
         self.update_feet_state()
         self.prev_feet_pos_b[env_ids] = self.feet_pos_b[env_ids]
         self.feet_vel_b[env_ids] = 0.0
@@ -44,4 +62,10 @@ class RobotEnv(ManagerBasedRLEnv):
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         self.prev_feet_pos_b[:] = self.feet_pos_b
         self.update_feet_state()
-        return super().step(action)
+        self.locomotion_progress.begin_step(
+            self.asset.data.root_pos_w[:, :2], self.asset.data.root_quat_w,
+            self.command_manager.get_command("base_velocity"), self.step_dt)
+        result = super().step(action)
+        # Reset environments were finalized by _reset_idx; only finish the rest.
+        self._finish_progress_step()
+        return result

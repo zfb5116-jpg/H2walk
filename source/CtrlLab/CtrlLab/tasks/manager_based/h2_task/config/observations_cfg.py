@@ -53,7 +53,7 @@ class ObservationsCfg:
             noise=Unoise(n_min=-1.5, n_max=1.5),
             history_length=POLICY_HISTORY_LENGTH,
         )
-        last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100), history_length=POLICY_HISTORY_LENGTH)
+        last_action = ObsTerm(func=h2_mdp.last_action_in_joint_order, clip=(-100, 100), history_length=POLICY_HISTORY_LENGTH)
         # Exteroceptive terrain perception from the existing pelvis-mounted ray caster.
         # This makes the actor terrain-aware; the critic already receives this scan below.
         height_scanner = ObsTerm(
@@ -91,7 +91,7 @@ class ObservationsCfg:
             scale=0.05,
             params={"asset_cfg": SceneEntityCfg("robot", preserve_order=True, joint_names=DOF_IDX)},
         )
-        last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        last_action = ObsTerm(func=h2_mdp.last_action_in_joint_order, clip=(-100, 100))
         joint_effort = ObsTerm(
             func=mdp.joint_effort,
             scale=0.01,

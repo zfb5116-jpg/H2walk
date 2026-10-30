@@ -1,0 +1,12 @@
+{
+  "isaac_sim": "5.0.0-rc.45+release.23960.184afb15.gl",
+  "isaaclab": "0.44.9",
+  "isaaclab-rl": "0.2.3",
+  "torch": "2.7.0+cu128",
+  "rsl-rl-lib": "2.3.3",
+  "gymnasium": "1.2.0",
+  "numpy": "1.26.0",
+  "scipy": "1.15.3",
+  "python": "3.11",
+  "scope": "Recorded locally; use Isaac Sim Python and compatible preinstalled dependencies."
+}

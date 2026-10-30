@@ -54,10 +54,8 @@ class H2TerrainEncoderActor(nn.Module):
     ):
         super().__init__()
         self.num_joints = actions if num_joints is None else num_joints
-        if self.num_joints != actions:
-            raise ValueError(
-                f"H2 joint observation width ({self.num_joints}) must match action count ({actions})"
-            )
+        if self.num_joints < actions:
+            raise ValueError("Observed joint count cannot be smaller than controlled action count")
         self.history_length = history_length
         self.height_scan_dim = height_scan_dim
         self.detach_estimates = detach_estimates
@@ -205,3 +203,6 @@ def register_rsl_rl_policy() -> None:
     except ImportError as exc:
         raise ImportError("Install Isaac Lab/RSL-RL before importing H2ActorCriticOur") from exc
     modules.H2ActorCriticOur = H2ActorCriticOur
+    # RSL-RL 2.3 resolves the configured name in this module's globals.
+    import rsl_rl.runners.on_policy_runner as runner_module
+    runner_module.H2ActorCriticOur = H2ActorCriticOur

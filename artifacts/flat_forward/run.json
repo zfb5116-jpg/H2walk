@@ -1,0 +1,217 @@
+{
+  "task": "Unitree-H2-Velocity-Stairs",
+  "task_source": "/home/nsgm/python_src/H2walk/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/__init__.py",
+  "asset": "/home/nsgm/python_src/H2walk/assets/isaaclab/unitree_robots/h2/h2.usd",
+  "num_envs": 1024,
+  "max_iterations": 1000,
+  "num_steps_per_env": 24,
+  "save_interval": 500,
+  "seed": 42,
+  "device": "cuda:0",
+  "checkpoint": null,
+  "starting_iteration": 0,
+  "target_total_iterations": 1000,
+  "source_branch": "main",
+  "motion_supervision": true,
+  "control_settings": {
+    "stance_preload_torques": {
+      "left_hip_pitch_joint": -1.0101489,
+      "left_hip_roll_joint": 4.97909581,
+      "left_hip_yaw_joint": -0.6675075,
+      "left_knee_joint": -27.07197389,
+      "left_ankle_roll_joint": -0.49265255,
+      "left_ankle_pitch_joint": 15.67942988,
+      "right_hip_pitch_joint": -1.14466532,
+      "right_hip_roll_joint": -4.76322872,
+      "right_hip_yaw_joint": 0.64115111,
+      "right_knee_joint": -26.20611724,
+      "right_ankle_roll_joint": 0.47841811,
+      "right_ankle_pitch_joint": 15.21599833
+    },
+    "stance_orientation_feedback": {
+      "kp": [
+        100.0,
+        500.0
+      ],
+      "kd": [
+        20.0,
+        80.0
+      ],
+      "maximum_torque": [
+        10.0,
+        40.0
+      ]
+    },
+    "lateral_com_feedback": {
+      "position_gain": 1.0,
+      "velocity_gain": 0.35,
+      "maximum_angle": 0.12,
+      "sagittal_position_gain": 1.0,
+      "sagittal_velocity_gain": 0.35
+    },
+    "contact_gait_reference": {
+      "settling_time": 0.1,
+      "lowering_time": 0.7,
+      "pelvis_lowering": 0.03,
+      "preparation_time": 1.0,
+      "step_period": 0.6,
+      "maximum_step_length": 0.22,
+      "clearance": 0.06,
+      "ground_contact_depth": 0.006,
+      "support_fraction": 0.65,
+      "capture_tolerance": 0.045,
+      "maximum_unload_wait": 0.18,
+      "ik_iterations": 5,
+      "com_position_gain": 12.0,
+      "com_velocity_gain": 7.0,
+      "residual_angle_limits": [
+        0.04,
+        0.03,
+        0.03,
+        0.04,
+        0.02,
+        0.015
+      ]
+    },
+    "progressive_walking_curriculum": false,
+    "action_scale": {
+      "left_hip_pitch_joint": 0.3,
+      "left_hip_roll_joint": 0.3,
+      "left_hip_yaw_joint": 0.3,
+      "left_knee_joint": 0.3,
+      "right_hip_pitch_joint": 0.3,
+      "right_hip_roll_joint": 0.3,
+      "right_hip_yaw_joint": 0.3,
+      "right_knee_joint": 0.3,
+      "left_ankle_roll_joint": 0.059375,
+      "right_ankle_roll_joint": 0.059375,
+      "left_ankle_pitch_joint": 0.0275,
+      "right_ankle_pitch_joint": 0.0275
+    },
+    "init_noise_std": 0.5
+  },
+  "initialization_mode": "from_scratch",
+  "source_snapshot": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_stairs_manager_based/2026-10-29_23-38-16_capture_residual_fresh_save500/training_source/source",
+  "local_source_patch_sha256": "9e5e91640c3698a6a851f35a6be7bb0e0444abc737d3ce83528399f91fdb78d6",
+  "local_source_patch": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_stairs_manager_based/2026-10-29_23-38-16_capture_residual_fresh_save500/training_source/main_runtime_fix.patch",
+  "stop_policy": {
+    "warmup_iterations": 2000,
+    "assessment_interval_iterations": 1000,
+    "patience_iterations": 3000,
+    "patience_seconds": 7200,
+    "required_stagnant_assessments": 3,
+    "episode_window_size": 5000,
+    "absolute_improvement_thresholds": {
+      "survival20s_fraction": 0.05,
+      "survival_and_progress_fraction": 0.05,
+      "locomotion_success_fraction": 0.02,
+      "terrain_level": 0.25
+    },
+    "median_episode_improvement": "max(1 second, 10 percent)",
+    "progress_ratio_improvement": 0.1,
+    "preserve_episode_stability_for_progress_gain": true,
+    "reward_alone_does_not_count": true,
+    "automatic_retry_allowed": false
+  },
+  "status": "completed",
+  "git_commit": "f4aee2defa4709eb7b09e824a7708e70bfa86ffe",
+  "observation_shapes": {
+    "policy": [
+      1024,
+      1029
+    ],
+    "critic": [
+      1024,
+      866
+    ],
+    "rnd_state": [
+      1024,
+      73
+    ]
+  },
+  "policy_shape": [
+    1024,
+    1029
+  ],
+  "num_actions": 12,
+  "action_contract": {
+    "class": "BoundedJointPositionAction",
+    "joint_names": [
+      "left_hip_pitch_joint",
+      "left_hip_roll_joint",
+      "left_hip_yaw_joint",
+      "left_knee_joint",
+      "left_ankle_roll_joint",
+      "left_ankle_pitch_joint",
+      "right_hip_pitch_joint",
+      "right_hip_roll_joint",
+      "right_hip_yaw_joint",
+      "right_knee_joint",
+      "right_ankle_roll_joint",
+      "right_ankle_pitch_joint"
+    ],
+    "articulation_joint_ids": [
+      0,
+      3,
+      6,
+      9,
+      14,
+      19,
+      1,
+      4,
+      7,
+      10,
+      15,
+      20
+    ],
+    "held_upper_body_joint_ids": [
+      2,
+      5,
+      8,
+      12,
+      17,
+      21,
+      23,
+      25,
+      27,
+      29,
+      13,
+      18,
+      22,
+      24,
+      26,
+      28,
+      30
+    ]
+  },
+  "initial_learning_state": {
+    "checkpoint_loaded": false,
+    "iteration": 0,
+    "policy_optimizer_state_entries": 0,
+    "rnd_optimizer_state_entries": 0,
+    "policy_std": [
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalizer_counts": {
+      "actor": {
+        "count": 0.0
+      },
+      "critic": {
+        "count": 0.0
+      }
+    }
+  },
+  "completed_iterations": 1000,
+  "final_checkpoint": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_stairs_manager_based/2026-10-29_23-38-16_capture_residual_fresh_save500/model_999.pt"
+}

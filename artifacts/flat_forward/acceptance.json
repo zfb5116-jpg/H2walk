@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "verified_at": "2026-10-30T09:41:35.483415+00:00",
+  "terrain": "flat",
+  "seed": 42,
+  "num_envs": 1024,
+  "successful_envs": 952,
+  "success_percent": 92.96875,
+  "minimum_successful_envs": 922,
+  "survived_horizon_envs": 1012,
+  "first_episode_only": true,
+  "duration_s": 20,
+  "command_m_s": [
+    0.3,
+    0,
+    0
+  ],
+  "distance_range_m": [
+    4.8,
+    7.2
+  ],
+  "minimum_valid_alternating_landings_each_foot": 2,
+  "independently_recounted_csv": true,
+  "controller_system": "Complete reference gait controller plus frozen learned residual; PT alone is not the controller.",
+  "current_repository_source_verified": true,
+  "checkpoint": "artifacts/flat_forward/model_999.pt",
+  "checkpoint_sha256": "2b06db2e09061cc660d46578b112ea29d0e601c3e75ac2163f8425aa24553fcb",
+  "frozen_lidar_reconstructor": "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt",
+  "training_updates": 0,
+  "network_structure_changed": false,
+  "model_dimensions": {
+    "actor": 1029,
+    "critic": 866,
+    "rnd": 73,
+    "actions": 12
+  },
+  "evidence": {
+    "result": "artifacts/flat_forward/verification/result.json",
+    "all_environment_rows": "artifacts/flat_forward/verification/episodes.csv",
+    "video": "artifacts/flat_forward/verification/env0.mp4",
+    "source_manifest": "artifacts/flat_forward/verification/source_manifest.json"
+  },
+  "scope_zh": "仅平地向前0.3m/s验收通过；上楼、转向、后退、侧移不在本次验收范围。楼梯实验按用户要求暂停。",
+  "last_verification_case_local": "/home/nsgm/python_src/H2walk/logs/verifications/current_flat_20261030_173430",
+  "verification_process_exit_code": 0
+}

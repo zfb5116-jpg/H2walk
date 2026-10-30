@@ -54,13 +54,27 @@ class H2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class H2TerrainActorCriticCfg(RslRlPpoActorCriticCfg):
+    # Proprioception observes the whole body; the stair policy controls 12 leg joints.
+    num_joints: int = 29
+
+
+@configclass
 class H2RoughPPORunnerCfg(H2FlatPPORunnerCfg):
     max_iterations = 8000
     experiment_name = "h2_rough_manager_based"
-    policy = RslRlPpoActorCriticCfg(
+    policy = H2TerrainActorCriticCfg(
         class_name="H2ActorCriticOur",
         init_noise_std=1.0,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
+
+
+@configclass
+class H2StairsPPORunnerCfg(H2RoughPPORunnerCfg):
+    """The same network and PPO, with gentler initial torque exploration."""
+
+    def __post_init__(self):
+        self.policy.init_noise_std = 0.5

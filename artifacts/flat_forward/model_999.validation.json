@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "checkpoint": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_stairs_manager_based/2026-10-29_23-38-16_capture_residual_fresh_save500/model_999.pt",
+  "iteration": 999,
+  "completed_iterations": 1000,
+  "size": 16851531,
+  "sha256": "2b06db2e09061cc660d46578b112ea29d0e601c3e75ac2163f8425aa24553fcb",
+  "map_location": "cpu",
+  "weights_only": true,
+  "tensor_count": 248,
+  "all_tensors_finite": true,
+  "model_strict_load": true,
+  "optimizer_state_shapes_valid": true,
+  "normalizers_strict_load": true,
+  "normalizer_counts": {
+    "actor": {
+      "count": 24576000.0
+    },
+    "critic": {
+      "count": 24576000.0
+    }
+  },
+  "rnd_strict_load": true,
+  "rnd_optimizer_state_shapes_valid": true,
+  "actor_dim": 1029,
+  "critic_dim": 866,
+  "rnd_dim": 73,
+  "actions": 12
+}

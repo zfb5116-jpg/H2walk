@@ -55,6 +55,7 @@ def tracking_lin_vel_x(
         command_name: str,
         std: float = 0.5,
         command_threshold: float = 0.15,
+        require_forward_progress: bool = False,
 ) -> torch.Tensor:
     """Track the commanded forward velocity in the robot base frame.
 
@@ -69,8 +70,16 @@ def tracking_lin_vel_x(
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_command(command_name)
     moving = torch.linalg.vector_norm(command[:, :2], dim=1) > command_threshold
-    error = asset.data.root_lin_vel_b[:, 0] - command[:, 0]
-    return torch.exp(-torch.square(error / std)) * moving
+    forward_velocity = asset.data.root_lin_vel_b[:, 0]
+    error = forward_velocity - command[:, 0]
+    score = torch.exp(-torch.square(error / std))
+    if require_forward_progress:
+        # A moving command earns no forward-tracking reward by standing still
+        # or travelling backwards. Full credit still requires matching speed.
+        progress_fraction = (forward_velocity * command[:, 0].sign()
+                             / command[:, 0].abs().clamp_min(1e-6)).clamp(0.0, 1.0)
+        score *= progress_fraction
+    return score * moving
 
 
 def heading_tracking(

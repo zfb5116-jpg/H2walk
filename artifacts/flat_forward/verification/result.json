@@ -1,0 +1,595 @@
+{
+  "status": "completed",
+  "checkpoint": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_stairs_manager_based/2026-10-29_23-38-16_capture_residual_fresh_save500/model_999.pt",
+  "checkpoint_sha256": "2b06db2e09061cc660d46578b112ea29d0e601c3e75ac2163f8425aa24553fcb",
+  "num_envs": 1024,
+  "terrain": "flat",
+  "duration_s": 20.0,
+  "command_m_s": [
+    0.3,
+    0.0,
+    0.0
+  ],
+  "seed": 42,
+  "evaluation_changes": [
+    "fixed forward velocity",
+    "zero initial yaw",
+    "no observation corruption",
+    "no external pushes",
+    "no curriculum updates"
+  ],
+  "startup_domain_randomization": "same as training",
+  "policy_mode": "explicit reference gait controller plus frozen learned residual with saved normalization",
+  "training_updates": 0,
+  "lock_upper_body": true,
+  "controller": {
+    "action_class": "BoundedJointPositionAction",
+    "stance_preload_torques": {
+      "left_hip_pitch_joint": -1.0101489,
+      "left_hip_roll_joint": 4.97909581,
+      "left_hip_yaw_joint": -0.6675075,
+      "left_knee_joint": -27.07197389,
+      "left_ankle_roll_joint": -0.49265255,
+      "left_ankle_pitch_joint": 15.67942988,
+      "right_hip_pitch_joint": -1.14466532,
+      "right_hip_roll_joint": -4.76322872,
+      "right_hip_yaw_joint": 0.64115111,
+      "right_knee_joint": -26.20611724,
+      "right_ankle_roll_joint": 0.47841811,
+      "right_ankle_pitch_joint": 15.21599833
+    },
+    "stance_orientation_feedback": {
+      "kp": [
+        100.0,
+        500.0
+      ],
+      "kd": [
+        20.0,
+        80.0
+      ],
+      "maximum_torque": [
+        10.0,
+        40.0
+      ]
+    },
+    "lateral_com_feedback": {
+      "position_gain": 1.0,
+      "velocity_gain": 0.35,
+      "maximum_angle": 0.12,
+      "sagittal_position_gain": 1.0,
+      "sagittal_velocity_gain": 0.35
+    },
+    "contact_gait_reference": {
+      "settling_time": 0.1,
+      "lowering_time": 0.7,
+      "pelvis_lowering": 0.03,
+      "preparation_time": 1.0,
+      "step_period": 0.6,
+      "maximum_step_length": 0.22,
+      "clearance": 0.06,
+      "ground_contact_depth": 0.006,
+      "support_fraction": 0.65,
+      "capture_tolerance": 0.045,
+      "maximum_unload_wait": 0.18,
+      "ik_iterations": 5,
+      "com_position_gain": 12.0,
+      "com_velocity_gain": 7.0,
+      "residual_angle_limits": [
+        0.04,
+        0.03,
+        0.03,
+        0.04,
+        0.02,
+        0.015
+      ]
+    }
+  },
+  "lateral_map_corruption": false,
+  "forward_reward_function": "net_forward_progress",
+  "forward_reward_requires_progress": true,
+  "positive_progress_credit_capped_at_command": true,
+  "lateral_command_limits": [
+    0.0,
+    0.0
+  ],
+  "diagnostic_only": false,
+  "control_mode": "reference_controller_frozen_policy_residual",
+  "trajectory_rule": "first episode only; terminal state captured before automatic reset",
+  "movement_screen": {
+    "survive_full_horizon": true,
+    "minimum_forward_progress_ratio": 0.8,
+    "maximum_forward_progress_ratio": 1.2,
+    "minimum_valid_alternating_landings_each_foot": 2
+  },
+  "source": "/home/nsgm/python_src/H2walk/tools/evaluate_main_walk.py",
+  "source_sha256": "891f4d070269bbc686499581e384119a83a2d1de4700b66673444e0d2a200d56",
+  "task_source": "/home/nsgm/python_src/H2walk/logs/verifications/current_flat_20261030_173430/source_snapshot/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/__init__.py",
+  "rendering": "env0 visible; all other simulated environments hidden from video only",
+  "replicate_physics": true,
+  "runtime_joint_action_mapping": {
+    "articulation_joint_names": [
+      "left_hip_pitch_joint",
+      "right_hip_pitch_joint",
+      "waist_yaw_joint",
+      "left_hip_roll_joint",
+      "right_hip_roll_joint",
+      "waist_roll_joint",
+      "left_hip_yaw_joint",
+      "right_hip_yaw_joint",
+      "waist_pitch_joint",
+      "left_knee_joint",
+      "right_knee_joint",
+      "head_pitch_joint",
+      "left_shoulder_pitch_joint",
+      "right_shoulder_pitch_joint",
+      "left_ankle_roll_joint",
+      "right_ankle_roll_joint",
+      "head_yaw_joint",
+      "left_shoulder_roll_joint",
+      "right_shoulder_roll_joint",
+      "left_ankle_pitch_joint",
+      "right_ankle_pitch_joint",
+      "left_shoulder_yaw_joint",
+      "right_shoulder_yaw_joint",
+      "left_elbow_joint",
+      "right_elbow_joint",
+      "left_wrist_roll_joint",
+      "right_wrist_roll_joint",
+      "left_wrist_pitch_joint",
+      "right_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_wrist_yaw_joint"
+    ],
+    "action_joint_names": [
+      "left_hip_pitch_joint",
+      "left_hip_roll_joint",
+      "left_hip_yaw_joint",
+      "left_knee_joint",
+      "left_ankle_roll_joint",
+      "left_ankle_pitch_joint",
+      "right_hip_pitch_joint",
+      "right_hip_roll_joint",
+      "right_hip_yaw_joint",
+      "right_knee_joint",
+      "right_ankle_roll_joint",
+      "right_ankle_pitch_joint"
+    ],
+    "action_to_articulation_ids": [
+      0,
+      3,
+      6,
+      9,
+      14,
+      19,
+      1,
+      4,
+      7,
+      10,
+      15,
+      20
+    ],
+    "leg_articulation_ids": [
+      0,
+      3,
+      6,
+      9,
+      14,
+      19,
+      1,
+      4,
+      7,
+      10,
+      15,
+      20
+    ],
+    "leg_action_ids_by_name": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "locked_action_ids": [],
+    "held_joint_ids": [
+      2,
+      5,
+      8,
+      12,
+      17,
+      21,
+      23,
+      25,
+      27,
+      29,
+      13,
+      18,
+      22,
+      24,
+      26,
+      28,
+      30
+    ]
+  },
+  "maximum_upper_body_target_error_rad": 0.0,
+  "policy_std": [
+    0.971161425113678,
+    1.050406575202942,
+    0.995261549949646,
+    1.047516942024231,
+    1.0630712509155273,
+    1.0835117101669312,
+    1.0019304752349854,
+    1.029923915863037,
+    1.0069421529769897,
+    1.0114027261734009,
+    1.0724472999572754,
+    1.0350120067596436
+  ],
+  "runtime_actuator_contract": {
+    "hip_knee": {
+      "class": "DelayedImplicitActuator",
+      "solver_integrated": true,
+      "joint_names": [
+        "left_hip_pitch_joint",
+        "right_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "right_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "right_hip_yaw_joint",
+        "left_knee_joint",
+        "right_knee_joint"
+      ],
+      "stiffness_median": [
+        298.92041015625,
+        298.427490234375,
+        296.2630310058594,
+        298.6405944824219,
+        299.26470947265625,
+        299.3389892578125,
+        299.20867919921875,
+        300.32696533203125
+      ],
+      "damping_median": [
+        39.88723373413086,
+        39.65314483642578,
+        41.72209548950195,
+        41.99448013305664,
+        9.926779747009277,
+        9.976244926452637,
+        18.955646514892578,
+        18.93434715270996
+      ],
+      "effort_limits": [
+        360.0,
+        360.0,
+        360.0,
+        360.0,
+        360.0,
+        360.0,
+        360.0,
+        360.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "solver_stiffness_error": 0.0,
+      "solver_damping_error": 0.0,
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    },
+    "ankle_roll": {
+      "class": "DelayedImplicitActuator",
+      "solver_integrated": true,
+      "joint_names": [
+        "left_ankle_roll_joint",
+        "right_ankle_roll_joint"
+      ],
+      "stiffness_median": [
+        79.8541488647461,
+        79.72032165527344
+      ],
+      "damping_median": [
+        2.4910800457000732,
+        2.4935731887817383
+      ],
+      "effort_limits": [
+        19.0,
+        19.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "solver_stiffness_error": 0.0,
+      "solver_damping_error": 0.0,
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    },
+    "ankle_pitch": {
+      "class": "DelayedImplicitActuator",
+      "solver_integrated": true,
+      "joint_names": [
+        "left_ankle_pitch_joint",
+        "right_ankle_pitch_joint"
+      ],
+      "stiffness_median": [
+        596.74169921875,
+        598.5079956054688
+      ],
+      "damping_median": [
+        2.989776611328125,
+        2.973524332046509
+      ],
+      "effort_limits": [
+        66.0,
+        66.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "solver_stiffness_error": 0.0,
+      "solver_damping_error": 0.0,
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    },
+    "waist": {
+      "class": "DelayedPDActuator",
+      "solver_integrated": false,
+      "joint_names": [
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint"
+      ],
+      "stiffness_median": [
+        148.81333923339844,
+        149.8925323486328,
+        149.1611328125
+      ],
+      "damping_median": [
+        2.98329496383667,
+        2.997713565826416,
+        2.985781192779541
+      ],
+      "effort_limits": [
+        120.0,
+        120.0,
+        120.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    },
+    "shoulder_elbow_wrist_roll": {
+      "class": "DelayedPDActuator",
+      "solver_integrated": false,
+      "joint_names": [
+        "left_shoulder_pitch_joint",
+        "right_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "right_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "right_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "right_elbow_joint",
+        "left_wrist_roll_joint",
+        "right_wrist_roll_joint"
+      ],
+      "stiffness_median": [
+        39.754608154296875,
+        39.7869987487793,
+        39.64667892456055,
+        39.92404556274414,
+        39.828948974609375,
+        39.99995803833008,
+        39.927207946777344,
+        40.020606994628906,
+        39.83610534667969,
+        39.638633728027344
+      ],
+      "damping_median": [
+        1.994981050491333,
+        1.9874931573867798,
+        1.9889366626739502,
+        1.9892833232879639,
+        1.9939435720443726,
+        1.9932281970977783,
+        1.9832512140274048,
+        1.9938243627548218,
+        1.9943997859954834,
+        1.9893735647201538
+      ],
+      "effort_limits": [
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0,
+        54.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    },
+    "wrist_pitch_yaw": {
+      "class": "DelayedPDActuator",
+      "solver_integrated": false,
+      "joint_names": [
+        "left_wrist_pitch_joint",
+        "right_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_wrist_yaw_joint"
+      ],
+      "stiffness_median": [
+        19.942569732666016,
+        19.984182357788086,
+        19.785158157348633,
+        19.874439239501953
+      ],
+      "damping_median": [
+        0.9946108460426331,
+        1.0008442401885986,
+        0.9945979118347168,
+        0.9935638308525085
+      ],
+      "effort_limits": [
+        25.0,
+        25.0,
+        25.0,
+        25.0
+      ],
+      "configured_command_delay_physics_steps": [
+        0,
+        6
+      ],
+      "sampled_delay_range": [
+        0,
+        6
+      ]
+    }
+  },
+  "landing_metric_source": {
+    "path": "/home/nsgm/python_src/H2walk/logs/verifications/current_flat_20261030_173430/source_snapshot/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/locomotion_progress.py",
+    "sha256": "f5a7ed51cd72f344c1cdeb9c012a259ba0195e95795bcad67526fd9893ad8293",
+    "rule": "alternating, 80-600ms flight, other foot already supports, initial contact and hops excluded"
+  },
+  "filtered_nonfoot_ground_sensor_bodies": [],
+  "unfiltered_contact_body_names": [
+    "pelvis",
+    "left_hip_pitch_link",
+    "left_hip_roll_link",
+    "left_hip_yaw_link",
+    "left_knee_link",
+    "left_ankle_roll_link",
+    "left_ankle_pitch_link",
+    "right_hip_pitch_link",
+    "right_hip_roll_link",
+    "right_hip_yaw_link",
+    "right_knee_link",
+    "right_ankle_roll_link",
+    "right_ankle_pitch_link",
+    "waist_yaw_link",
+    "waist_roll_link",
+    "torso_link",
+    "head_pitch_link",
+    "head_yaw_link",
+    "left_shoulder_pitch_link",
+    "left_shoulder_roll_link",
+    "left_shoulder_yaw_link",
+    "left_elbow_link",
+    "left_wrist_roll_link",
+    "left_wrist_pitch_link",
+    "left_wrist_yaw_link",
+    "left_hand_link",
+    "right_shoulder_pitch_link",
+    "right_shoulder_roll_link",
+    "right_shoulder_yaw_link",
+    "right_elbow_link",
+    "right_wrist_roll_link",
+    "right_wrist_pitch_link",
+    "right_wrist_yaw_link",
+    "right_hand_link"
+  ],
+  "measured_joint_effort_scope": "PhysX projected net active-axis transmission, includes drive/friction/limits; not isolated motor drive torque",
+  "observation_shapes": {
+    "policy": [
+      1024,
+      1029
+    ],
+    "critic": [
+      1024,
+      866
+    ],
+    "rnd_state": [
+      1024,
+      73
+    ]
+  },
+  "actions": 12,
+  "step_dt_s": 0.02,
+  "checkpoint_iteration": 999,
+  "foot_bodies": [
+    "left_ankle_pitch_link",
+    "right_ankle_pitch_link"
+  ],
+  "reference_controller_summary": {
+    "reference_steps_mean": 29.8203125,
+    "reference_steps_min": 1,
+    "reference_steps_max": 31,
+    "unload_timeout_envs": 0,
+    "landing_timeout_envs": 11,
+    "infeasible_plan_envs": 1,
+    "terminal_ik_error_max_m": 0.4213452637195587
+  },
+  "elapsed_wall_s": 317.0664026737213,
+  "simulated_steps": 1000,
+  "checkpoint_unchanged": true,
+  "results": {
+    "survived_20s_count": 1012,
+    "survived_horizon_count": 1012,
+    "survival_horizon_s": 20.0,
+    "failed_count": 12,
+    "survival_and_progress_count": 952,
+    "bilateral_touchdown_screen_count": 952,
+    "mean_first_episode_duration_s": 19.843204498291016,
+    "median_first_episode_duration_s": 20.0,
+    "mean_forward_displacement_m": 4.895678997039795,
+    "median_forward_displacement_m": 4.925923824310303,
+    "mean_xy_velocity_error_m_s": 0.175063356757164,
+    "termination_counts": {
+      "time_out": 1012,
+      "bad_orientation": 12,
+      "base_contact": 0,
+      "fall_body_contact": 0,
+      "contact_out_of_time": 0
+    },
+    "contact_diagnostics": {
+      "unfiltered_pelvis_over_1N_steps": {
+        "max": 0.0,
+        "mean": 0.0,
+        "nonzero_env_count": 0
+      },
+      "max_unfiltered_pelvis_force_N": {
+        "max": 0.0,
+        "mean": 0.0,
+        "nonzero_env_count": 0
+      }
+    },
+    "surviving_at_2s": 1024,
+    "surviving_at_5s": 1017,
+    "surviving_at_10s": 1014
+  },
+  "artifacts": {
+    "per_environment": "episodes.csv",
+    "trajectories": "trajectories.npz",
+    "video": "env0.mp4"
+  }
+}

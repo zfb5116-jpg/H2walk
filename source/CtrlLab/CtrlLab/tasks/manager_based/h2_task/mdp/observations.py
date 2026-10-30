@@ -5,9 +5,21 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.math import quat_apply_inverse
 from isaaclab.utils.math import quat_apply
-from ..assets import H2_LEG_JOINT_NAMES
+from ..assets import H2_LEG_JOINT_NAMES, H2_JOINT_NAMES
+from ..action_contract import actions_in_joint_order
 from ..networks.lidar_terrain_reconstructor import LidarTerrainReconstructor
 from ..lidar_hb_pattern import YuHbLidarPatternCfg, yu_hb_lidar_keep_mask
+
+
+def last_action_in_joint_order(env: ManagerBasedEnv) -> torch.Tensor:
+    """Keep the 29-joint observation layout while controlling only selected joints."""
+    return _joint_actions(env, H2_JOINT_NAMES, strict=False)
+
+
+def _joint_actions(env, joint_names, *, strict=True):
+    manager = env.unwrapped.action_manager
+    term = manager.get_term("JointPositionAction")
+    return actions_in_joint_order(manager.action, term._joint_names, joint_names, strict=strict)
 
 
 def reconstructed_lidar_height_scan(
@@ -17,6 +29,7 @@ def reconstructed_lidar_height_scan(
         side_noise_probability: float = 0.0,
         side_noise_width: tuple[int, int] = (1, 4),
         side_noise_std: float = 0.25,
+        side_noise_min_stage: int = 0,
 ) -> torch.Tensor:
     """Run the frozen reconstructor and optionally corrupt lateral map edges."""
     if not 0.0 <= side_noise_probability <= 1.0:
@@ -26,6 +39,8 @@ def reconstructed_lidar_height_scan(
     if side_noise_std < 0.0:
         raise ValueError("side_noise_std must be non-negative.")
     raw = env.unwrapped
+    if getattr(raw, "_h2_walking_curriculum_stage", 0) < side_noise_min_stage:
+        side_noise_probability = 0.0
     sensor = raw.scene.sensors[sensor_cfg.name]
     cache = getattr(raw, "_h2_lidar_recon_cache", None)
     step = int(getattr(raw, "common_step_counter", -1))
@@ -87,7 +102,7 @@ def reconstructed_lidar_height_scan(
             -starts[..., 2] / dz,
             torch.full_like(dz, float("inf")),
         )
-        plane_ok = (plane_t >= model.min_range) & (plane_t <= model.max_range)
+        plane_ok = (plane_t >= sensor.cfg.pattern_cfg.min_range) & (plane_t <= model.max_range)
         plane_hits = starts + directions * plane_t.unsqueeze(-1)
         hit_pos = torch.where(mesh_ok.unsqueeze(-1), ray_hits, plane_hits)
         valid = mesh_ok | plane_ok
@@ -131,7 +146,7 @@ def reconstructed_lidar_height_scan(
         leg_joint_ids = robot.find_joints(H2_LEG_JOINT_NAMES, preserve_order=True)[0]
         proprio[:, 9:21] = robot.data.joint_pos[:, leg_joint_ids] - robot.data.default_joint_pos[:, leg_joint_ids]
         proprio[:, 21:33] = robot.data.joint_vel[:, leg_joint_ids] * 0.05
-        proprio[:, 33:45] = raw.action_manager.action[:, leg_joint_ids]
+        proprio[:, 33:45] = _joint_actions(raw, H2_LEG_JOINT_NAMES)
     if proprio.shape[-1] > 45:
         n_velocity = min(3, proprio.shape[-1] - 45)
         proprio[:, 45 : 45 + n_velocity] = robot.data.root_lin_vel_b[:, :n_velocity]

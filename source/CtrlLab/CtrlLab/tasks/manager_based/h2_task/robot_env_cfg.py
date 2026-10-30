@@ -1,10 +1,11 @@
+from copy import deepcopy
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg, ContactSensorCfg, RayCasterCfg, patterns
-from isaaclab.managers import ObservationTermCfg as ObsTerm, SceneEntityCfg
+from isaaclab.managers import ObservationTermCfg as ObsTerm, RewardTermCfg as RewTerm, SceneEntityCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
@@ -26,6 +27,13 @@ from .assets import (
 from .config import *
 from .lidar_hb_pattern import YuHbLidarPatternCfg
 from .mdp.observations import reconstructed_lidar_height_scan
+from .mdp import walking_rewards
+from .manager.actuators import DelayedImplicitActuatorCfg
+from .manager.leg_action import BoundedJointPositionAction
+from .stance import STANCE_PRELOAD_TORQUES
+from .walking_terrain import with_flat_start
+import isaaclab.envs.mdp as common_mdp
+from .mdp.events import push_after_walking as h2_push_after_walking
 
 
 @configclass
@@ -331,14 +339,106 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
     """Curriculum training on ascending and descending stair terrains."""
 
     lock_upper_body_during_training = True
+    progressive_walking_curriculum = True
+    stair_reference: dict | None = None
+    stance_preload_torques = STANCE_PRELOAD_TORQUES
+    stance_orientation_feedback = {"kp": (100.0, 500.0), "kd": (20.0, 80.0),
+                                   "maximum_torque": (10.0, 40.0)}
+    lateral_com_feedback = {"position_gain": 1.0, "velocity_gain": 0.35, "maximum_angle": 0.12,
+                            "sagittal_position_gain": 1.0, "sagittal_velocity_gain": 0.35}
+    contact_gait_reference = {
+        "settling_time": 0.1, "lowering_time": 0.7, "pelvis_lowering": 0.03,
+        "preparation_time": 1.0, "step_period": 0.6, "maximum_step_length": 0.22,
+        "clearance": 0.06, "ground_contact_depth": 0.006,
+        "support_fraction": 0.65, "capture_tolerance": 0.045,
+        "maximum_unload_wait": 0.18, "ik_iterations": 5,
+        "com_position_gain": 12.0, "com_velocity_gain": 7.0,
+        "residual_angle_limits": [0.04, 0.03, 0.03, 0.04, 0.02, 0.015],
+    }
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
+        self.scene.terrain.terrain_generator = with_flat_start(STAIR_ROUGH_TERRAINS_CFG)
         # Start at the shallowest row; lifetime curriculum only advances robots
         # that complete an episode and travel across their tile.
         self.scene.terrain.max_init_terrain_level = 0
         self.scene.terrain.terrain_generator.curriculum = True
+        # Calibrated for this USD's loaded stance, rather than assuming the
+        # MuJoCo home keyframe is a closed-loop standing controller.
+        self.scene.robot.init_state.joint_pos.update({
+            "left_ankle_roll_joint": 0.014024,
+            "right_ankle_roll_joint": -0.014024,
+            "left_ankle_pitch_joint": -0.284022,
+            "right_ankle_pitch_joint": -0.284022,
+        })
+        self.scene.robot.actuators["hip_knee"].stiffness = 300.0
+        self.scene.robot.actuators["hip_knee"].damping = {
+            ".*_hip_pitch_joint": 40.0, ".*_hip_roll_joint": 42.0,
+            ".*_hip_yaw_joint": 10.0, ".*_knee_joint": 19.0,
+        }
+        self.scene.robot.actuators["ankle_roll"].stiffness = 80.0
+        self.scene.robot.actuators["ankle_roll"].damping = 2.5
+        self.scene.robot.actuators["ankle_pitch"].stiffness = 600.0
+        self.scene.robot.actuators["ankle_pitch"].damping = 3.0
+        # Keep physical torque/speed limits and command delay while integrating
+        # the stiff long-leg drive inside the articulation solver.
+        for group in ("hip_knee", "ankle_roll", "ankle_pitch"):
+            previous = self.scene.robot.actuators[group]
+            self.scene.robot.actuators[group] = DelayedImplicitActuatorCfg(
+                joint_names_expr=previous.joint_names_expr,
+                effort_limit_sim=previous.effort_limit_sim,
+                velocity_limit_sim=previous.velocity_limit_sim,
+                stiffness=previous.stiffness, damping=previous.damping,
+                friction=previous.friction, armature=previous.armature,
+                min_delay=previous.min_delay, max_delay=previous.max_delay,
+            )
+        # The stochastic policy contains exactly the joints that execute actions.
+        self.actions.JointPositionAction.joint_names = H2_LEG_JOINT_NAMES
+        self.actions.JointPositionAction.class_type = BoundedJointPositionAction
+        # One standard residual corresponds to one quarter of the nominal
+        # effort limit; high ankle stiffness must not amplify exploration torque.
+        self.actions.JointPositionAction.scale = {
+            **{name: 0.25 * 360.0 / 300.0 for name in H2_HIP_KNEE_JOINT_NAMES},
+            **{name: 0.25 * 19.0 / 80.0 for name in H2_ANKLE_ROLL_JOINT_NAMES},
+            **{name: 0.25 * 66.0 / 600.0 for name in H2_ANKLE_PITCH_JOINT_NAMES},
+        }
+        self.commands.base_velocity.heading_command = False
+        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.25, 0.35)
+        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
+        self.events.push_robot.func = h2_push_after_walking
+        # This task learns forward/backward motion and heading, with zero lateral command.
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.limit_ranges.lin_vel_y = (0.0, 0.0)
+        self.rewards.tracking_lin_vel_x.func = walking_rewards.net_forward_progress
+        self.rewards.tracking_lin_vel_x.params = {
+            "command_name": "base_velocity", "velocity_error_weight": 0.15, "command_threshold": 0.1,
+        }
+        # Cover orientation failures before the body touches the floor. At
+        # dt=0.02, -200 is a four-point terminal cost, never a timeout cost.
+        self.rewards.termination = RewTerm(func=common_mdp.is_terminated, weight=-200.0)
+        self.rewards.feet_air_time = None
+        self.rewards.feet_contact_time = None
+        self.rewards.feet_air_time_variance = None
+        self.rewards.feet_air_vel = None
+        self.rewards.feet_clearance = None
+        self.rewards.feet_support_transition = RewTerm(
+            func=walking_rewards.feet_support_transition, weight=1.0,
+            params={"command_name": "base_velocity", "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True)},
+        )
+        self.rewards.feet_lateral_separation = RewTerm(
+            func=walking_rewards.feet_lateral_separation, weight=-2.0,
+            params={"minimum": 0.10, "asset_cfg": SceneEntityCfg(
+                "robot", body_names=H2_FOOT_BODY_NAMES, preserve_order=True)},
+        )
+        self.rewards.feet_swing_height.func = walking_rewards.feet_support_clearance
+        self.rewards.feet_swing_height.params = {
+            "command_name": "base_velocity", "target_clearance": 0.06, "height_std": 0.04,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+            "asset_cfg": SceneEntityCfg("robot", body_names=H2_FOOT_BODY_NAMES, preserve_order=True),
+        }
         # Train only the lower body; the upper body stays at the default ready pose.
         self.rewards.joint_vel.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
         self.rewards.joint_acc.params = {"asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES)}
@@ -349,10 +449,10 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
         self.rewards.dof_vel_limits.params = {
             "asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES), "soft_ratio": 0.75
         }
+        self.rewards.dof_tor_limits.func = walking_rewards.joint_torque_saturation
+        self.rewards.dof_tor_limits.weight = -1.0
         self.rewards.dof_tor_limits.params = {
-            "asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES),
-            "soft_ratio": 0.75,
-            "effort_limit": 360.0,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=H2_LEG_JOINT_NAMES), "soft_ratio": 0.75,
         }
         self.rewards.joint_waist_deviation.weight = 0.0
         self.rewards.joint_arm_deviation.weight = 0.0
@@ -362,26 +462,42 @@ class RobotStairsEnvCfg(RobotRoughEnvCfg):
             {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.24, "height_std": 0.08}
         )
         _enable_stairs_lidar_reconstruction(self, corrupt_lateral_sides=True)
+        self.observations.policy.height_scanner.params["side_noise_min_stage"] = 2
+        # Establish straight walking before restoring obstacle/heading courses.
+        if self.contact_gait_reference is not None:
+            self.scene.terrain.terrain_generator = deepcopy(FLAT_ROUGH_TERRAINS_CFG)
+            self.scene.terrain.terrain_generator.num_rows = 1
+            self.scene.terrain.terrain_generator.num_cols = 1
+            self.scene.terrain.terrain_generator.size = (16.0, 16.0)
+            self.scene.terrain.terrain_generator.curriculum = False
+            self.progressive_walking_curriculum = False
+            self.curriculum.terrain_levels = None
+            self.curriculum.lin_vel_cmd_levels = None
+            self.events.push_robot = None
+            self.observations.policy.height_scanner.params["side_noise_probability"] = 0.0
+
 
 
 @configclass
-class RobotStairsPlayEnvCfg(RobotRoughPlayEnvCfg):
-    """Play environment for the stair curriculum."""
-
-    lock_upper_body_during_training = False
+class RobotStairsPlayEnvCfg(RobotStairsEnvCfg):
+    """Playback uses the complete trained controller, rewards and joint contract."""
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.terrain.terrain_generator = STAIR_ROUGH_TERRAINS_CFG
-        # Allow evaluation on the highest curriculum row, which contains the
-        # 20 cm stair band.
-        self.scene.terrain.max_init_terrain_level = 5
+        self.scene.num_envs = 64
+        self.scene.terrain.max_init_terrain_level = 6
         self.scene.terrain.terrain_generator.curriculum = False
-        self.rewards.feet_stair_clearance.weight = 2.5
-        self.rewards.feet_stair_clearance.params.update(
-            {"clearance": 0.035, "min_rise": 0.02, "max_rise": 0.24, "height_std": 0.08}
-        )
-        _enable_stairs_lidar_reconstruction(self)
+        self.curriculum.terrain_levels = None
+        self.curriculum.lin_vel_cmd_levels = None
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.heading = (-3.141592653589793, 3.141592653589793)
+        self.commands.base_velocity.heading_command = True
+        self.commands.base_velocity.rel_standing_envs = 0.0
+        self.observations.policy.enable_corruption = False
+        self.observations.policy.height_scanner.params["side_noise_probability"] = 0.0
+        self.events.push_robot = None
+        self._enable_sm60_cameras()
 
 
 @configclass
