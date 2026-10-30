@@ -180,6 +180,13 @@ class ProbedVecEnv(RslRlVecEnvWrapper):
         super().__init__(*args, **kwargs)
         self.motion_probe = MotionProbe(self.unwrapped)
 
+    def get_observations(self):
+        result = super().get_observations()
+        callback = getattr(self, "actual_raw_guard_callback", None)
+        if callback is not None:
+            callback(result[0])
+        return result
+
     def step(self, actions):
         if not torch.isfinite(actions).all():
             raise RuntimeError("Non-finite training actions")
@@ -188,12 +195,36 @@ class ProbedVecEnv(RslRlVecEnvWrapper):
         self.motion_probe.finish()
         if not torch.isfinite(result[0]).all() or not torch.isfinite(result[1]).all():
             raise RuntimeError("Non-finite training observations or rewards")
+        callback = getattr(self, "actual_raw_guard_callback", None)
+        if callback is not None:
+            callback(result[0])
         return result
 
 
 class SupervisedRunner(OnPolicyRunner):
-    def __init__(self, *args, supervision_path, policy, normalize_initial_observations=False, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, supervision_path, policy, normalize_initial_observations=False, guarded_flat=False, **kwargs):
+        self.guarded_flat = bool(guarded_flat)
+        if self.guarded_flat:
+            # Installed RSL only recognizes the literal PPO training type. Keep
+            # that constructor contract local and restore its module immediately.
+            import copy
+            import rsl_rl.runners.on_policy_runner as runner_module
+            from guarded_flat_ppo import H2GuardedPPO
+            local_args = list(args)
+            cfg = copy.deepcopy(local_args[1] if len(local_args)>1 else kwargs["train_cfg"])
+            if cfg["algorithm"]["class_name"] != "H2GuardedPPO":
+                raise ValueError("Guarded-flat runner requires its declared split algorithm")
+            cfg["algorithm"]["class_name"] = "PPO"
+            if len(local_args)>1: local_args[1]=cfg
+            else: kwargs["train_cfg"]=cfg
+            original = runner_module.PPO
+            runner_module.PPO = H2GuardedPPO
+            try:
+                super().__init__(*local_args, **kwargs)
+            finally:
+                runner_module.PPO = original
+        else:
+            super().__init__(*args, **kwargs)
         self.supervision_path = Path(supervision_path)
         self.stop_policy = policy
         self.supervision = json.loads(self.supervision_path.read_text())
@@ -206,12 +237,18 @@ class SupervisedRunner(OnPolicyRunner):
         self.initial_observation_preprocessing = {
             "enabled": bool(normalize_initial_observations), "learn_calls": 0,
             "normalized_initial_batches": 0,
-            "scope": "Explicit Stair-Ascent-Policy entry only; general VecEnv observations remain raw",
+            "scope": "Explicit direct-policy task entry only; general VecEnv observations remain raw",
             "method": "One actor/critic normalization immediately before each learn call's first PPO act",
-            "normalizer_statistics_continue_updating": True,
+            "normalizer_statistics_continue_updating": not self.guarded_flat,
             "subsequent_batches": "Unmodified RSL step normalization",
             "rnd_observations_changed": False,
         }
+
+    def train_mode(self):
+        super().train_mode()
+        if self.guarded_flat:
+            self.obs_normalizer.eval()
+            self.privileged_obs_normalizer.eval()
 
     def learn(self, *args, **kwargs):
         preprocessing = self.initial_observation_preprocessing
@@ -268,7 +305,11 @@ class SupervisedRunner(OnPolicyRunner):
         write_json(self.supervision_path, self.supervision)
 
     def save(self, path, infos=None):
-        super().save(path, infos)
+        if self.guarded_flat:
+            from guarded_flat_ppo import save_packet
+            save_packet(path, self.alg.packet(self.current_learning_iteration, infos))
+        else:
+            super().save(path, infos)
         checkpoint = Path(path)
         self.update_state(latest_checkpoint=str(checkpoint),
                           latest_checkpoint_iteration=int(self.current_learning_iteration),
@@ -291,6 +332,9 @@ class SupervisedRunner(OnPolicyRunner):
         stair_progress = getattr(self.env.unwrapped, "stair_progress", None)
         if stair_progress is not None:
             motion.update(stair_progress.summary())
+        flat_progress = getattr(self.env.unwrapped, "flat_balance_progress", None)
+        if self.guarded_flat and flat_progress is not None:
+            motion.update(flat_progress.summary())
         terrain = self.env.unwrapped.scene.terrain
         if getattr(terrain, "terrain_levels", None) is not None:
             motion["terrain_level"] = float(terrain.terrain_levels.float().mean())

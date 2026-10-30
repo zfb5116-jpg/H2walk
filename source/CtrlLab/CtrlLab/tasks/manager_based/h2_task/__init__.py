@@ -96,3 +96,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
     },
 )
+
+# Independent guarded PPO repair; neither published flat task is replaced.
+for _suffix in ('', '-Play'):
+    gym.register(
+        id='Unitree-H2-Flat-Balance-Policy'+_suffix,
+        entry_point=f'{__name__}.flat_balance_env:FlatBalanceEnv',
+        disable_env_checker=True,
+        kwargs={
+            'env_cfg_entry_point': f'{__name__}.flat_balance_cfg:FlatBalance'+('Play' if _suffix else '')+'EnvCfg',
+            'rsl_rl_cfg_entry_point': f'{agents.__name__}.flat_balance_ppo_cfg:H2FlatBalancePPORunnerCfg',
+        },
+    )

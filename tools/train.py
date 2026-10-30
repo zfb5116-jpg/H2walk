@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", default="Unitree-H2-Velocity-Stairs",
                     choices=[f"Unitree-H2-Velocity-{name}" for name in ("Flat", "Rough", "Stairs")]
-                            + ["Unitree-H2-Stair-Ascent-Policy"])
+                            + ["Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy"])
 parser.add_argument("--num_envs", type=int, default=1024)
 parser.add_argument("--max_iterations", type=int, default=None,
                     help="Number of additional learning iterations in this run.")
@@ -30,6 +30,8 @@ parser.add_argument("--run_name", default="")
 parser.add_argument("--checkpoint", type=Path, default=None)
 parser.add_argument("--initial_policy", type=Path, default=None,
                     help="Behavior-cloned direct-policy initialization; PPO/Adam/RND start fresh.")
+parser.add_argument("--guarded_flat_plan", type=Path, default=None,
+                    help="Immutable reviewed protocol for the separate bounded guarded-flat trial.")
 parser.add_argument("--expected_completed_iterations", type=int, default=None,
                     help="Require the checkpoint to contain this many completed iterations.")
 parser.add_argument("--supervision_state", type=Path, required=True)
@@ -45,8 +47,14 @@ if args.expected_completed_iterations is not None and (
     args.checkpoint is None or args.expected_completed_iterations < 1
 ):
     parser.error("expected_completed_iterations requires a checkpoint and must be positive")
-if args.initial_policy is not None and (args.checkpoint is not None or args.task != "Unitree-H2-Stair-Ascent-Policy"):
-    parser.error("initial_policy is only for a fresh Stair-Ascent-Policy run, not checkpoint resume")
+if args.initial_policy is not None and (args.checkpoint is not None or args.task not in (
+        "Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy")):
+    parser.error("initial_policy is only for a fresh direct-policy run, not checkpoint resume")
+if args.task == "Unitree-H2-Flat-Balance-Policy" and (args.initial_policy is None
+        or args.checkpoint is not None or args.guarded_flat_plan is None):
+    parser.error("This guarded-flat trial requires its reviewed plan and fresh initial_policy, without resume")
+if args.guarded_flat_plan is not None and args.task != "Unitree-H2-Flat-Balance-Policy":
+    parser.error("guarded_flat_plan only applies to the separate flat repair task")
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
@@ -78,6 +86,14 @@ def main():
         raise RuntimeError(f"Expected source {args.expected_git_commit}, found {current_commit}")
     stop_policy = json.loads(args.stop_policy.read_text())
     state = json.loads(args.supervision_state.read_text())
+    guarded_flat = args.task == "Unitree-H2-Flat-Balance-Policy"
+    guarded_plan = None
+    if guarded_flat:
+        guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
+        if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != [1029,866,73,12]
+                or guarded_plan["initial_policy_sha256"] != "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
+                or args.num_envs != 1024 or args.seed != 42):
+            raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
     spec = gym.spec(args.task)
     env_cfg = load_config(spec.kwargs["env_cfg_entry_point"])
     agent_cfg = load_config(spec.kwargs["rsl_rl_cfg_entry_point"])
@@ -89,6 +105,9 @@ def main():
         agent_cfg.max_iterations = args.max_iterations
     if args.save_interval is not None:
         agent_cfg.save_interval = args.save_interval
+    if guarded_flat and (agent_cfg.max_iterations != 1000 or agent_cfg.save_interval != 500
+            or agent_cfg.num_steps_per_env != 24 or agent_cfg.algorithm.class_name != "H2GuardedPPO"):
+        raise ValueError("Guarded-flat bounded1000/save500/24-step split-PPO protocol changed")
     agent_cfg.experiment_name = f"h2_main_{args.task.rsplit('-', 1)[-1].lower()}_manager_based"
     agent_cfg.run_name = args.run_name
     agent_cfg.logger = "tensorboard"
@@ -120,11 +139,15 @@ def main():
     source_dir = log_dir / "training_source"
     source_dir.mkdir()
     training_tool_names = ["train.py", "train.sh", "training_supervision.py"]
-    if args.task == "Unitree-H2-Stair-Ascent-Policy":
+    if args.task in ("Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy"):
         training_tool_names.append("stair_exploration.py")
+    if guarded_flat:
+        training_tool_names.append("guarded_flat_ppo.py")
     for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)
     shutil.copy2(args.stop_policy, source_dir / "stop_policy.json")
+    if guarded_flat:
+        shutil.copy2(args.guarded_flat_plan, source_dir / "guarded_flat_plan.json")
     # Include the new task modules as well as tracked files in the reproducible snapshot.
     shutil.copytree(ROOT / "source", source_dir / "source",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -249,12 +272,15 @@ def main():
         for name, value in {"policy": obs, **extras["observations"]}.items():
             if not torch.isfinite(value).all():
                 raise ValueError(f"Non-finite initial observations in {name}")
+        if guarded_flat:
+            metadata["runtime_flat_geometry"] = env.unwrapped.runtime_contract
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"[H2] Runtime dimensions: {json.dumps(metadata['observation_shapes'])}; "
               f"actions={env.num_actions}", flush=True)
         runner = SupervisedRunner(env, agent_cfg.to_dict(), log_dir=str(log_dir), device=agent_cfg.device,
                                   supervision_path=args.supervision_state, policy=stop_policy,
-                                  normalize_initial_observations=args.task == "Unitree-H2-Stair-Ascent-Policy")
+                                  normalize_initial_observations=args.task in ("Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy"),
+                                  guarded_flat=guarded_flat)
         runner.add_git_repo_to_log(__file__)
         if initial_policy:
             boot = torch.load(initial_policy, map_location=agent_cfg.device, weights_only=True)
@@ -264,13 +290,35 @@ def main():
                     or boot.get("policy_dimensions") != [1029, 866, 73, 12]):
                 raise ValueError("Initial policy does not match the direct-action contract")
             receipt = json.loads((initial_policy.parent / "result.json").read_text())
-            if not receipt.get("initialization_ready", False):
+            if not guarded_flat and not receipt.get("initialization_ready", False):
                 raise ValueError("Behavior initialization did not pass its declared quality gate")
+            if guarded_flat:
+                digest = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
+                if (initial_policy != Path(guarded_plan["initial_policy"]).resolve(strict=True)
+                        or digest != guarded_plan["initial_policy_sha256"]):
+                    raise ValueError("Guarded-flat is not initializing the reviewed physically evaluated ce822 candidate")
+                for name in ("obs_norm_state_dict", "privileged_obs_norm_state_dict"):
+                    if int(boot[name]["count"]) != 24576000:
+                        raise ValueError("Guarded-flat inherited normalization count changed")
+                # Only this distinct repair trial permits the already measured
+                # unsuccessful initializer; it is not a declaration of readiness.
+                metadata["guarded_flat_initial_policy_not_ready"] = True
             runner.alg.policy.load_state_dict(boot["model_state_dict"], strict=True)
             runner.obs_normalizer.load_state_dict(boot["obs_norm_state_dict"], strict=True)
             runner.privileged_obs_normalizer.load_state_dict(boot["privileged_obs_norm_state_dict"], strict=True)
             metadata["initial_policy_sha256"] = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
             metadata["behavior_initialization_quality"] = boot["metadata"]
+            if guarded_flat:
+                if any(not torch.equal(value.detach().cpu(), boot["model_state_dict"]["actor."+name].detach().cpu())
+                       for name,value in runner.alg.policy.actor.state_dict().items()):
+                    raise RuntimeError("Initial guarded-flat actor is not bitwise the reviewed candidate")
+                metadata["initial_actor_weights_match_ce822_exactly"] = True
+                for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
+                    if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+                        key = str(path.relative_to(ROOT))
+                        if hashlib.sha256(path.read_bytes()).hexdigest() != boot["source_sha256"].get(key):
+                            raise RuntimeError("Guarded-flat initialization network source differs from ce822")
+                metadata["initial_network_source_matches_ce822_exactly"] = True
             del boot
         if checkpoint:
             runner.load(str(checkpoint), load_optimizer=True)
@@ -299,6 +347,34 @@ def main():
                 effort_limits=robot.data.joint_effort_limits[:, ids], **budget_cfg)
             metadata["stair_exploration_budget"] = runner.stair_exploration_budget.snapshot()
             metadata["variance_initialization_overrides_BC_std"] = initial_policy is not None
+        if guarded_flat:
+            from guarded_flat_ppo import create_fixed_real_bank
+            guard_dir = log_dir / "functional_guard"
+            fixed_bank = guard_dir / "fixed_real_bank.npz"
+            bank_receipt = create_fixed_real_bank(initial_policy.parent / "dataset", fixed_bank, seed=args.seed)
+            runner.obs_normalizer.eval();runner.privileged_obs_normalizer.eval()
+            runner.alg.attach_guard({"actor":runner.obs_normalizer,"critic":runner.privileged_obs_normalizer},
+                runner.stair_exploration_budget,fixed_bank,guard_dir,metadata["initial_policy_sha256"])
+            robot = env.unwrapped.scene["robot"]
+            action_ids = action_term._joint_ids
+            def capture_actual_raw(observation):
+                limits = robot.data.soft_joint_pos_limits[:,action_ids]
+                runner.alg.guard.prepare_actual_raw(observation,limits[...,0],limits[...,1],
+                    robot.data.joint_stiffness[:,action_ids],robot.data.joint_effort_limits[:,action_ids],
+                    int(env.unwrapped.common_step_counter))
+            env.actual_raw_guard_callback = capture_actual_raw
+            metadata["guarded_flat_learning"] = {
+                "plan_path":str(args.guarded_flat_plan.resolve(strict=True)),
+                "plan_sha256":hashlib.sha256(args.guarded_flat_plan.read_bytes()).hexdigest(),
+                "initial_policy_sha256":metadata["initial_policy_sha256"],
+                "fixed_real_bank":bank_receipt,"current_rollout_real_rows":1024,"total_guard_rows":5120,
+                "normalizers_frozen":True,"normalizer_counts":{"actor":int(runner.obs_normalizer.count),
+                    "critic":int(runner.privileged_obs_normalizer.count)},
+                "optimizer_format":"h2_guarded_flat_ppo_v1","state":runner.alg.learning_state(),
+                "snapshot_policy":"RAM before every whole actor update; first persisted once; veto permanently preserves baseline/candidate/restored",
+                "physical_acceptance_claimed":False,
+            }
+            metadata["initial_observation_preprocessing"] = runner.initial_observation_preprocessing
         metadata["initial_learning_state"] = {
             "checkpoint_loaded": checkpoint is not None,
             "behavior_policy_initialized": initial_policy is not None,
@@ -313,11 +389,19 @@ def main():
                                           ("critic", runner.privileged_obs_normalizer)]
             } if runner.empirical_normalization else {},
         }
+        if guarded_flat:
+            metadata["initialization_mode"] = "guarded_flat_reward_repair_fresh_split_PPO"
+            metadata["initial_learning_state"].update(
+                actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
+                critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),
+                imitation_optimizer_loaded=False,guarded_ppo_state=runner.alg.learning_state())
         if checkpoint is None:
             if (metadata["initial_learning_state"]["iteration"] != 0
                     or metadata["initial_learning_state"]["policy_optimizer_state_entries"] != 0
                     or metadata["initial_learning_state"]["rnd_optimizer_state_entries"] not in (None, 0)):
                 raise RuntimeError("Fresh training unexpectedly contains previous optimizer state")
+            if guarded_flat and len(runner.alg.critic_optimizer.state) != 0:
+                raise RuntimeError("New guarded-flat critic optimizer was not fresh")
         metadata["status"] = "training"
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"[H2] Learning iterations: {completed_iterations} -> "
@@ -332,8 +416,31 @@ def main():
                                if args.task == "Unitree-H2-Stair-Ascent-Policy" else {}),
                             action_contract=metadata["action_contract"],
                             locked_action_ids=env.unwrapped.action_manager._locked_action_ids)
+        if guarded_flat:
+            runner.update_state(guarded_flat_learning=metadata["guarded_flat_learning"],
+                runtime_flat_geometry=metadata["runtime_flat_geometry"],
+                initial_observation_preprocessing=metadata["initial_observation_preprocessing"])
         try:
+            functional_stop_type = ()
+            if guarded_flat:
+                from guarded_flat_ppo import FunctionalUpdateRejected
+                functional_stop_type = FunctionalUpdateRejected
             runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+        except functional_stop_type as rejected:
+            metadata.update(status="stopped_functional_guard",completed_iterations=runner.alg.completed_updates,
+                total_timesteps=int(runner.tot_timesteps),final_checkpoint=rejected.restored_checkpoint,
+                actual_sampled_environment_steps=int(runner.tot_timesteps)+rejected.discarded_environment_steps,
+                discarded_uncommitted_rollout_steps=rejected.discarded_environment_steps,
+                functional_guard_evidence=rejected.evidence,guarded_ppo_state=runner.alg.learning_state())
+            write_json(log_dir/"run.json",metadata)
+            runner.update_state(status="stopped_functional_guard",completed_iterations=runner.alg.completed_updates,
+                iteration=runner.alg.completed_updates-1,latest_checkpoint=rejected.restored_checkpoint,
+                final_checkpoint=rejected.restored_checkpoint,functional_guard_evidence=rejected.evidence,
+                actual_sampled_environment_steps=metadata["actual_sampled_environment_steps"],
+                discarded_uncommitted_rollout_steps=rejected.discarded_environment_steps,
+                guarded_ppo_state=runner.alg.learning_state(),no_automatic_retry=True)
+            print("[H2] Whole PPO update restored and stopped by the functional guard",flush=True)
+            return
         except NoImprovementStop:
             metadata.update(status="stopped_no_improvement",
                             completed_iterations=int(runner.current_learning_iteration) + 1,
@@ -345,6 +452,10 @@ def main():
         metadata["status"] = "completed"
         metadata["completed_iterations"] = int(runner.current_learning_iteration) + 1
         metadata["total_timesteps"] = int(runner.tot_timesteps)
+        if guarded_flat:
+            metadata["actual_sampled_environment_steps"] = int(runner.tot_timesteps)
+            metadata["discarded_uncommitted_rollout_steps"] = 0
+            metadata["guarded_ppo_state"] = runner.alg.learning_state()
         metadata["final_checkpoint"] = str(log_dir / f"model_{runner.current_learning_iteration}.pt")
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         runner.update_state(status="completed", completed_iterations=metadata["completed_iterations"],
