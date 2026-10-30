@@ -53,7 +53,8 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import torch
 from isaaclab.utils.io import dump_pickle, dump_yaml
-from training_supervision import NoImprovementStop, ProbedVecEnv, SupervisedRunner, write_json
+from training_supervision import (NoImprovementStop, ProbedVecEnv, SupervisedRunner,
+                                  configure_stair_learning_rates, write_json)
 
 # Import only the H2 task from this repository, with no CtrlLab installation.
 TASK_PARENT = ROOT / "source/CtrlLab/CtrlLab/tasks/manager_based"
@@ -182,6 +183,8 @@ def main():
             "gamma": agent_cfg.algorithm.gamma,
             "entropy_coef": agent_cfg.algorithm.entropy_coef,
             "learning_rate": agent_cfg.algorithm.learning_rate,
+            "rnd_learning_rate": (agent_cfg.algorithm.rnd_cfg.learning_rate
+                                  if agent_cfg.algorithm.rnd_cfg is not None else None),
             "desired_kl": agent_cfg.algorithm.desired_kl,
         },
         "initialization_mode": "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch",
@@ -250,7 +253,8 @@ def main():
         print(f"[H2] Runtime dimensions: {json.dumps(metadata['observation_shapes'])}; "
               f"actions={env.num_actions}", flush=True)
         runner = SupervisedRunner(env, agent_cfg.to_dict(), log_dir=str(log_dir), device=agent_cfg.device,
-                                  supervision_path=args.supervision_state, policy=stop_policy)
+                                  supervision_path=args.supervision_state, policy=stop_policy,
+                                  normalize_initial_observations=args.task == "Unitree-H2-Stair-Ascent-Policy")
         runner.add_git_repo_to_log(__file__)
         if initial_policy:
             boot = torch.load(initial_policy, map_location=agent_cfg.device, weights_only=True)
@@ -277,6 +281,11 @@ def main():
             runner.current_learning_iteration = completed_iterations
             runner.alg.learning_rate = runner.alg.optimizer.param_groups[0]["lr"]
             runner.tot_timesteps = completed_iterations * agent_cfg.num_steps_per_env * args.num_envs
+        if args.task == "Unitree-H2-Stair-Ascent-Policy":
+            metadata["learning_rate_wiring"] = configure_stair_learning_rates(
+                runner.alg, metadata["algorithm_settings"]["learning_rate"],
+                metadata["algorithm_settings"]["rnd_learning_rate"], resumed=checkpoint is not None)
+            metadata["initial_observation_preprocessing"] = runner.initial_observation_preprocessing
         budget_cfg = getattr(agent_cfg, "stair_exploration_budget", None)
         if budget_cfg is not None:
             from stair_exploration import StairExplorationBudget
@@ -318,6 +327,9 @@ def main():
                             num_actions=env.num_actions, policy_shape=metadata["policy_shape"],
                             training_started_at_epoch=time.time(),
                             initialization_mode=metadata["initialization_mode"],
+                            **({"learning_rate_wiring": metadata["learning_rate_wiring"],
+                                "initial_observation_preprocessing": metadata["initial_observation_preprocessing"]}
+                               if args.task == "Unitree-H2-Stair-Ascent-Policy" else {}),
                             action_contract=metadata["action_contract"],
                             locked_action_ids=env.unwrapped.action_manager._locked_action_ids)
         try:

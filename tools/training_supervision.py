@@ -24,6 +24,42 @@ class NoImprovementStop(RuntimeError):
     pass
 
 
+def configure_stair_learning_rates(algorithm, ppo_learning_rate, rnd_learning_rate, *, resumed=False):
+    """Keep fresh PPO independent of RSL2.3.3's local RND-LR shadowing.
+
+    A resumed optimizer owns its saved group LRs. Only restore the adaptive-PPO
+    scalar from that readback; neither optimizer group is overwritten on resume.
+    """
+    requested = float(ppo_learning_rate)
+    if not math.isfinite(requested) or requested <= 0:
+        raise ValueError("Requested PPO learning rate must be positive and finite")
+    before = [float(group["lr"]) for group in algorithm.optimizer.param_groups]
+    rnd_optimizer = getattr(algorithm, "rnd_optimizer", None)
+    rnd_before = [] if rnd_optimizer is None else [float(group["lr"]) for group in rnd_optimizer.param_groups]
+    if not before or any(not math.isfinite(value) or value <= 0 for value in before + rnd_before):
+        raise ValueError("Optimizer learning-rate readback is empty, non-finite or non-positive")
+    if not resumed:
+        for group in algorithm.optimizer.param_groups:
+            group["lr"] = requested
+    actual = [float(group["lr"]) for group in algorithm.optimizer.param_groups]
+    algorithm.learning_rate = actual[0]
+    rnd_actual = [] if rnd_optimizer is None else [float(group["lr"]) for group in rnd_optimizer.param_groups]
+    if rnd_actual != rnd_before:
+        raise RuntimeError("PPO initialization changed the independent RND optimizer LR")
+    if not resumed:
+        if actual != [requested] * len(actual) or float(algorithm.learning_rate) != requested:
+            raise RuntimeError("Fresh PPO learning-rate write/readback differs from the request")
+        if rnd_actual and (rnd_learning_rate is None or rnd_actual != [float(rnd_learning_rate)] * len(rnd_actual)):
+            raise RuntimeError("Fresh RND optimizer LR differs from its independent configuration")
+    return {"mode": "resume_saved_optimizer_lrs" if resumed else "fresh_explicit_ppo_lr",
+            "requested_ppo_learning_rate": requested, "requested_rnd_learning_rate": rnd_learning_rate,
+            "ppo_optimizer_group_lrs_before": before, "ppo_optimizer_group_lrs": actual,
+            "ppo_algorithm_learning_rate": float(algorithm.learning_rate),
+            "rnd_optimizer_group_lrs": rnd_actual, "rnd_lr_unchanged": True,
+            "resume_optimizer_lrs_preserved": bool(resumed),
+            "adaptive_kl_schedule_remains_enabled": algorithm.schedule == "adaptive"}
+
+
 class MotionProbe:
     """Measure complete episodes before automatic scene resets teleport the robot."""
 
@@ -156,7 +192,7 @@ class ProbedVecEnv(RslRlVecEnvWrapper):
 
 
 class SupervisedRunner(OnPolicyRunner):
-    def __init__(self, *args, supervision_path, policy, **kwargs):
+    def __init__(self, *args, supervision_path, policy, normalize_initial_observations=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.supervision_path = Path(supervision_path)
         self.stop_policy = policy
@@ -167,6 +203,65 @@ class SupervisedRunner(OnPolicyRunner):
         self.last_improvement_completed = None
         self.last_improvement_epoch = None
         self.stagnant_assessments = 0
+        self.initial_observation_preprocessing = {
+            "enabled": bool(normalize_initial_observations), "learn_calls": 0,
+            "normalized_initial_batches": 0,
+            "scope": "Explicit Stair-Ascent-Policy entry only; general VecEnv observations remain raw",
+            "method": "One actor/critic normalization immediately before each learn call's first PPO act",
+            "normalizer_statistics_continue_updating": True,
+            "subsequent_batches": "Unmodified RSL step normalization",
+            "rnd_observations_changed": False,
+        }
+
+    def learn(self, *args, **kwargs):
+        preprocessing = self.initial_observation_preprocessing
+        if not preprocessing["enabled"]:
+            return super().learn(*args, **kwargs)
+        if self.training_type != "rl" or not self.empirical_normalization:
+            raise RuntimeError("Stair initial-batch normalization requires PPO with empirical dual normalization")
+        preprocessing["learn_calls"] += 1
+        original_act = self.alg.act
+        had_override = "act" in vars(self.alg)
+        previous_override = vars(self.alg).get("act")
+        restored = False
+
+        def restore_act():
+            nonlocal restored
+            if not restored:
+                if had_override:
+                    self.alg.act = previous_override
+                else:
+                    del self.alg.act
+                restored = True
+
+        def initial_act(obs, privileged_obs, *act_args, **act_kwargs):
+            # The original learn loop has already moved these tensors to its
+            # device and entered train/inference modes. Do not touch env/extras,
+            # RND state or the later step normalization path.
+            restore_act()
+            normalizers = {"actor": self.obs_normalizer, "critic": self.privileged_obs_normalizer}
+            preprocessing["last_normalizer_counts_before"] = {
+                name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
+            obs = self.obs_normalizer(obs)
+            privileged_obs = (self.privileged_obs_normalizer(privileged_obs)
+                              if self.privileged_obs_type is not None else obs)
+            preprocessing["last_normalizer_counts_after"] = {
+                name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
+            preprocessing["normalized_initial_batches"] += 1
+            preprocessing["last_actor_shape"] = list(obs.shape)
+            preprocessing["last_critic_shape"] = list(privileged_obs.shape)
+            self.update_state(initial_observation_preprocessing=dict(preprocessing))
+            if self.log_dir is not None and (Path(self.log_dir)/"run.json").exists():
+                metadata = json.loads((Path(self.log_dir)/"run.json").read_text())
+                metadata["initial_observation_preprocessing"] = dict(preprocessing)
+                write_json(Path(self.log_dir)/"run.json", metadata)
+            return original_act(obs, privileged_obs, *act_args, **act_kwargs)
+
+        self.alg.act = initial_act
+        try:
+            return super().learn(*args, **kwargs)
+        finally:
+            restore_act()
 
     def update_state(self, **fields):
         self.supervision.update(fields)
