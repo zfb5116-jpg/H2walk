@@ -37,6 +37,12 @@ class _ContactSensorCfg:
         self.debug_vis = debug_vis
 
 
+class _RewardTermCfg:
+    def __init__(self, *, func, weight, params=None):
+        self.func, self.weight = func, weight
+        self.params = {} if params is None else dict(params)
+
+
 class _RobotSceneCfg:
     def __init__(self, **kwargs):
         self.__dict__.update(deepcopy(_config().scene.__dict__))
@@ -72,6 +78,9 @@ def _load_configs():
         "MIXED_WALK_TERRAINS_CFG": terrain["MIXED_WALK_TERRAINS_CFG"],
         "STAIR_ROUGH_TERRAINS_CFG": terrain["STAIR_ROUGH_TERRAINS_CFG"],
         "apply_walking_profile": _load_profile_module().apply_walking_profile,
+        "RewTerm": _RewardTermCfg,
+        "h2_mdp": SimpleNamespace(walk_signed_progress=abs, walk_alternating_steps=sum, walk_support_quality=min),
+        "WALK_REWARD_PARAMETERS": _load_profile_module().WALK_REWARD_PARAMETERS,
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(source), "exec"), namespace)
     return namespace

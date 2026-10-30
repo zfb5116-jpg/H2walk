@@ -412,6 +412,7 @@ def feet_swing_height(
         sole_points_b=None,
         movement_threshold: float = 0.15,
         movement_gate_inclusive: bool = False,
+        swing_mode: str = "legacy",
 ) -> torch.Tensor:
     """Reward swing height, optionally saturating after a local terrain clearance.
 
@@ -424,6 +425,8 @@ def feet_swing_height(
     """
     if height_mode not in {"body_legacy", "terrain"}:
         raise ValueError("height_mode must be 'body_legacy' or 'terrain'")
+    if swing_mode not in {"legacy", "alternating_v1"}:
+        raise ValueError("swing_mode must be 'legacy' or 'alternating_v1'")
     if not 0.0 < movement_threshold < float("inf"):
         raise ValueError("movement_threshold must be finite and positive")
     if not isinstance(movement_gate_inclusive, bool):
@@ -443,6 +446,9 @@ def feet_swing_height(
         feet_height_b = env.feet_pos_b[:, :, 2]
         height_score = torch.exp(-torch.square((feet_height_b - target_feet_height) / height_std))
     swing = ~contacts
+    if swing_mode == "alternating_v1":
+        env.walking_reward_state.update(env)
+        swing &= env.walking_reward_state.moving_swing
     swing_count = swing.sum(dim=1).clamp(min=1)
     reward = torch.sum(height_score * swing, dim=1) / swing_count
     movement_speed = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1)
@@ -489,8 +495,9 @@ def feet_stair_clearance(
     Optional ``rise_weight_scale`` decouples nearest-mode amplitude from the
     obstacle eligibility ceiling. Highest-mode amplitude is unchanged.
     """
-    if target_mode not in {"nearest", "highest"}:
-        raise ValueError("target_mode must be 'nearest' or 'highest'")
+    if target_mode not in {"nearest", "nearest_latched", "highest"}:
+        raise ValueError("target_mode must be 'nearest', 'nearest_latched' or 'highest'")
+    nearest = target_mode in {"nearest", "nearest_latched"}
     if height_reference not in {"link", "sole"}:
         raise ValueError("height_reference must be 'link' or 'sole'")
     if height_reference == "link" and sole_points_b is not None:
@@ -525,7 +532,7 @@ def feet_stair_clearance(
     feet_b = quat_apply_inverse(foot_quat.reshape(-1, 4), (feet_w - root_pos_w.unsqueeze(1)).reshape(-1, 3)).view_as(feet_w)
     # [environment, foot, ray]. The scanner has 5 cm spacing; a 2.5 cm
     # tolerance groups one nearest longitudinal column, including rotated grids.
-    if target_mode == "nearest":
+    if nearest:
         relative = hits_b.unsqueeze(1) - feet_b.unsqueeze(2)
         lane = torch.abs(relative[..., 1]) < 0.10
         under_min = -0.12
@@ -539,7 +546,7 @@ def feet_stair_clearance(
     ground = torch.where(under, z, torch.nan).nanmedian(dim=-1).values
     # A finite placeholder permits safe arithmetic; usable below excludes it.
     ground = torch.where(under.any(dim=-1), ground, root_pos_w[:, None, 2])
-    if target_mode == "nearest":
+    if nearest:
         raised = front & (z - ground.unsqueeze(-1) >= min_rise - 1e-6)
         nearest_x = torch.where(raised, relative[..., 0], torch.inf).amin(dim=-1)
         first_column = front & (torch.abs(relative[..., 0] - nearest_x.unsqueeze(-1)) < 0.025)
@@ -551,7 +558,7 @@ def feet_stair_clearance(
     front_height = torch.where(has_front, front_height, ground)
     rise = front_height - ground
     usable = under.any(dim=-1) & has_front & torch.isfinite(feet_w).all(dim=-1)
-    if target_mode == "nearest":
+    if nearest:
         # Do not skip an unreachably high near step in favor of a farther one.
         usable &= (rise >= min_rise - 1e-6) & (rise <= max_rise + 1e-6)
         # Nonzero shaping at min_rise also covers the 2 cm curriculum start.
@@ -567,24 +574,50 @@ def feet_stair_clearance(
             feet_w, body_quat_w[:, env.feet_id_b, :], sole_points_b=sole_points_b,
         )
         usable &= torch.isfinite(sole_z_w)
+        current_height_valid = torch.isfinite(sole_z_w)
         feet_z_w = torch.nan_to_num(sole_z_w)
     else:
+        current_height_valid = torch.isfinite(feet_w[..., 2])
         feet_z_w = torch.nan_to_num(feet_w[..., 2])
     swing = ~contacts
     swing_count = swing.sum(dim=1).clamp(min=1)
-    height_score = torch.exp(-torch.square((feet_z_w - target_z) / height_std))
     command = env.command_manager.get_command(command_name)
     if command_gate_mode == "legacy":
         moving_forward = command[:, 0] > 0.15
-        if target_mode == "nearest":
+        if nearest:
             moving_forward &= (torch.abs(command[:, 1]) < 0.15) & (torch.abs(command[:, 2]) < 0.3)
     else:
         moving_forward = command[:, 0] >= min_forward_command
-        if target_mode == "nearest":
+        if nearest:
             moving_forward &= ((torch.abs(command[:, 1]) <= max_lateral_command)
                                & (torch.abs(command[:, 2]) <= max_yaw_command))
+    if target_mode == "nearest_latched":
+        state = env.walking_reward_state
+        state.update(env)
+        target_z, rise_weight, held = state.hold_targets(target_z, rise_weight, usable, moving_forward)
+        usable = held & current_height_valid
+        swing &= state.moving_swing
+    height_score = torch.exp(-torch.square((feet_z_w - target_z) / height_std))
     score = torch.sum(height_score * rise_weight * usable * swing, dim=1) / swing_count
     return score * moving_forward
+
+
+def walk_signed_progress(env: RobotEnv) -> torch.Tensor:
+    """Signed displacement rate in the executed command frame, without clipping."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.signed_progress
+
+
+def walk_alternating_steps(env: RobotEnv) -> torch.Tensor:
+    """Qualified alternating touchdown events divided by dt for reward integration."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.alternating_steps
+
+
+def walk_support_quality(env: RobotEnv) -> torch.Tensor:
+    """Nonpositive raw-contact/support disagreement proxy, not sole coverage."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.support_quality
 
 
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

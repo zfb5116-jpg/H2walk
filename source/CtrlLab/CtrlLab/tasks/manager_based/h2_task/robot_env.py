@@ -10,6 +10,7 @@ from .manager import CtrlLabActionManager
 from .networks.lidar_observation import invalidate_lidar_observation
 from .walking_runtime import WalkingRuntime
 from .walking_profiles import validate_walking_profile
+from .walking_rewards import WalkingRewardState
 
 
 class RobotEnv(ManagerBasedRLEnv):
@@ -40,6 +41,9 @@ class RobotEnv(ManagerBasedRLEnv):
         self.walking_runtime = None
         if getattr(cfg, "contact_source_diagnostics", False) or getattr(cfg, "staged_evidence", False):
             self.walking_runtime = WalkingRuntime(self)
+        self.walking_reward_state = None
+        if getattr(cfg, "walking_reward_mode", "legacy") == "alternating_v1":
+            self.walking_reward_state = WalkingRewardState(self.num_envs, self.device)
 
     def _reset_idx(self, env_ids: Sequence[int]):
         tracker = getattr(self, "command_progress_tracker", None)
@@ -62,6 +66,9 @@ class RobotEnv(ManagerBasedRLEnv):
             tracker.reset(env_ids, generation=getattr(self, "_command_progress_generation", 0))
         if walking is not None:
             walking.reset(env_ids)
+        reward_state = getattr(self, "walking_reward_state", None)
+        if reward_state is not None:
+            reward_state.reset(env_ids)
         invalidate_lidar_observation(self, env_ids)
         self.update_feet_state()
         self.prev_feet_pos_b[env_ids] = self.feet_pos_b[env_ids]
@@ -89,7 +96,12 @@ class RobotEnv(ManagerBasedRLEnv):
             self.step_dt,
         )
         walking = getattr(self, "walking_runtime", None)
+        reward_state = getattr(self, "walking_reward_state", None)
         try:
+            if reward_state is not None:
+                # RewardManager computes inside the parent step, before resets
+                # and command resampling. Keep the command actually executed.
+                reward_state.begin_step(self)
             if walking is not None:
                 walking.begin_step()
             self.prev_feet_pos_b[:] = self.feet_pos_b
@@ -105,5 +117,7 @@ class RobotEnv(ManagerBasedRLEnv):
             tracker.abort_step()
             if walking is not None:
                 walking.abort_step()
+            if reward_state is not None:
+                reward_state.abort_step()
             raise
         return result

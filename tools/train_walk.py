@@ -34,6 +34,8 @@ def build_parser(
         epilog="Isaac AppLauncher options (including --headless and --device) are accepted at runtime.",
     )
     parser.add_argument("--task", choices=TASKS, default=TASKS[0])
+    parser.add_argument("--reward_mode", choices=("alternating_v1", "legacy"), default="alternating_v1")
+    parser.add_argument("--cross_time_mode", choices=("bounded", "legacy"), default="bounded")
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument(
         "--max_iterations",
@@ -78,16 +80,17 @@ def parse_args(
     return args
 
 
-def load_config(entry: str) -> Any:
+def load_config(entry: str, **constructor_kwargs: Any) -> Any:
     module, name = entry.split(":")
-    return getattr(importlib.import_module(module), name)()
+    return getattr(importlib.import_module(module), name)(**constructor_kwargs)
 
 
 def registry_configs(
-    gym: Any, task: str, loader: Callable[[str], Any] = load_config
+    gym: Any, task: str, loader: Callable[..., Any] = load_config,
+    *, env_kwargs: dict[str, Any] | None = None,
 ) -> tuple[Any, Any]:
     spec = gym.spec(task)
-    return loader(spec.kwargs["env_cfg_entry_point"]), loader(
+    return loader(spec.kwargs["env_cfg_entry_point"], **(env_kwargs or {})), loader(
         spec.kwargs["rsl_rl_cfg_entry_point"]
     )
 
@@ -95,16 +98,22 @@ def registry_configs(
 def resolved_configuration_signature(
     env_cfg: Any, agent_cfg: Any, fingerprint: Callable[..., str]
 ) -> str:
-    """Pin input/action transforms including wrapper clipping, before environment creation."""
+    """Pin transforms and resolved reward semantics before environment creation."""
     return fingerprint(
         env_cfg.observations,
         env_cfg.actions,
         agent_cfg.policy,
+        env_cfg.rewards,
         {
             "physics_dt": env_cfg.sim.dt,
             "decimation": env_cfg.decimation,
             "default_joint_pos": env_cfg.scene.robot.init_state.joint_pos,
             "wrapper_clip_actions": agent_cfg.clip_actions,
+            "walking_reward_mode": env_cfg.walking_reward_mode,
+            "walking_reward_version": env_cfg.walking_reward_version,
+            "walking_reward_parameters": env_cfg.walking_reward_parameters,
+            "support_force_threshold": env_cfg.contact_diagnostic_threshold,
+            "support_height_tolerance": env_cfg.stage_support_height_tolerance,
         },
     )
 
@@ -206,7 +215,9 @@ def _run(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(ROOT / "source/CtrlLab/CtrlLab/tasks/manager_based"))
     import h2_task
 
-    env_cfg, agent_cfg = registry_configs(gym, args.task)
+    env_cfg, agent_cfg = registry_configs(gym, args.task, env_kwargs={
+        "walking_reward_mode": args.reward_mode, "walking_cross_time_mode": args.cross_time_mode,
+    })
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.seed = agent_cfg.seed = args.seed
     if args.device is not None:
@@ -226,6 +237,7 @@ def _run(args: argparse.Namespace) -> None:
         env_cfg.walking_max_time_difference,
         source_provenance(),
         configuration_sha256=signature,
+        reward_mode=env_cfg.walking_reward_mode,
     )
     # Read once, with weights-only restrictions, and reject bad input before
     # gym.make or runner/model/optimizer construction. No unsafe load fallback.

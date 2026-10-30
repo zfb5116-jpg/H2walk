@@ -6,12 +6,15 @@ not create a scene or start training.
 """
 
 from isaaclab.sensors import ContactSensorCfg
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.utils import configclass
 
 from .assets import H2_FOOT_BODY_NAMES, H2_JOINT_NAMES
+from . import mdp as h2_mdp
 from .config.terrain_cfg import MIXED_WALK_TERRAINS_CFG, STAIR_ROUGH_TERRAINS_CFG
 from .robot_env_cfg import RobotSceneCfg, RobotStairsEnvCfg
 from .walking_profiles import apply_walking_profile
+from .walking_rewards import WALK_REWARD_PARAMETERS
 
 
 # Collision-bearing rigid links from the audited H2 USD, not all 29 joint
@@ -100,6 +103,14 @@ def _configure_contact_diagnostic_sensors(cfg):
         setattr(cfg.scene, name, sensor)
 
 
+def _configure_walking_reward_terms(cfg):
+    """Declare opt-in terms before the pure profile resolves mode and weights."""
+    cfg.walking_reward_parameters = dict(WALK_REWARD_PARAMETERS)
+    cfg.rewards.walk_signed_progress = RewTerm(func=h2_mdp.walk_signed_progress, weight=1.0)
+    cfg.rewards.walk_alternating_steps = RewTerm(func=h2_mdp.walk_alternating_steps, weight=.5)
+    cfg.rewards.walk_support_quality = RewTerm(func=h2_mdp.walk_support_quality, weight=.25)
+
+
 @configclass
 class RobotContactDiagnosticEnvCfg(RobotStairsEnvCfg):
     """Original scanned Stairs MDP with opt-in pre-reset contact diagnostics."""
@@ -144,9 +155,11 @@ class RobotWalkBootstrapEnvCfg(RobotContactDiagnosticEnvCfg):
     # formula as an explicit fresh-config comparison rather than a hot toggle.
     walking_cross_time_mode: str = "bounded"
     walking_max_time_difference: float = .5
+    walking_reward_mode: str = "alternating_v1"
 
     def __post_init__(self):
         super().__post_init__()
+        _configure_walking_reward_terms(self)
         apply_walking_profile(
             self,
             self.walking_stage,
@@ -163,6 +176,7 @@ class RobotWalkBootstrapEnvCfg(RobotContactDiagnosticEnvCfg):
             enable_actuator_delay=self.walking_enable_actuator_delay,
             cross_time_mode=self.walking_cross_time_mode,
             max_time_difference=self.walking_max_time_difference,
+            reward_mode=self.walking_reward_mode,
         )
 
 

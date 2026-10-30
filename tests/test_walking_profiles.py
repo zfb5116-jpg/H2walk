@@ -41,6 +41,7 @@ def profile_module():
 def _config():
     return SimpleNamespace(
         use_lidar_reconstruction=False,
+        walking_reward_parameters=_load_profile_module().WALK_REWARD_PARAMETERS.copy(),
         episode_length_s=20.0,
         scene=SimpleNamespace(
             height_scanner=SimpleNamespace(pattern_cfg=SimpleNamespace(resolution=.05, size=[1.6, .8]), mesh_prim_paths=["/World/ground"]),
@@ -73,6 +74,12 @@ def _config():
         rewards=SimpleNamespace(
             feet_stair_clearance=SimpleNamespace(weight=2.5, params={}),
             feet_air_time_variance=SimpleNamespace(weight=-1., params={"command_name": "base_velocity"}),
+            feet_swing_height=SimpleNamespace(weight=.75, params={}),
+            feet_air_time=SimpleNamespace(weight=.45, params={}),
+            feet_contact_time=SimpleNamespace(weight=.2, params={}),
+            walk_signed_progress=SimpleNamespace(weight=0., params={}),
+            walk_alternating_steps=SimpleNamespace(weight=0., params={}),
+            walk_support_quality=SimpleNamespace(weight=0., params={}),
         ),
     )
 

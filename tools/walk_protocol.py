@@ -17,7 +17,8 @@ from typing import Any, TypeGuard
 
 
 STAGES = ("bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20")
-PROTOCOL_ID = "h2_walk_fixed_scales_v1"
+PROTOCOL_ID = "h2_walk_fixed_scales_v2"
+REWARD_VERSION = "h2_walk_rewards_v1"
 FORBIDDEN_STATES = {
     "obs_norm_state_dict",
     "privileged_obs_norm_state_dict",
@@ -34,6 +35,8 @@ COMPATIBILITY_KEYS = (
     "rnd",
     "cross_time_mode",
     "max_time_difference",
+    "reward_mode",
+    "reward_version",
     "configuration_sha256",
 )
 
@@ -121,6 +124,8 @@ def validate_protocol(value: Any) -> None:
         for key, expected in fixed.items()
     ):
         raise _error("Incompatible walking observation/normalization/RND protocol")
+    if value.get("reward_mode") not in ("legacy", "alternating_v1") or value.get("reward_version") != REWARD_VERSION:
+        raise _error("Missing or incompatible walking reward protocol")
     if value.get("stage") not in STAGES or value.get("cross_time_mode") not in (
         "legacy",
         "bounded",
@@ -152,6 +157,7 @@ def make_protocol(
     source: Mapping[str, Any],
     *,
     configuration_sha256: str,
+    reward_mode: str = "alternating_v1",
 ) -> dict[str, Any]:
     value = {
         "id": PROTOCOL_ID,
@@ -164,6 +170,8 @@ def make_protocol(
         "stage": stage,
         "cross_time_mode": cross_time_mode,
         "max_time_difference": max_time_difference,
+        "reward_mode": reward_mode,
+        "reward_version": REWARD_VERSION,
         "source": deepcopy(dict(source)),
         "configuration_sha256": configuration_sha256,
     }
@@ -211,7 +219,7 @@ def validate_checkpoint(
         raise _error("Missing walking protocol marker")
     validate_protocol(marker)
     if any(marker[key] != expected_protocol[key] for key in COMPATIBILITY_KEYS):
-        raise _error("Checkpoint input or timing reward protocol differs from this run")
+        raise _error("Checkpoint input or walking reward protocol differs from this run")
     completed = saved["iter"] + 1
     progress = infos.get("h2_walk_progress")
     if (

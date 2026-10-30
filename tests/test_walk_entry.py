@@ -98,6 +98,12 @@ def test_signature_includes_actual_wrapper_action_clipping():
     env = SimpleNamespace(
         observations={"scale": 0.2},
         actions={"scale": 0.25},
+        rewards={"progress": {"weight": 1.0}},
+        walking_reward_mode="alternating_v1",
+        walking_reward_version="h2_walk_rewards_v1",
+        walking_reward_parameters={},
+        contact_diagnostic_threshold=1.0,
+        stage_support_height_tolerance=.015,
         sim=SimpleNamespace(dt=0.005),
         decimation=4,
         scene=SimpleNamespace(
