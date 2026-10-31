@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -92,6 +93,9 @@ def prior_finished(pointer):
 
 
 def preflight(args):
+    if args.postmortem_review:
+        require(not args.validate, "Choose natural completion or explicit postmortem validation")
+        return preflight_postmortem(args)
     pointer = read(POINTER)
     require(not pointer.get("stair_experiments_paused_by_user"), "User paused experiments")
     previous = prior_finished(pointer)
@@ -187,6 +191,80 @@ def preflight(args):
                 accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
 
 
+def preflight_postmortem(args):
+    """A reviewed saved baseline may be measured without resuming failed PPO."""
+    pointer = read(POINTER)
+    require(not pointer.get("stair_experiments_paused_by_user"), "User paused experiments")
+    previous = prior_finished(pointer)
+    require(not gpu_snapshot()["compute_processes"] and not active_simulators(), "Another Isaac/GPU task is active")
+    require(git("branch", "--show-current") == BRANCH and not git("status", "--porcelain=v1"),
+            "Commit the reviewed tools before freezing a validation")
+    review_path = inside(args.postmortem_review)
+    review = read(review_path)
+    require(review.get("status") == "reviewed_ready" and
+            review.get("kind") == "single_frozen_validation_of_preserved_pre_guard_baseline_v1",
+            "A specific reviewed postmortem measurement plan is required")
+    require(review.get("protocol") == dict(num_envs=1024, duration_s=20, speed_m_s=.3, seed=42,
+        minimum_successful_envs=922, minimum_forward_m=4.8, maximum_forward_m=7.2,
+        minimum_valid_landings_each_foot=2, teacher_interventions=0, learning_updates=0),
+        "Independent physical acceptance protocol changed")
+    parent = inside(review["parent_case"])
+    require(str(parent) == pointer["active_stair_job"], "Postmortem plan targets another previous job")
+    parent_request = request_for(parent)[1]
+    state = read(parent / "supervision.json")
+    require(parent_request["job_kind"] == KIND and state.get("status") == "failed"
+            and state.get("failure_kind") == "functional_guard_rollback_inference_tensor_error",
+            "Postmortem source is not the reviewed failed bounded PPO")
+    checkpoint = inside(review["checkpoint"])
+    run = inside(state["run_dir"])
+    require(checkpoint == inside(state["final_checkpoint"]) and checkpoint.parent == run,
+            "Only the preserved pre-update baseline can be replayed")
+    original = inside(review["original_baseline_snapshot"])
+    require(original.parent == run / "functional_guard" and original.name.endswith("_baseline.pt")
+            and digest(checkpoint) == digest(original) == review["checkpoint_sha256"],
+            "Rejected candidate or altered checkpoint cannot be substituted for the baseline")
+    receipt_path = inside(review["CPU_receipt"])
+    receipt = read(receipt_path)
+    require(digest(receipt_path) == review["CPU_receipt_sha256"] and receipt.get("status") == "passed"
+            and receipt.get("cpu_only") is True and receipt["sha256"] == digest(checkpoint)
+            and receipt["checkpoint_format"] == "h2_guarded_flat_ppo_v1"
+            and receipt["committed_updates"] == state["completed_iterations"] == review["committed_updates"],
+            "Preserved split optimizer checkpoint has not passed actual CPU validation")
+    source = inside(receipt["source_root"])
+    require(source == inside(run / "training_source/source"), "Replay must use this weight's actual training source")
+    actual = {"source/" + str(Path(path).relative_to(source)): value for path, value in hashes(source).items()}
+    require(actual == receipt["source_sha256"], "Frozen imported model/plant source changed")
+    require(digest(receipt["producer_run"]) == receipt["producer_run_sha256"], "Reconciled producer evidence changed")
+    require(read(receipt["producer_run"])["status"] == "failed", "Do not relabel failed PPO as natural completion")
+    frozen = {str(path): digest(path) for path in (review_path, checkpoint, original, receipt_path,
+        inside(receipt["producer_run"]), run / "params/agent.yaml", parent / "guard_rollback_failure_reconciliation.json")}
+    for value in review.get("evidence", []):
+        path = inside(value)
+        frozen[str(path)] = digest(path)
+    for name, expected in receipt["external_dependency_sha256"].items():
+        path = inside(name)
+        require(digest(path) == expected, "Training USD/LiDAR dependency changed")
+        frozen[str(path)] = expected
+    baseline = pointer["accepted_flat_baseline"]
+    require(digest(baseline["final_checkpoint"]) == baseline["checkpoint_sha256"], "Protected flat baseline changed")
+    for name, expected in baseline["network_hashes"].items():
+        require(digest(ROOT / "source" / name) == expected, "Original network/input source changed")
+    # Use model/source/protocol identity, not tooling revisions, for deduplication.
+    key = hashlib.sha256(json.dumps(dict(kind=EVAL_KIND, checkpoint=digest(checkpoint),
+        source=actual, protocol=review["protocol"]), sort_keys=True).encode()).hexdigest()[:20]
+    guard = ROOT / "logs/stair_learning" / ("flat_postmortem_" + key + ".launch.lock")
+    require(not guard.exists(), "This frozen baseline/protocol was already dispatched")
+    return dict(checked_at=now(), previous=previous, previous_pointer=pointer,
+        source_branch=BRANCH, source_commit=parent_request["source_commit"], launcher_commit=git("rev-parse", "HEAD"),
+        job_kind=EVAL_KIND, entrypoint=str(ROOT / "tools/evaluate_flat_balance_policy.py"),
+        source_root=str(source), source_hashes=hashes(source), root_hashes=root_hashes(), frozen_files=frozen,
+        initial_policy=parent_request["initial_policy"], initial_policy_sha256=INIT_SHA,
+        plan_path=str(review_path), plan_sha256=digest(review_path), duplicate_guard=str(guard),
+        parent_case=str(parent), checkpoint=str(checkpoint), dataset=None, dataset_stats={},
+        producer_completed_iterations=review["committed_updates"],
+        postmortem_measurement=True, accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
+
+
 def request_for(case):
     case = inside(case)
     request = read(case / "request.json")
@@ -217,7 +295,8 @@ def check_inputs(request):
         changes.append("Actual imported source snapshot file set or bytes")
     if request.get("dataset") and dataset_stats(request["dataset"]) != request["dataset_stats"]:
         changes.append("Fixed real audit dataset identity changed")
-    if git("branch", "--show-current") != request["source_branch"] or git("rev-parse", "HEAD") != request["source_commit"]:
+    if (git("branch", "--show-current") != request["source_branch"]
+            or git("rev-parse", "HEAD") != request.get("launcher_commit", request["source_commit"])):
         changes.append("Runtime branch/commit changed")
     return changes
 
@@ -305,6 +384,11 @@ def sample(case, commit=False, reviewed_pending=None):
         fragment = raw[newline + 1:] if newline >= 0 else raw
         text = previous.get("incomplete_iteration_block", "") + complete
         parsed = parse_training_log(text, previous)
+        evaluation_progress = previous.get("evaluation_progress")
+        advances = list(re.finditer(r"\[DIRECT_INIT_VALIDATION\] t=([0-9.]+)s first_active=(\d+)/(\d+)", text))
+        if advances:
+            match = advances[-1]
+            evaluation_progress = dict(simulated_time_s=float(match[1]), first_episode_active=int(match[2]), num_envs=int(match[3]))
         fatal, known = fatal_lines(text)
         state = read(case / "supervision.json")
         active_job = read(case / "manager_state.json").get("status") != "finished"
@@ -325,6 +409,8 @@ def sample(case, commit=False, reviewed_pending=None):
         checks = [owned(row) for row in identities(case)]
         advanced = (time.time() if parsed["iteration"] > previous.get("iteration", -1)
                     else previous.get("advanced_at_epoch", time.time()))
+        if evaluation_progress != previous.get("evaluation_progress"):
+            advanced = time.time()
         changes = check_inputs(request)
         reasons = ((["new fatal runtime evidence"] if fatal else [])
                    + (["frozen input changed"] if changes else [])) if active_job else []
@@ -348,6 +434,7 @@ def sample(case, commit=False, reviewed_pending=None):
                      log_caught_up=offset + len(data) == size, advanced_at_epoch=advanced,
                      state_status=state.get("status"), checkpoints=files,
                      active_job_monitoring=active_job,
+                     evaluation_progress=evaluation_progress,
                      new_checkpoints=[x for x in files if x["path"] not in {c["path"] for c in previous.get("checkpoints", [])}],
                      processes=checks, gpu=gpu_snapshot(), changed_frozen_inputs=changes,
                      startup_contract=startup, fatal_log_candidates=list(dict.fromkeys(fatal))[-30:],
@@ -438,7 +525,8 @@ def sync_campaign(case, status, **details):
             jobs.append(record)
         record.update(status=status, updated_at=now(), **details)
         value.update(status=status, active_job=str(case) if status in ("starting", "running") else None,
-                     current_mode="guarded_flat_balance_learning", stairs_acceptance_passed=False,
+                     current_mode="guarded_flat_balance_learning" if request["job_kind"] == KIND else "guarded_flat_balance_frozen_validation",
+                     stairs_acceptance_passed=False,
                      guarded_flat_balance_case=str(case), **details)
         write(path, value)
 
@@ -615,9 +703,13 @@ def launch(args):
                        launch_record=str(case / "launch.json"), single_launch_guard=str(case / "launch.lock"),
                        monitor_record=str(case / "supervision.monitor.json"), stop_policy_path=str(case / "stop_policy.json"),
                        monitor_snapshot_tool=str(SELF), monitor_snapshot_command=[sys.executable, str(SELF), "--monitor", str(case)],
-                       parent_launcher_pid=os.getpid(), num_envs=1024, num_steps_per_env=24,
-                       max_iterations=1000, starting_iteration=0, save_interval=500, expected_final_iteration=999,
-                       expected_total_timesteps=24576000, automatic_restart_allowed=False)
+                       parent_launcher_pid=os.getpid(), num_envs=1024,
+                       num_steps_per_env=24 if checked["job_kind"] == KIND else 0,
+                       max_iterations=1000 if checked["job_kind"] == KIND else 0,
+                       starting_iteration=0, save_interval=500 if checked["job_kind"] == KIND else None,
+                       expected_final_iteration=999 if checked["job_kind"] == KIND else -1,
+                       expected_total_timesteps=24576000 if checked["job_kind"] == KIND else 0,
+                       automatic_restart_allowed=False)
         immutable(case / "request.json", request)
         seal = dict(request_sha256=digest(case / "request.json"), case=str(case), at=now())
         immutable(case / "launch.lock", seal)
@@ -637,13 +729,21 @@ def launch(args):
             checkpoint_sha256=digest(request["checkpoint"]) if request["checkpoint"] else None,
             source_snapshot=None, final_checkpoint_validation=None,
             checkpoint_validation_tool=str(ROOT / "tools/evaluate_flat_balance_policy.py"),
-            max_iterations=1000, starting_iteration=0, completed_iterations=0, last_monitor_iteration=-1,
-            expected_final_iteration=999, expected_total_timesteps=24576000, last_monitor_ETA=None,
+            max_iterations=1000 if request["job_kind"] == KIND else 0,
+            starting_iteration=0, completed_iterations=0, last_monitor_iteration=-1,
+            expected_final_iteration=request["expected_final_iteration"],
+            expected_total_timesteps=request["expected_total_timesteps"], last_monitor_ETA=None,
             launch_record_sha256=None, single_launch_guard_sha256=digest(case / "launch.lock"),
-            guarded_flat_balance_plan=request["plan_path"], guarded_flat_balance_plan_sha256=request["plan_sha256"],
             stairs_acceptance_passed=False, direct_flat_balance_ready=False, initialization_ready=False,
             diagnostic_only=False, successful_envs=0, previous_pointer_record=str(case / "previous_pointer.json"),
             next_action="Supervise this unique bounded task with frozen source and parameters; review real terminal evidence before any later dispatch.")
+        if request["job_kind"] == KIND:
+            pointer.update(guarded_flat_balance_plan=request["plan_path"], guarded_flat_balance_plan_sha256=request["plan_sha256"])
+        else:
+            pointer.update(active_flat_validation_review=request["plan_path"],
+                           frozen_checkpoint_iteration=request.get("producer_completed_iterations", 1000) - 1,
+                           frozen_checkpoint_completed_iterations=request.get("producer_completed_iterations", 1000),
+                           launcher_commit=request.get("launcher_commit", request["source_commit"]))
         write(POINTER, pointer)
         sync_campaign(case, "starting", guarded_flat_balance_plan=request["plan_path"])
         with (case / "manager.log").open("xb") as stream:
@@ -662,6 +762,7 @@ def main():
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--plan")
     parser.add_argument("--validate", help="Completed flat PPO case; requires --start to dispatch physical validation")
+    parser.add_argument("--postmortem-review", help="Explicitly reviewed unique frozen measurement of a failed run's saved baseline; never resumes PPO")
     parser.add_argument("--monitor")
     parser.add_argument("--commit-monitor", action="store_true")
     parser.add_argument("--pending", help="Reviewed pending record; a fresh monotonic point is committed under lock")

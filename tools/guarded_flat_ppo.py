@@ -315,7 +315,12 @@ class H2GuardedPPO(PPO):
         self.policy.load_state_dict(packet["model_state_dict"],strict=True)
         self.actor_optimizer.load_state_dict(packet["actor_optimizer_state_dict"])
         self.critic_optimizer.load_state_dict(packet["critic_optimizer_state_dict"])
-        self.rnd.load_state_dict(packet["rnd_state_dict"],strict=True)
+        # RSL updates RND statistics inside rollout's inference_mode and
+        # replaces _std with inference tensors. Their in-place state copy is
+        # legal only in that mode. Keep Adam reconstruction outside this scope
+        # so its moments remain ordinary tensors for any later explicit use.
+        with torch.inference_mode():
+            self.rnd.load_state_dict(packet["rnd_state_dict"],strict=True)
         self.rnd_optimizer.load_state_dict(packet["rnd_optimizer_state_dict"])
         for name,key in (("actor","obs_norm_state_dict"),("critic","privileged_obs_norm_state_dict")):
             self.normalizers[name].load_state_dict(packet[key],strict=True);self.normalizers[name].eval()
