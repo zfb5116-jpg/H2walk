@@ -17,6 +17,7 @@ from torch.func import functional_call, jacrev, jvp
 
 
 KIND = "simultaneous_actual_bank_linear_v1"
+RESERVED_KIND = "simultaneous_actual_bank_reserved_linear_v1"
 LINEAR_TOLERANCE_RAD = 2e-7
 ROW_VALUE_TOLERANCE_RAD = 5e-6
 MAX_BANK_ROWS, NUM_OUTPUTS, NUM_MEAN_PARAMETERS = 5120, 12, 44
@@ -266,7 +267,8 @@ def _gram_and_direction(jacobian, proposed, upper, lower, sweeps, tolerance):
 
 
 def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
-                        interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048):
+                        interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048,
+                        working_budget_fraction=None):
     """Project44 Adam directions into simultaneous actual-output linear bounds.
 
     The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
@@ -276,8 +278,12 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
 
     Numerical tolerances describe only this first-order certificate. They are
     never applied to the caller's strict nonlinear post-commit hard budget.
+    The optional reserved mode intersects the original midpoint with a fixed
+    whole-update ``abs(e+Jd)<=.5*b`` domain, then reserves the same solver
+    tolerance inward on BOTH sides of that intersection. ``None`` is legacy.
     """
-    metadata = dict(kind=KIND, feasible=False, interior_fraction=.5,
+    reserved = working_budget_fraction is not None
+    metadata = dict(kind=RESERVED_KIND if reserved else KIND, feasible=False, interior_fraction=.5,
                     max_active_rows=8, max_solver_sweeps=2048,
                     tolerance_rad=LINEAR_TOLERANCE_RAD,
                     row_value_tolerance_rad=ROW_VALUE_TOLERANCE_RAD,
@@ -293,6 +299,13 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
 
     if interior_fraction != .5 or max_active_rows != 8 or max_solver_sweeps != 2048:
         fail("Fixed prospective projection protocol changed")
+    if reserved:
+        if working_budget_fraction != .5:
+            fail("Reserved working budget fraction must be exactly.5")
+        metadata.update(working_budget_fraction=.5, solver_tolerance_reserved_inward=True,
+                        whole_update_fixed_working_bound=True,
+                        working_reference="original_whole_update_q0",
+                        original_nonlinear_hard_budget_unchanged=True)
     if not isinstance(bank, Mapping) or any(k not in bank for k in ("obs", "lower", "upper")):
         fail("Incomplete actual bank")
     if actor_normalizer.training:
@@ -374,6 +387,20 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
              max_current_nonlinear_ratio=float(np.max(np.abs(qcur-reference_array)/limit_array)))
     upper = .5 * (limit_array.astype(np.float64) - error)
     lower = -.5 * (limit_array.astype(np.float64) + error)
+    if reserved:
+        working_bound = .5 * limit_array.astype(np.float64)
+        unreserved_upper = np.minimum(upper, working_bound-error)
+        unreserved_lower = np.maximum(lower, -working_bound-error)
+        if not np.isfinite(unreserved_upper).all() or not np.isfinite(unreserved_lower).all() \
+                or np.any(unreserved_lower > unreserved_upper):
+            fail("empty_or_nonfinite_working_midpoint_intersection")
+        lower = unreserved_lower + LINEAR_TOLERANCE_RAD
+        upper = unreserved_upper - LINEAR_TOLERANCE_RAD
+        if np.any(lower > upper):
+            fail("empty_solver_reserved_intersection")
+        metadata.update(initial_current_max_hard_ratio=float(np.max(np.abs(error)/limit_array)),
+                        initial_current_max_working_ratio=float(np.max(np.abs(error)/working_bound)),
+                        initial_linearized_working_max_ratio=float(np.max(np.abs(error+tangent)/working_bound)))
     metadata.update(initial_max_linear_violation_rad=float(np.maximum(tangent-upper,lower-tangent).max()),
                     initial_linearized_total_max_ratio=float(np.max(np.abs(error+tangent)/limit_array)))
     jacobians = []
@@ -388,9 +415,16 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         metadata.update(max_linear_violation_rad=maximum, worst_row=int(worst[0]), worst_joint=int(worst[1]),
                         active_rows=len(jacobians), row_value_max_disagreement_rad=row_value_max,
                         row_JVP_max_disagreement_rad=row_jvp_max)
+        if reserved:
+            unreserved_max = float(np.maximum(tangent-unreserved_upper,unreserved_lower-tangent).max())
+            metadata.update(max_unreserved_linear_violation_rad=unreserved_max,
+                            max_working_bound_violation_rad=float(np.max(np.abs(error+tangent)-working_bound)),
+                            linearized_working_max_ratio=float(np.max(np.abs(error+tangent)/working_bound)))
         # The direct-return path preserves the original tensor identities and
         # exact prospective Adam commit, without invoking a solver at all.
         if maximum <= (0. if not jacobians else LINEAR_TOLERANCE_RAD):
+            if reserved and unreserved_max > 0.:
+                fail("Unreserved working/midpoint certificate failed after solver tolerance reserve")
             metadata.update(feasible=True, reason="unmodified_proposal_feasible" if not jacobians else "projected_proposal_feasible",
                             direction_changed=bool(jacobians), projected_direction_norm=float(math.sqrt(sum(float(d.double().square().sum()) for d in direction))),
                             parameter_delta_change_norm=float(math.sqrt(sum(float((d.double()-o.double()).square().sum()) for d,o in zip(direction,directions)))),

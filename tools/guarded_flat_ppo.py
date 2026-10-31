@@ -21,8 +21,12 @@ MARGIN_TRIAL = "overspeed_credit_action_margin_v1"
 PROJECTION_FORMAT = "h2_guarded_flat_ppo_v3"
 PROJECTION_TRIAL = "simultaneous_output_proposal_v1"
 PROJECTION_KIND = "simultaneous_actual_bank_linear_v1"
+RESERVED_FORMAT = "h2_guarded_flat_ppo_v4"
+RESERVED_TRIAL = "reserved_simultaneous_output_proposal_v1"
+RESERVED_KIND = "simultaneous_actual_bank_reserved_linear_v1"
 TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 RESTORED_PARENT_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
+RESERVED_PARENT_SHA = "ffcec4bbe62f63f77fcdfdac53d322fe19ef355dda40b7a2b1ee394015f81ed0"
 MAX_ANGLE = [0.02, 0.015, 0.015, 0.02, 0.01, 0.0075] * 2
 FIXED_BANK_ROWS, CURRENT_BANK_ROWS, ROLLOUT_STEPS = 4096, 1024, 24
 
@@ -133,10 +137,20 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    projection=plan.get("trial_protocol")==PROJECTION_TRIAL
-    if projection:
+    reserved=plan.get("trial_protocol")==RESERVED_TRIAL
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL)
+    if reserved:
+        kind,mode="saved_restored_PPO_v3_policy_transfer","transfer_restored_v3_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=RESERVED_PARENT_SHA,PROJECTION_FORMAT,104,105
+        parent_trial=PROJECTION_TRIAL
+        require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
+                and plan.get("parent_accepted_updates")==105 and plan.get("parent_last_complete_iteration")==104
+                and plan.get("parent_runtime_rollback_completed") is True,
+                "Typed restored105 transfer is not the reviewed fixed-reserve initialization")
+    elif projection:
         kind,mode="saved_restored_PPO_v2_policy_transfer","transfer_restored_policy_and_dualnorm_fresh_optimization"
         parent_sha,parent_format,parent_iteration,parent_updates=RESTORED_PARENT_SHA,MARGIN_FORMAT,100,101
+        parent_trial=MARGIN_TRIAL
         require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
                 and plan.get("parent_accepted_updates")==101 and plan.get("parent_last_complete_iteration")==100
                 and plan.get("parent_runtime_rollback_completed") is True,
@@ -154,9 +168,9 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
             and saved["guarded_ppo_state"]["uncommitted_rollout"] is True,
             "Typed parent is not the exact preserved committed policy")
     if projection:
-        require(saved.get("trial_protocol")==MARGIN_TRIAL
-                and saved["guarded_ppo_state"].get("trial_protocol")==MARGIN_TRIAL,
-                "Restored101 parent does not carry the original v2 protocol")
+        require(saved.get("trial_protocol")==parent_trial
+                and saved["guarded_ppo_state"].get("trial_protocol")==parent_trial,
+                "Restored parent does not carry the exact declared prior protocol")
     receipt_path=Path(plan["initial_policy_CPU_receipt"]).resolve(strict=True)
     require(receipt_path==checkpoint.with_suffix(".validation.json")
             and sha(receipt_path)==plan["initial_policy_CPU_receipt_sha256"],"Typed parent CPU receipt changed")
@@ -175,15 +189,15 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     if projection:
         require(receipt.get("uncommitted_rollout") is True
                 and Path(parent_run["final_checkpoint"]).resolve(strict=True)==checkpoint,
-                "Restored101 parent receipt/run do not bind the restored checkpoint")
+                "Restored parent receipt/run do not bind the restored checkpoint")
         rollback_path=Path(parent_run["functional_guard_evidence"]).resolve(strict=True)
         rollback=json.loads(rollback_path.read_text())
         require(rollback.get("complete_update_restored") is True
                 and rollback["rollback_state_digest_before"]==rollback["rollback_state_digest_after"]
-                and rollback.get("completed_updates")==101
+                and rollback.get("completed_updates")==parent_updates
                 and rollback.get("restored_checkpoint_sha256")==parent_sha
                 and Path(rollback["restored_checkpoint"]).resolve(strict=True)==checkpoint,
-                "Restored101 parent lacks exact complete-state rollback evidence")
+                "Restored parent lacks exact complete-state rollback evidence")
         rollback_evidence=dict(path=str(rollback_path),sha256=sha(rollback_path),
                                persistent_state_digest=rollback["rollback_state_digest_before"])
     parent_source=Path(plan["initial_parent_source_root"]).resolve(strict=True)
@@ -217,11 +231,12 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL) and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
-    expected_kind=("saved_restored_PPO_v2_policy_transfer" if algorithm.trial_protocol==PROJECTION_TRIAL
-                   else "saved_pre_guard_PPO_v1_policy_transfer")
+    expected_kind={MARGIN_TRIAL:"saved_pre_guard_PPO_v1_policy_transfer",
+                   PROJECTION_TRIAL:"saved_restored_PPO_v2_policy_transfer",
+                   RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer"}[algorithm.trial_protocol]
     require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
     require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
             and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
@@ -395,7 +410,7 @@ class H2GuardedPPO(PPO):
                  trial_protocol="guarded_flat_balance_v1",actor_action_budget_penalty_weight=0.,
                  actor_action_budget_penalty_epsilon=1e-6, actor_proposal_projection=None,
                  actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
-                 actor_proposal_max_solver_sweeps=2048, **kwargs):
+                 actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -408,14 +423,22 @@ class H2GuardedPPO(PPO):
                 or (trial_protocol==MARGIN_TRIAL and actor_action_budget_penalty_weight==.01
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
+                    and self.gamma==.99 and self.lam==.95)
+                or (trial_protocol==RESERVED_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.projection_enabled=trial_protocol==PROJECTION_TRIAL
-        require((self.projection_enabled and actor_proposal_projection==PROJECTION_KIND
+        self.reserved_projection_enabled=trial_protocol==RESERVED_TRIAL
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL)
+        self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
+        require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5 and actor_proposal_max_active_rows==8
                  and actor_proposal_max_solver_sweeps==2048)
                 or (not self.projection_enabled and actor_proposal_projection is None),
                 "Undeclared simultaneous-proposal protocol")
+        require((self.reserved_projection_enabled and actor_proposal_working_budget_fraction==.5)
+                or (not self.reserved_projection_enabled and actor_proposal_working_budget_fraction is None),
+                "Fixed whole-update working budget belongs only to the reviewed reserved profile")
+        self.projection_working_budget_fraction=actor_proposal_working_budget_fraction
         self.projection_interior_fraction=float(actor_proposal_interior_fraction)
         self.projection_max_active_rows=int(actor_proposal_max_active_rows)
         self.projection_max_solver_sweeps=int(actor_proposal_max_solver_sweeps)
@@ -425,7 +448,8 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)
+        self.checkpoint_format=(RESERVED_FORMAT if self.reserved_projection_enabled else
+            (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
                 "Guarded-flat PPO epochs/batches/entropy changed")
@@ -485,7 +509,7 @@ class H2GuardedPPO(PPO):
             finite_guard_limitation="5120 actual inputs; update-change bound is not unseen-state or physical-stability proof",
             last_guard=self.last_guard_summary)
         if self.projection_enabled:
-            state["proposal_projection"]=dict(kind=PROJECTION_KIND,protocol=PROJECTION_TRIAL,
+            state["proposal_projection"]=dict(kind=self.projection_kind,protocol=self.trial_protocol,
                 interior_fraction=self.projection_interior_fraction,max_active_rows=self.projection_max_active_rows,
                 max_solver_sweeps=self.projection_max_solver_sweeps,whole_update_reference=True,linear_full_bank=True,
                 hard_gate_unchanged=True,no_retry=True,adam_implementation="single_tensor_foreach_false",
@@ -495,6 +519,9 @@ class H2GuardedPPO(PPO):
                 row_jacobian_calls=self.projection_row_jacobian_calls,solver_sweeps=self.projection_solver_sweeps,
                 latest_summary=copy.deepcopy(self.last_projection_summary),
                 limitation="First-order finite5120-bank direction only; original strict nonlinear check remains authoritative")
+            if self.reserved_projection_enabled:
+                state["proposal_projection"].update(working_budget_fraction=self.projection_working_budget_fraction,
+                    whole_update_fixed_working_bound=True,solver_tolerance_reserved_inward=True)
         return state
 
     def _exploration_state(self):
@@ -627,7 +654,7 @@ class H2GuardedPPO(PPO):
         prefix=directory/f"rejected_update_{update:04d}"
         pre=Path(str(prefix)+"_baseline.pt");candidate=Path(str(prefix)+"_candidate.pt")
         restored=directory.parent/f"model_{self.completed_updates-1}_guard_restored.pt"
-        detail=evidence_json(dict(metadata,kind=PROJECTION_KIND,update_index=update,minibatch=minibatch,
+        detail=evidence_json(dict(metadata,kind=self.projection_kind,update_index=update,minibatch=minibatch,
             committed=False,nonlinear_hard_check_passed=None,bank_rows=5120,linear_output_coordinates=61440,
             actor_mean_parameter_tensors=44,adam_parameter_tensors=45,hard_gate_unchanged=True,no_retry=True))
         self.last_projection_summary=copy.deepcopy(detail)
@@ -677,12 +704,20 @@ class H2GuardedPPO(PPO):
                 raise ProposalProjectionError(dict(reason="Prospective Adam parameter identities/order changed"))
             if len(tuple(self.policy.actor.parameters()))!=44:
                 raise ProposalProjectionError(dict(reason="Original44 actor mean parameters changed"))
+            projection_options=dict(interior_fraction=self.projection_interior_fraction,
+                max_active_rows=self.projection_max_active_rows,max_solver_sweeps=self.projection_max_solver_sweeps)
+            if self.reserved_projection_enabled:
+                projection_options["working_budget_fraction"]=self.projection_working_budget_fraction
             projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
                 self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
-                interior_fraction=self.projection_interior_fraction,max_active_rows=self.projection_max_active_rows,
-                max_solver_sweeps=self.projection_max_solver_sweeps)
-            if metadata.get("kind")!=PROJECTION_KIND or metadata.get("feasible") is not True or len(projected)!=44:
+                **projection_options)
+            if metadata.get("kind")!=self.projection_kind or metadata.get("feasible") is not True or len(projected)!=44:
                 raise ProposalProjectionError(dict(metadata,reason="Malformed prospective projection certificate"))
+            if self.reserved_projection_enabled and not (
+                    metadata.get("working_budget_fraction")==.5
+                    and metadata.get("whole_update_fixed_working_bound") is True
+                    and metadata.get("solver_tolerance_reserved_inward") is True):
+                raise ProposalProjectionError(dict(metadata,reason="Missing fixed working-bound inward-reserve certificate"))
             # Std keeps its actual Adam proposal. commit dispatches no optimizer
             # hook; run the unchanged exploration post-hook exactly once here.
             proposal.commit(tuple(projected)+(proposal.deltas[44],))

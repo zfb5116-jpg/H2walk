@@ -15,7 +15,7 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='simultaneous_output_proposal_v1'
+TRIAL_PROTOCOL='reserved_simultaneous_output_proposal_v1'
 POSITIVE_CREDIT_PROFILE='overspeed_positive_credit_v1'
 
 

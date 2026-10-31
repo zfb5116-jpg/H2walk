@@ -37,6 +37,8 @@ INIT_SHA = "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
 TRANSFER_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 PROPOSAL_PROTOCOL = "simultaneous_output_proposal_v1"
 RESTORED_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
+RESERVED_PROTOCOL = "reserved_simultaneous_output_proposal_v1"
+RESERVED_SHA = "ffcec4bbe62f63f77fcdfdac53d322fe19ef355dda40b7a2b1ee394015f81ed0"
 TERMINAL = {"completed", "failed", "stopped_no_improvement", "stopped_functional_guard"}
 
 
@@ -112,9 +114,10 @@ def preflight(args):
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
     require(declared["network_or_input_structure_change"] is False, "Network/input change requires prior reporting")
     initial = inside(declared["initial_policy"])
-    projected = declared.get("trial_protocol") == PROPOSAL_PROTOCOL
+    reserved = declared.get("trial_protocol") == RESERVED_PROTOCOL
+    projected = reserved or declared.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    expected_initial_sha = RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
+    expected_initial_sha = RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
     require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
     receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
@@ -134,11 +137,11 @@ def preflight(args):
     frozen = {str(initial): expected_initial_sha, str(receipt_path): digest(receipt_path),
               str(plan): digest(plan), **dependencies}
     if transfer:
-        require(declared.get("initial_parent_kind") == ("saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
-                and declared.get("initialization_mode") == ("transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
+        require(declared.get("initial_parent_kind") == ("saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
+                and declared.get("initialization_mode") == ("transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
                 "New trial must explicitly transfer model/norm only and start fresh optimization")
-        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
-                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (101 if projected else 165)
+        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
+                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (105 if reserved else 101 if projected else 165)
                 and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
         parent_run = inside(declared["initial_parent_run"])
         require(str(parent_run) == receipt["producer_run"] and digest(parent_run) == receipt["producer_run_sha256"]
@@ -154,10 +157,15 @@ def preflight(args):
                 "Reviewed fixed target-margin protocol changed")
         if projected:
             projection=declared["learning"]["actor_proposal_projection"]
-            require(projection["kind"] == "simultaneous_actual_bank_linear_v1"
+            require(projection["kind"] == ("simultaneous_actual_bank_reserved_linear_v1" if reserved else "simultaneous_actual_bank_linear_v1")
                     and projection["interior_fraction"] == .5 and projection["max_active_rows"] == 8
                     and projection["max_solver_sweeps"] == 2048,
                     "Reviewed simultaneous proposal geometry/bounded solver changed")
+            if reserved:
+                require(projection["working_budget_fraction"]==.5
+                        and projection["whole_update_fixed_working_bound"] is True
+                        and projection["solver_tolerance_reserved_inward"] is True,
+                        "Reviewed fixed whole-update reserve changed")
         frozen[str(parent_run)] = digest(parent_run)
         frozen[str(parent_run.parent / "params/agent.yaml")] = digest(parent_run.parent / "params/agent.yaml")
     for value in declared.get("evidence", {}).values():
@@ -371,7 +379,8 @@ def startup_contract(metadata, request):
     expect(learning.get("critic_only_iterations") == 40 and learning.get("actor_learning_rate") == 1e-5
            and learning.get("critic_learning_rate") == .001 and learning.get("rnd_reward_weight") == 0,
            "Actual split optimizer protocol changed")
-    projected = request.get("trial_protocol") == PROPOSAL_PROTOCOL
+    reserved = request.get("trial_protocol") == RESERVED_PROTOCOL
+    projected = reserved or request.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or request.get("trial_protocol") == "overspeed_credit_action_margin_v1"
     actor_flag = "initial_actor_weights_match_parent_exactly" if transfer else "initial_actor_weights_match_ce822_exactly"
     source_flag = "initial_network_source_matches_parent_exactly" if transfer else "initial_network_source_matches_ce822_exactly"
@@ -380,7 +389,7 @@ def startup_contract(metadata, request):
     if transfer:
         expect(metadata.get("initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == ("h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
+        expect(guarded.get("optimizer_format") == ("h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
         expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
@@ -388,11 +397,16 @@ def startup_contract(metadata, request):
                "Temporal discount was changed without support from the selected repair")
         if projected:
             proposal=learning.get("proposal_projection",{})
-            expect(proposal.get("kind")=="simultaneous_actual_bank_linear_v1"
+            expect(proposal.get("kind")==("simultaneous_actual_bank_reserved_linear_v1" if reserved else "simultaneous_actual_bank_linear_v1")
                    and proposal.get("interior_fraction")==.5 and proposal.get("max_active_rows")==8
                    and proposal.get("max_solver_sweeps")==2048
                    and all(proposal.get(k) is True for k in ("whole_update_reference","linear_full_bank","hard_gate_unchanged","no_retry")),
                    "Runtime simultaneous proposal coverage/fixed geometry differs")
+            if reserved:
+                expect(proposal.get("working_budget_fraction")==.5
+                       and proposal.get("whole_update_fixed_working_bound") is True
+                       and proposal.get("solver_tolerance_reserved_inward") is True,
+                       "Runtime working reserve is not fixed for the entire update")
             expect("functional_proposal.py" in metadata.get("training_tool_sha256",{}),
                    "Actual producer snapshot omitted its prospective optimizer/projector")
     runtime = metadata.get("runtime_flat_geometry", {})

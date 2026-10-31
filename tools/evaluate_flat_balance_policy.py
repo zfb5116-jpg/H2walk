@@ -24,6 +24,8 @@ TRANSFER_INITIAL_SHA='01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59
 NEW_PROTOCOL='overspeed_credit_action_margin_v1'
 PROPOSAL_PROTOCOL='simultaneous_output_proposal_v1'
 PROPOSAL_INITIAL_SHA='319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5'
+RESERVED_PROTOCOL='reserved_simultaneous_output_proposal_v1'
+RESERVED_INITIAL_SHA='ffcec4bbe62f63f77fcdfdac53d322fe19ef355dda40b7a2b1ee394015f81ed0'
 NEW_REWARD_PROFILE='overspeed_positive_credit_v1'
 TRANSFER_CPU_RECEIPT_SHA='6300bf22b993ba92bbe5fdfedc7c9278712eb4891e38ac7d8db1b22e7ccbd4d4'
 TRANSFER_RUN_SHA='ffc94e26c39ebf399055bc997a6577fb3e3a481ce08581117583139ba3837e54'
@@ -41,6 +43,13 @@ require,sha,write,source_hashes=physical.require,physical.sha,physical.write,phy
 
 
 def reviewed_parent(protocol):
+    if protocol==RESERVED_PROTOCOL:
+        return dict(sha=RESERVED_INITIAL_SHA,
+            receipt='338743a01a8590aea06acc58baf2192e4d5026d6875d606859a942ee57802e8e',
+            run='b52da5dd5ef483d5ac1d465df88f2be45dec30a638f0fe8fe45e9b6df924f315',
+            format='h2_guarded_flat_ppo_v3',iteration=104,updates=105,status='stopped_functional_guard',
+            kind='saved_restored_PPO_v3_policy_transfer',
+            mode='transfer_restored_v3_policy_and_dualnorm_fresh_optimization',restored=True)
     if protocol==NEW_PROTOCOL:
         return dict(sha=TRANSFER_INITIAL_SHA,receipt=TRANSFER_CPU_RECEIPT_SHA,run=TRANSFER_RUN_SHA,
             format='h2_guarded_flat_ppo_v1',iteration=164,updates=165,status='failed',
@@ -72,9 +81,10 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
         return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
                     checkpoint_format=fmt,typed_policy_transfer=False)
-    projected=fmt=='h2_guarded_flat_ppo_v3'
+    reserved=fmt=='h2_guarded_flat_ppo_v4'
+    projected=reserved or fmt=='h2_guarded_flat_ppo_v3'
     require(projected or fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
-    protocol=PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
+    protocol=RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
     parent=reviewed_parent(protocol)
     require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
             ==plan.get('trial_protocol')==protocol,'Declared typed profiles disagree')
@@ -86,12 +96,17 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
     if projected:
         require(margin['weight']==0.,'Projected proposal may not silently retain the top1 soft objective')
         projection=state['proposal_projection']
-        require(projection['kind']==algorithm.get('actor_proposal_projection')=='simultaneous_actual_bank_linear_v1'
+        require(projection['kind']==algorithm.get('actor_proposal_projection')==('simultaneous_actual_bank_reserved_linear_v1' if reserved else 'simultaneous_actual_bank_linear_v1')
                 and projection['interior_fraction']==algorithm.get('actor_proposal_interior_fraction')==.5
                 and projection['max_active_rows']==algorithm.get('actor_proposal_max_active_rows')==8
                 and projection['max_solver_sweeps']==algorithm.get('actor_proposal_max_solver_sweeps')==2048
                 and all(projection[k] is True for k in ('whole_update_reference','linear_full_bank','hard_gate_unchanged','no_retry')),
                 'Saved simultaneous proposal contract differs')
+        if reserved:
+            require(projection['working_budget_fraction']==algorithm.get('actor_proposal_working_budget_fraction')==.5
+                    and projection['whole_update_fixed_working_bound'] is True
+                    and projection['solver_tolerance_reserved_inward'] is True,
+                    'Saved fixed whole-update working reserve differs')
     else:
         require(margin['kind']=='worst_actual_input_log_barrier' and margin['weight']==.01
                 and margin['epsilon']==1e-6 and margin['whole_update_reference'] is True
@@ -238,7 +253,7 @@ def validate_cpu(args):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3'),'Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
@@ -257,7 +272,7 @@ def validate_cpu(args):
             'Guarded optimizer producer tool fingerprints are incomplete')
     for name,digest in training_tools.items():
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
-    if saved['format']=='h2_guarded_flat_ppo_v3':
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'):
         require('functional_proposal.py' in training_tools,'Producer omitted simultaneous projection implementation')
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
@@ -321,7 +336,7 @@ def validate_cpu(args):
     for name,parameters,lr in (('actor',actor_named,1e-5),('critic',critic_named,.001)):
         optimizers[name]=check_adam(torch,saved[name+'_optimizer_state_dict'],[n for n,_ in parameters],
             [p for _,p in parameters],expected[name],lr,name)
-    if saved['format']=='h2_guarded_flat_ppo_v3':
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'):
         require(all(g.get('foreach') is False and g.get('fused') in (None,False)
                     for g in saved['actor_optimizer_state_dict']['param_groups']),
                 'Prospective Adam must declare its single-tensor execution path')
@@ -413,6 +428,9 @@ def validate_cpu(args):
             ('kind','interior_fraction','max_active_rows','max_solver_sweeps','whole_update_reference',
              'linear_full_bank','hard_gate_unchanged','no_retry','committed_minibatches')}
             if profile.get('proposal_projection') is not None else None),
+        actor_whole_update_working_reserve=({key:gs['proposal_projection'][key] for key in
+            ('working_budget_fraction','whole_update_fixed_working_bound','solver_tolerance_reserved_inward')}
+            if saved['format']=='h2_guarded_flat_ppo_v4' else None),
         uncommitted_rollout=gs['uncommitted_rollout'],rnd_rollout_update_counter=int(gs['rnd_update_counter']),
         source_root=str(args.source_root),source_sha256=hashes,producer_run=str(run_path),producer_run_sha256=sha(run_path),
         producer_training_tool_sha256=training_tools,
@@ -434,7 +452,7 @@ def validate_cpu(args):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3'),'Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and
