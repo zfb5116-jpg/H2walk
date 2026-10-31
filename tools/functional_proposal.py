@@ -24,6 +24,9 @@ MAX_BANK_ROWS, NUM_OUTPUTS, NUM_MEAN_PARAMETERS = 5120, 12, 44
 GRAM_COLUMN_CHUNK = 65536
 MAX_CPU_JACOBIAN_ARENA_BYTES = 2**30
 JACOBIAN_RESOURCE_KIND = "single_cpu_float32_jacobian_arena_v1"
+PRIMAL_PRECISION_POLICY = "direct_fp64_primal_envelope_v1"
+MAX_KKT_POLISH_CALLS = 28
+MAX_KKT_POLISH_SUPPORT = 672
 
 
 def _metadata_value(value):
@@ -44,8 +47,11 @@ def _metadata_value(value):
 class ProposalProjectionError(RuntimeError):
     """A bounded proposal/projection could not produce its declared certificate."""
 
-    def __init__(self, metadata):
+    def __init__(self, metadata, *, diagnostic_evidence=None):
         self.metadata = _metadata_value(dict(metadata))
+        # Arrays are deliberately NOT metadata/checkpoint fields. The caller
+        # may persist this separate, non-deployable NPZ only on rejection.
+        self.diagnostic_evidence = diagnostic_evidence
         self.metadata.setdefault("feasible", False)
         super().__init__(str(self.metadata.get("reason", "Proposal projection failed")))
 
@@ -268,9 +274,219 @@ def _gram_and_direction(jacobian, proposed, upper, lower, sweeps, tolerance):
     return result, metadata
 
 
+def _rounding_constants(operations):
+    """Conservative IEEE64 operation count, not a learned/input error model."""
+    unit = np.float64(np.finfo(np.float64).eps * .5)
+    product = np.nextafter(np.float64(int(operations)) * unit, np.inf)
+    denominator = np.nextafter(np.float64(1.) - product, -np.inf)
+    if not 0 < product < 1 or denominator <= 0.:
+        raise ArithmeticError("Unsupported FP64 rounding operation count")
+    gamma = np.nextafter(product / denominator, np.inf)
+    if gamma >= 1.:
+        raise ArithmeticError("Unsupported FP64 sum-envelope operation count")
+    underflow = np.nextafter(np.float64(int(operations)) * np.nextafter(0., 1.), np.inf)
+    return gamma, underflow
+
+
+def _up_add_nonnegative(left, right):
+    return np.nextafter(np.asarray(left,dtype=np.float64)+np.asarray(right,dtype=np.float64),np.inf)
+
+
+def _up_mul_nonnegative(left, right):
+    return np.nextafter(np.asarray(left,dtype=np.float64)*np.asarray(right,dtype=np.float64),np.inf)
+
+
+def _up_nonnegative_sum(computed, operations):
+    gamma, underflow = _rounding_constants(operations)
+    # The BLAS/chunk sum itself is enclosed by gamma_k. Also round every
+    # operation constructing its enclosure outward, not only the final result.
+    numerator = _up_add_nonnegative(computed,underflow)
+    denominator = np.nextafter(np.float64(1.)-gamma,-np.inf)
+    return np.nextafter(numerator/denominator,np.inf)
+
+
+def _reconstruct_and_envelope(jacobian, proposed, dual):
+    """Reconstruct d64 and bound rounding in this represented d0-J.T*dual path."""
+    rows, width = jacobian.shape
+    operations = 3 * rows + 4
+    gamma, underflow = _rounding_constants(operations)
+    coefficient = dual[:rows] - dual[rows:]
+    dual_magnitude = np.abs(dual[:rows]) + np.abs(dual[rows:])
+    direction = proposed.copy()
+    error = np.empty(width, dtype=np.float64)
+    for start in range(0, width, GRAM_COLUMN_CHUNK):
+        stop = min(start+GRAM_COLUMN_CHUNK,width)
+        block = jacobian[:,start:stop].astype(np.float64)
+        direction[start:stop] -= coefficient @ block
+        np.abs(block,out=block)
+        sum_abs = dual_magnitude @ block
+        upper_sum = _up_nonnegative_sum(sum_abs,operations)
+        scale = _up_add_nonnegative(np.abs(proposed[start:stop]),upper_sum)
+        error[start:stop] = _up_add_nonnegative(_up_mul_nonnegative(gamma,scale),underflow)
+    return direction,error,operations
+
+
+def _direct_primal_envelope(jacobian, direction, reconstruction_error, upper, lower, tolerance):
+    """A posteriori arithmetic envelope for direct A*d64-c.
+
+    Float32 Jacobian coefficients are treated as exact represented inputs.
+    eta includes ONLY known FP64 reconstruction/dot/subtraction rounding. It
+    does not bound reverse/forward AD, batch effects, input error or curvature.
+    """
+    rows,width=jacobian.shape
+    blocks=(width+GRAM_COLUMN_CHUNK-1)//GRAM_COLUMN_CHUNK
+    operations=2*width+2*blocks+4
+    gamma,underflow=_rounding_constants(operations)
+    dot=np.zeros(rows,dtype=np.float64);sum_abs=np.zeros_like(dot);reconstruction=np.zeros_like(dot)
+    for start in range(0,width,GRAM_COLUMN_CHUNK):
+        stop=min(start+GRAM_COLUMN_CHUNK,width)
+        block=jacobian[:,start:stop].astype(np.float64)
+        dot+=block@direction[start:stop]
+        np.abs(block,out=block)
+        sum_abs+=block@np.abs(direction[start:stop])
+        reconstruction+=block@reconstruction_error[start:stop]
+    constants=np.r_[upper,-lower]
+    residual=np.r_[dot-upper,-dot+lower]
+    sum_up=np.r_[_up_nonnegative_sum(sum_abs,operations),_up_nonnegative_sum(sum_abs,operations)]
+    reconstruction_up=_up_nonnegative_sum(reconstruction,operations)
+    dot_scale=_up_add_nonnegative(sum_up,np.abs(constants))
+    dot_error=_up_add_nonnegative(_up_mul_nonnegative(gamma,dot_scale),underflow)
+    eta=_up_add_nonnegative(np.r_[reconstruction_up,reconstruction_up],dot_error)
+    residual_upper=np.nextafter(residual+eta,np.inf)
+    finite=all(np.isfinite(a).all() for a in (dot,residual,eta,residual_upper))
+    certified=bool(finite and np.all(residual<=eta) and np.all(eta<tolerance)
+                   and np.all(residual_upper<tolerance))
+    summary=dict(certified=certified,direct_primal_max_residual_rad=float(residual.max()),
+        direct_primal_max_eta64_rad=float(eta.max()),direct_primal_max_upper_bound_rad=float(residual_upper.max()),
+        direct_dot_operation_count=int(operations),direct_dot_gamma64=float(gamma),
+        numerical_reserve_remaining_rad=float(tolerance-max(0.,float(residual_upper.max()))))
+    return summary,dict(primal_residual_direct64=residual,primal_eta64=eta,
+                       primal_residual_upper_bound64=residual_upper,positive_row_dot64=dot)
+
+
+def _hildreth_with_evidence(gram,rhs,sweeps,tolerance):
+    """Same coordinate equations; preserve the last dual even on strict failure."""
+    dual=np.zeros(len(rhs),dtype=np.float64);diagonal=np.diag(gram);residual=rhs.copy()
+    kkt=np.maximum(residual,0.)
+    for sweep in range(1,sweeps+1):
+        for i in range(len(rhs)):
+            if diagonal[i]<=np.finfo(np.float64).tiny:
+                if residual[i]>tolerance:
+                    return dual,dict(converged=False,reason="zero_gradient_infeasible_constraint",solver_sweeps=sweep,
+                                     max_residual_rad=float(residual.max()))
+                continue
+            value=max(0.,dual[i]+residual[i]/diagonal[i]);change=value-dual[i]
+            if change:
+                dual[i]=value;residual-=change*gram[:,i]
+        residual=rhs-gram@dual
+        kkt=np.where(dual>0.,np.abs(residual),np.maximum(residual,0.))
+        if not np.isfinite(dual).all() or not np.isfinite(residual).all():
+            return dual,dict(converged=False,reason="nonfinite_Hildreth_iterate",solver_sweeps=sweep)
+        if float(residual.max())<=tolerance and float(kkt.max())<=tolerance:
+            return dual,dict(converged=True,solver_sweeps=sweep,max_residual_rad=float(residual.max()),
+                max_KKT_residual_rad=float(kkt.max()),nonzero_dual_constraints=int(np.count_nonzero(dual)))
+    return dual,dict(converged=False,reason="solver_sweep_cap",solver_sweeps=sweeps,
+                     max_residual_rad=float(residual.max()),max_KKT_residual_rad=float(kkt.max()))
+
+
+def _polish_positive_support(gram,rhs,dual,tolerance):
+    """One rank-revealing solve, no support threshold search, pivots or retries."""
+    support=np.flatnonzero(dual>0.)
+    evidence=dict(positive_dual_indices=support.astype(np.int64))
+    meta=dict(polish_calls=1,support_pivots=0,positive_support_size=int(len(support)))
+    if not 0<len(support)<=MAX_KKT_POLISH_SUPPORT:
+        return None,dict(meta,reason="KKT_polish_support_limit"),evidence
+    small=gram[np.ix_(support,support)]
+    try:
+        left,singular,right=np.linalg.svd(small,full_matrices=False)
+    except np.linalg.LinAlgError:
+        return None,dict(meta,reason="KKT_polish_factorization_failed"),evidence
+    threshold=len(support)*np.finfo(np.float64).eps*float(singular[0])
+    rank=int(np.count_nonzero(singular>threshold))
+    evidence.update(support_Gram=small,support_singular_values=singular)
+    meta.update(support_rank=rank,rank_threshold=float(threshold),
+                support_condition_number=float(singular[0]/singular[-1]) if singular[-1]>0 else "singular")
+    if rank!=len(support):
+        return None,dict(meta,reason="KKT_polish_rank_deficient"),evidence
+    solution=right.T@((left.T@rhs[support])/singular)
+    if not np.isfinite(solution).all() or np.any(solution<0.):
+        evidence["support_dual_solution"]=solution
+        return None,dict(meta,reason="KKT_polish_nonfinite_or_negative_dual"),evidence
+    polished=np.zeros_like(dual);polished[support]=solution
+    residual=rhs-gram@polished
+    kkt=np.where(polished>0.,np.abs(residual),np.maximum(residual,0.))
+    evidence.update(polished_dual=polished,polished_Gram_residual=residual)
+    meta.update(polished_max_KKT_residual_rad=float(kkt.max()))
+    if not np.isfinite(kkt).all() or float(kkt.max())>tolerance:
+        return None,dict(meta,reason="KKT_polish_optimality_certificate_failed"),evidence
+    return polished,meta,evidence
+
+
+def _strict_gram_and_direction(jacobian,proposed,upper,lower,sweeps,tolerance,polish_budget):
+    """Same QP, separate KKT accuracy and direct primal arithmetic precision."""
+    rows,width=jacobian.shape
+    positive=np.zeros((rows,rows),dtype=np.float64);jd=np.zeros(rows,dtype=np.float64)
+    for start in range(0,width,GRAM_COLUMN_CHUNK):
+        stop=min(start+GRAM_COLUMN_CHUNK,width);block=jacobian[:,start:stop].astype(np.float64)
+        positive+=block@block.T;jd+=block@proposed[start:stop]
+    gram=np.block([[positive,-positive],[-positive,positive]]);gram=(gram+gram.T)*.5
+    rhs=np.r_[jd-upper,-jd+lower]
+    evidence=dict(signed_Gram=gram,rhs=rhs,active_upper=upper.copy(),active_lower=lower.copy())
+    precision=dict(policy=PRIMAL_PRECISION_POLICY,certified=False,polish_calls=0,
+                   KKT_optimality_tolerance_rad=float(tolerance),support_pivots=0)
+    if not np.isfinite(gram).all() or not np.isfinite(rhs).all():
+        return None,dict(converged=False,reason="nonfinite_Gram_or_dual_rhs",solver_sweeps=0,primal_precision=precision),evidence
+    dual,meta=_hildreth_with_evidence(gram,rhs,sweeps,tolerance)
+    evidence.update(dual_before_polish=dual.copy(),dual=dual.copy(),primal_residual_Gram=rhs-gram@dual)
+    if not meta["converged"]:
+        return None,dict(meta,primal_precision=precision),evidence
+    direction,error,reconstruction_operations=_reconstruct_and_envelope(jacobian,proposed,dual)
+    initial,detail=_direct_primal_envelope(jacobian,direction,error,upper,lower,tolerance)
+    evidence.update(detail,d64_before_polish=direction.copy(),reconstruction_error64=error)
+    evidence.update(primal_residual_direct64_before_polish=detail["primal_residual_direct64"].copy(),
+                    primal_eta64_before_polish=detail["primal_eta64"].copy())
+    precision.update(initial_direct_primal=initial,reconstruction_operation_count=int(reconstruction_operations))
+    if not initial["certified"]:
+        if polish_budget<1:
+            return None,dict(meta,reason="precision_polish_call_cap",primal_precision=precision),evidence
+        polished,polish,extra=_polish_positive_support(gram,rhs,dual,tolerance)
+        precision.update(polish);evidence.update(extra)
+        if polished is None:
+            return None,dict(meta,reason=polish["reason"],primal_precision=precision),evidence
+        dual=polished
+        direction,error,reconstruction_operations=_reconstruct_and_envelope(jacobian,proposed,dual)
+        final,detail=_direct_primal_envelope(jacobian,direction,error,upper,lower,tolerance)
+    else:
+        final=initial
+    evidence.update(detail,dual=dual,positive_dual_indices=np.flatnonzero(dual>0.).astype(np.int64),
+                    d64=direction,reconstruction_error64=error,primal_residual_Gram=rhs-gram@dual)
+    precision.update(final)
+    final_residual=rhs-gram@dual
+    final_kkt=np.where(dual>0.,np.abs(final_residual),np.maximum(final_residual,0.))
+    meta.update(hildreth_max_residual_rad=meta.get("max_residual_rad"),
+                hildreth_max_KKT_residual_rad=meta.get("max_KKT_residual_rad"),
+                max_residual_rad=float(final_residual.max()),max_KKT_residual_rad=float(final_kkt.max()),
+                nonzero_dual_constraints=int(np.count_nonzero(dual)),
+                primal_precision=precision,objective_half_squared_change=float(.5*np.dot(direction-proposed,direction-proposed)),
+                constraints=2*rows,gram_dtype="float64",jacobian_storage_dtype=str(jacobian.dtype))
+    if not final["certified"]:
+        return None,dict(meta,reason="direct_FP64_primal_precision_uncertified"),evidence
+    return direction,meta,evidence
+
+
+def _native_active_primal(jacobian,direction,upper,lower):
+    """Evaluate the FINAL native direction on every stored row; no NN call."""
+    rows,width=jacobian.shape;dot=np.zeros(rows,dtype=np.float64)
+    for start in range(0,width,GRAM_COLUMN_CHUNK):
+        stop=min(start+GRAM_COLUMN_CHUNK,width)
+        dot+=jacobian[:,start:stop].astype(np.float64)@direction[start:stop]
+    return dot,np.r_[dot-upper,-dot+lower]
+
+
 def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
                         interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048,
-                        working_budget_fraction=None, jacobian_arena_budget_bytes=None):
+                        working_budget_fraction=None, jacobian_arena_budget_bytes=None,
+                        primal_precision_policy=None):
     """Project44 Adam directions into simultaneous actual-output linear bounds.
 
     The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
@@ -289,6 +505,8 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     """
     reserved = working_budget_fraction is not None
     resource_mode = jacobian_arena_budget_bytes is not None
+    strict_primal = primal_precision_policy is not None
+    precision_evidence = None
     metadata = dict(kind=RESERVED_KIND if reserved else KIND, feasible=False, interior_fraction=.5,
                     max_active_rows=8, max_solver_sweeps=2048,
                     tolerance_rad=LINEAR_TOLERANCE_RAD,
@@ -301,7 +519,8 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
 
     def fail(reason, **more):
         metadata.update(more)
-        raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False))
+        raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False),
+            diagnostic_evidence=precision_evidence if strict_primal else None)
 
     if interior_fraction != .5 or max_solver_sweeps != 2048:
         fail("Fixed prospective projection protocol changed")
@@ -327,6 +546,19 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
                         whole_update_fixed_working_bound=True,
                         working_reference="original_whole_update_q0",
                         original_nonlinear_hard_budget_unchanged=True)
+    if strict_primal:
+        if primal_precision_policy!=PRIMAL_PRECISION_POLICY or not resource_mode or not reserved:
+            fail("Strict direct-primal policy requires its declared resource/reserved mode")
+        precision_summary=dict(direct_primal_certified=True,QP_subproblems=0,
+            KKT_optimality_tolerance_rad=LINEAR_TOLERANCE_RAD,direct_primal_max_eta64_rad=0.,
+            direct_primal_max_upper_bound_rad=0.,direct_primal_max_residual_rad=0.,polish_calls=0,
+            polish_call_limit_per_subproblem=1,polish_call_limit_per_projection=MAX_KKT_POLISH_CALLS,
+            support_pivot_limit=0,polish_support_limit=MAX_KKT_POLISH_SUPPORT,
+            final_same_direction_row_JVP_checked=True,final_same_direction_active_rows=0,
+            final_same_direction_row_JVP_maxdiff_rad=0.,final_active_native_primal_max_residual_rad=0.,
+            no_active_rows_vacuous=True,
+            scope="eta64 is FP64 arithmetic only; final same-direction JVP difference is an observation,not a global NN bound")
+        metadata.update(primal_precision_policy=PRIMAL_PRECISION_POLICY,primal_precision_summary=precision_summary)
     if not isinstance(bank, Mapping) or any(k not in bank for k in ("obs", "lower", "upper")):
         fail("Incomplete actual bank")
     if actor_normalizer.training:
@@ -441,6 +673,25 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     row_value_max, row_jvp_max = 0., 0.
 
     for iteration in range(max_active_rows + 1):
+        if strict_primal and jacobians:
+            native=np.concatenate([d.detach().cpu().reshape(-1).double().numpy() for d in direction])
+            active_ids=metadata["active_row_ids"]
+            direct,active_residual=_native_active_primal(active_matrix,native,
+                upper[active_ids].reshape(-1),lower[active_ids].reshape(-1))
+            fullbank_active=tangent[active_ids].reshape(-1)
+            disagreement=float(np.max(np.abs(direct-fullbank_active)))
+            precision_summary.update(final_same_direction_row_JVP_checked=True,
+                final_same_direction_active_rows=len(jacobians),no_active_rows_vacuous=False,
+                final_same_direction_row_JVP_maxdiff_rad=disagreement,
+                final_active_native_primal_max_residual_rad=float(active_residual.max()))
+            precision_evidence.update(active_row_ids=np.asarray(active_ids,dtype=np.int64),
+                native_direction32=native.astype(np.float32),primal_residual_after_native_unpack=active_residual,
+                native_positive_row_Jd=direct,final_fullbank_positive_row_Jd=fullbank_active,
+                active_qcur=qcur[active_ids],active_q0=reference_array[active_ids],active_budget=limit_array[active_ids])
+            if not np.isfinite(active_residual).all() or not math.isfinite(disagreement):
+                fail("Nonfinite final native active-row primal probe")
+            if disagreement>LINEAR_TOLERANCE_RAD:
+                fail("Final native active-row Jacobian/full-bank JVP disagreement")
         violation = np.maximum(tangent - upper, lower - tangent)
         worst = np.unravel_index(int(np.argmax(violation)), violation.shape)
         maximum = float(violation[worst])
@@ -524,8 +775,20 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         if remaining <= 0:
             fail("solver_sweep_cap")
         active_ids = metadata["active_row_ids"]
-        projected, solve = _gram_and_direction(active_matrix, proposed,
-            upper[active_ids].reshape(-1), lower[active_ids].reshape(-1), remaining, LINEAR_TOLERANCE_RAD)
+        if strict_primal:
+            projected,solve,precision_evidence=_strict_gram_and_direction(active_matrix,proposed,
+                upper[active_ids].reshape(-1),lower[active_ids].reshape(-1),remaining,LINEAR_TOLERANCE_RAD,
+                MAX_KKT_POLISH_CALLS-precision_summary["polish_calls"])
+            precision=solve["primal_precision"]
+            precision_evidence["active_row_ids"]=np.asarray(active_ids,dtype=np.int64)
+            precision_summary["QP_subproblems"]+=1
+            precision_summary["polish_calls"]+=precision.get("polish_calls",0)
+            precision_summary["direct_primal_certified"] &= bool(precision.get("certified",False))
+            for key in ("direct_primal_max_eta64_rad","direct_primal_max_upper_bound_rad","direct_primal_max_residual_rad"):
+                precision_summary[key]=max(precision_summary[key],precision.get(key,0.))
+        else:
+            projected, solve = _gram_and_direction(active_matrix, proposed,
+                upper[active_ids].reshape(-1), lower[active_ids].reshape(-1), remaining, LINEAR_TOLERANCE_RAD)
         metadata["solver_sweeps"] += solve["solver_sweeps"]
         metadata["solver_records"].append(solve)
         metadata["jacobian_storage_bytes"] = sum(j.nbytes for j in jacobians)

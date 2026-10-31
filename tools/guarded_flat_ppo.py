@@ -29,6 +29,10 @@ RESERVED_KIND = "simultaneous_actual_bank_reserved_linear_v1"
 RESOURCE_FORMAT = "h2_guarded_flat_ppo_v5"
 RESOURCE_TRIAL = "resource_bounded_reserved_output_proposal_v1"
 RESOURCE_PARENT_SHA = "e96a9fd29cc0d7457db742133345c0224f2dbcdde522692b52eba88ebdd6977d"
+STRICT_FORMAT = "h2_guarded_flat_ppo_v6"
+STRICT_TRIAL = "strict_primal_resource_output_proposal_v1"
+STRICT_PARENT_SHA = "4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2"
+PRIMAL_PRECISION_POLICY = "direct_fp64_primal_envelope_v1"
 JACOBIAN_ARENA_BYTES = 1073741824
 TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 RESTORED_PARENT_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
@@ -143,10 +147,19 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    resource=plan.get("trial_protocol")==RESOURCE_TRIAL
+    strict=plan.get("trial_protocol")==STRICT_TRIAL
+    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL)
     reserved=resource or plan.get("trial_protocol")==RESERVED_TRIAL
-    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL)
-    if resource:
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
+    if strict:
+        kind,mode="saved_restored_PPO_v5_policy_transfer","transfer_restored_v5_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=STRICT_PARENT_SHA,RESOURCE_FORMAT,182,183
+        parent_trial=RESOURCE_TRIAL
+        require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
+                and plan.get("parent_accepted_updates")==183 and plan.get("parent_last_complete_iteration")==182
+                and plan.get("parent_runtime_rollback_completed") is True,
+                "Typed restored183 transfer is not the reviewed strict-primal initialization")
+    elif resource:
         kind,mode="saved_restored_PPO_v4_policy_transfer","transfer_restored_v4_policy_and_dualnorm_fresh_optimization"
         parent_sha,parent_format,parent_iteration,parent_updates=RESOURCE_PARENT_SHA,RESERVED_FORMAT,612,613
         parent_trial=RESERVED_TRIAL
@@ -246,13 +259,14 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL) and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
     expected_kind={MARGIN_TRIAL:"saved_pre_guard_PPO_v1_policy_transfer",
                    PROJECTION_TRIAL:"saved_restored_PPO_v2_policy_transfer",
                    RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer",
-                   RESOURCE_TRIAL:"saved_restored_PPO_v4_policy_transfer"}[algorithm.trial_protocol]
+                   RESOURCE_TRIAL:"saved_restored_PPO_v4_policy_transfer",
+                   STRICT_TRIAL:"saved_restored_PPO_v5_policy_transfer"}[algorithm.trial_protocol]
     require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
     require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
             and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
@@ -427,7 +441,7 @@ class H2GuardedPPO(PPO):
                  actor_action_budget_penalty_epsilon=1e-6, actor_proposal_projection=None,
                  actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
                  actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None,
-                 actor_proposal_jacobian_arena_budget_bytes=None, **kwargs):
+                 actor_proposal_jacobian_arena_budget_bytes=None,actor_proposal_primal_precision_policy=None, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -441,12 +455,17 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.resource_projection_enabled=trial_protocol==RESOURCE_TRIAL
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL)
+        self.strict_primal_enabled=trial_protocol==STRICT_TRIAL
+        require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
+                or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
+                "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
+        self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -474,7 +493,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
@@ -555,6 +574,14 @@ class H2GuardedPPO(PPO):
                     jacobian_arena_capacity_bytes=self.projection_max_active_rows*self.projection_bytes_per_row,
                     jacobian_mean_parameter_elements=self.projection_mean_elements,
                     resource_kind="single_cpu_float32_jacobian_arena_v1")
+            if self.strict_primal_enabled:
+                state["proposal_projection"].update(primal_precision_policy=self.projection_primal_precision_policy,
+                    primal_precision_summary=copy.deepcopy(self.last_projection_summary.get("primal_precision_summary",{})),
+                    max_polish_per_QP=1,max_support_pivots=0,max_polish_per_projection=28,
+                    solver_optimality_and_direct_primal_separate=True,
+                    primal_envelope_is_machine_derived=True,
+                    primal_envelope_scope="Direct FP64 dot/reconstruction arithmetic, not an NN or full-bank JVP input-error bound",
+                    final_same_direction_cast_JVP_required=True)
         return state
 
     def _exploration_state(self):
@@ -678,13 +705,30 @@ class H2GuardedPPO(PPO):
         with (self.guard.directory/"proposal_projection_minibatches.jsonl").open("a") as stream:
             stream.write(json.dumps(evidence_json(record),allow_nan=False)+"\n")
 
-    def _projection_veto(self,snapshot,metadata,minibatch,proposal):
+    def _projection_veto(self,snapshot,metadata,minibatch,proposal,numerical_evidence=None):
         """A failed prospective solve has no fabricated nonlinear violation."""
         directory=self.guard.directory;update=self.completed_updates
         self.projection_fullbank_jvp_calls+=int(metadata.get("fullbank_jvp_calls",0))
         self.projection_row_jacobian_calls+=int(metadata.get("row_jacobian_calls",0))
         self.projection_solver_sweeps+=int(metadata.get("solver_sweeps",0))
         prefix=directory/f"rejected_update_{update:04d}"
+        if numerical_evidence is not None:
+            require(self.strict_primal_enabled and isinstance(numerical_evidence,dict),
+                    "Unexpected numerical evidence outside the strict-primal protocol")
+            arrays={}
+            for key,value in numerical_evidence.items():
+                require(isinstance(key,str) and isinstance(value,np.ndarray) and not value.dtype.hasobject,
+                        "Numerical diagnostics require named non-object NumPy arrays")
+                arrays[key]=value
+            numerical_path=Path(str(prefix)+"_numerical_evidence.npz")
+            temporary=numerical_path.with_name(numerical_path.name+".tmp")
+            with temporary.open("wb") as stream:np.savez_compressed(stream,**arrays)
+            temporary.replace(numerical_path)
+            # Only this scalar receipt enters infos/state/JSON. The arrays
+            # stay in their original NumPy dtype in a separate forensic file.
+            metadata=dict(metadata,numerical_diagnostic_evidence=dict(path=str(numerical_path),
+                sha256=sha(numerical_path),arrays={key:dict(shape=list(value.shape),dtype=str(value.dtype))
+                    for key,value in arrays.items()},deployable_checkpoint=False))
         pre=Path(str(prefix)+"_baseline.pt");candidate=Path(str(prefix)+"_candidate.pt")
         restored=directory.parent/f"model_{self.completed_updates-1}_guard_restored.pt"
         detail=evidence_json(dict(metadata,kind=self.projection_kind,update_index=update,minibatch=minibatch,
@@ -754,6 +798,8 @@ class H2GuardedPPO(PPO):
                 projection_options["working_budget_fraction"]=self.projection_working_budget_fraction
             if self.resource_projection_enabled:
                 projection_options.update(max_active_rows=None,jacobian_arena_budget_bytes=self.projection_arena_budget_bytes)
+            if self.strict_primal_enabled:
+                projection_options["primal_precision_policy"]=self.projection_primal_precision_policy
             projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
                 self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
                 **projection_options)
@@ -780,12 +826,22 @@ class H2GuardedPPO(PPO):
                         and metadata.get("signed_midpoint_bounds_verified_coordinates")==61440):
                     raise ProposalProjectionError(dict(metadata,reason="Incomplete or inconsistent CPU arena coverage certificate"))
                 metadata["runtime_resources"]=runtime_resources()
+            if self.strict_primal_enabled:
+                precision=metadata.get("primal_precision_summary")
+                if not (metadata.get("primal_precision_policy")==self.projection_primal_precision_policy
+                        and isinstance(precision,dict) and precision.get("direct_primal_certified") is True
+                        and precision.get("polish_call_limit_per_subproblem")==1
+                        and precision.get("polish_call_limit_per_projection")==28
+                        and precision.get("support_pivot_limit")==0
+                        and precision.get("final_same_direction_row_JVP_checked") is True):
+                    raise ProposalProjectionError(dict(metadata,reason="Missing direct FP64 primal precision certificate"))
             # Std keeps its actual Adam proposal. commit dispatches no optimizer
             # hook; run the unchanged exploration post-hook exactly once here.
             proposal.commit(tuple(projected)+(proposal.deltas[44],))
         except ProposalProjectionError as error:
             if self.resource_projection_enabled:error.metadata["runtime_resources"]=runtime_resources()
-            self._projection_veto(snapshot,error.metadata,minibatch,proposal)
+            self._projection_veto(snapshot,error.metadata,minibatch,proposal,
+                numerical_evidence=getattr(error,"diagnostic_evidence",None) if self.strict_primal_enabled else None)
         hook_before=self.exploration.optimizer_steps
         self.exploration._after_step(self.actor_optimizer,(),{})
         require(self.exploration.optimizer_steps==hook_before+1,"Prospective Adam requires exactly one explicit std hook")
