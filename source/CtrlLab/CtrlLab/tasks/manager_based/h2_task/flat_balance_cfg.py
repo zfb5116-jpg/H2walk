@@ -11,7 +11,7 @@ class FlatBalanceRewardsCfg:
     signed_forward = RewTerm(func=rewards.flat_signed_progress,weight=10.)
     valid_alternating_landing = RewTerm(func=rewards.flat_valid_landing,weight=.2)
     failure = RewTerm(func=rewards.flat_failure,weight=-20.)
-    world_xy_velocity_error = RewTerm(func=rewards.flat_velocity_error,weight=-.5)
+    world_xy_velocity_error = RewTerm(func=rewards.flat_velocity_error,weight=-(10.0/.3))
     world_heading_error = RewTerm(func=rewards.flat_heading_error,weight=-.1)
     tilt_margin = RewTerm(func=rewards.flat_tilt_margin,weight=-1.)
     body_angular_rate = RewTerm(func=rewards.flat_body_angular_rate,weight=-.025)

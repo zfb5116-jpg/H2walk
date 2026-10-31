@@ -15,7 +15,7 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='strict_primal_resource_output_proposal_v1'
+TRIAL_PROTOCOL='command_scaled_velocity_cost_v1'
 POSITIVE_CREDIT_PROFILE='overspeed_positive_credit_v1'
 
 
@@ -246,13 +246,24 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 or len(held)!=17 or set(self.termination_manager.active_terms)!=expected_terms):
             raise RuntimeError('Actual flat geometry, original upper hold, or seven native/domain terminations changed')
         upper_error=float((self.asset.data.joint_pos_target[:,held]
-                           -self.asset.data.default_joint_pos[:,held]).abs().max())
+                            -self.asset.data.default_joint_pos[:,held]).abs().max())
+        velocity_error_weight=float(self.reward_manager.get_term_cfg('world_xy_velocity_error').weight)
+        signed_forward_weight=float(self.reward_manager.get_term_cfg('signed_forward').weight)
+        command_speed=float(command.ranges.lin_vel_x[0])
         self.runtime_contract={
             'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
             'positive_credit_speed_weight':{'command_m_s':.3,'full_at_or_below_m_s':.3,
                 'zero_at_or_above_m_s':.6,'formula':'1-3u^2+2u^3; u=clip((world_vx-.3)/.3,0,1)',
                 'actual_peak_consumed_unweighted':True,'negative_debt_unweighted':True,
                 'physical_or_action_speed_limit_changed':False},
+            'velocity_cost_scaling':{
+                'kind':'command_scaled_existing_world_xy_error_v1',
+                'actual_world_xy_velocity_error_weight':velocity_error_weight,
+                'actual_signed_forward_weight':signed_forward_weight,
+                'command_m_s':command_speed,
+                'maximum_positive_forward_rate':signed_forward_weight*command_speed,
+                'one_command_speed_error_cost_per_s':velocity_error_weight*command_speed**2,
+                'function_unchanged':True,'no_new_reward_information':True},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),
             'terrain_subtypes':{name:type(term).__name__ for name,term in generator.sub_terrains.items()},

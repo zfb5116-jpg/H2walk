@@ -32,6 +32,11 @@ RESOURCE_PARENT_SHA = "e96a9fd29cc0d7457db742133345c0224f2dbcdde522692b52eba88eb
 STRICT_FORMAT = "h2_guarded_flat_ppo_v6"
 STRICT_TRIAL = "strict_primal_resource_output_proposal_v1"
 STRICT_PARENT_SHA = "4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2"
+COST_FORMAT = "h2_guarded_flat_ppo_v7"
+COST_TRIAL = "command_scaled_velocity_cost_v1"
+COST_PARENT_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
+COST_PARENT_RECEIPT_SHA = "e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b"
+COST_PARENT_RUN_SHA = "797aecdb0c137d57f396fd7705940921b0ea9624c7b75323f8bcde58caf9e33c"
 PRIMAL_PRECISION_POLICY = "direct_fp64_primal_envelope_v1"
 JACOBIAN_ARENA_BYTES = 1073741824
 TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
@@ -147,11 +152,24 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
+    natural=plan.get("trial_protocol")==COST_TRIAL
     strict=plan.get("trial_protocol")==STRICT_TRIAL
-    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL)
+    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
     reserved=resource or plan.get("trial_protocol")==RESERVED_TRIAL
-    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
-    if strict:
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+    restored=projection and not natural
+    if natural:
+        kind,mode="saved_complete_PPO_v6_policy_transfer","transfer_completed_v6_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=COST_PARENT_SHA,STRICT_FORMAT,999,1000
+        parent_trial=STRICT_TRIAL
+        require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
+                and plan.get("parent_accepted_updates")==1000 and plan.get("parent_last_complete_iteration")==999
+                and plan.get("parent_natural_completion") is True
+                and plan.get("parent_runtime_rollback_completed") is False
+                and plan.get("initial_policy_CPU_receipt_sha256")==COST_PARENT_RECEIPT_SHA
+                and plan.get("initial_parent_run_sha256")==COST_PARENT_RUN_SHA,
+                "Typed natural1000 transfer is not the reviewed command-scaled initialization")
+    elif strict:
         kind,mode="saved_restored_PPO_v5_policy_transfer","transfer_restored_v5_policy_and_dualnorm_fresh_optimization"
         parent_sha,parent_format,parent_iteration,parent_updates=STRICT_PARENT_SHA,RESOURCE_FORMAT,182,183
         parent_trial=RESOURCE_TRIAL
@@ -193,12 +211,12 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
             "Typed parent checkpoint identity differs")
     require(saved.get("format")==parent_format and saved.get("iter")==parent_iteration
             and saved["guarded_ppo_state"]["completed_updates"]==parent_updates
-            and saved["guarded_ppo_state"]["uncommitted_rollout"] is True,
+            and saved["guarded_ppo_state"]["uncommitted_rollout"] is (not natural),
             "Typed parent is not the exact preserved committed policy")
     if projection:
         require(saved.get("trial_protocol")==parent_trial
                 and saved["guarded_ppo_state"].get("trial_protocol")==parent_trial,
-                "Restored parent does not carry the exact declared prior protocol")
+                "Typed parent does not carry the exact declared prior protocol")
     receipt_path=Path(plan["initial_policy_CPU_receipt"]).resolve(strict=True)
     require(receipt_path==checkpoint.with_suffix(".validation.json")
             and sha(receipt_path)==plan["initial_policy_CPU_receipt_sha256"],"Typed parent CPU receipt changed")
@@ -210,11 +228,24 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     require(sha(parent_run_path)==plan["initial_parent_run_sha256"]==receipt["producer_run_sha256"]
             and Path(receipt["producer_run"]).resolve(strict=True)==parent_run_path,"Typed producer run receipt changed")
     parent_run=json.loads(parent_run_path.read_text())
-    expected_status="stopped_functional_guard" if projection else "failed"
+    expected_status="completed" if natural else "stopped_functional_guard" if projection else "failed"
     require(parent_run["status"]==expected_status and parent_run["completed_iterations"]==parent_updates,
             "The typed transfer must preserve parent stop status and actual accepted budget")
     rollback_evidence=None
-    if projection:
+    if natural:
+        require(receipt.get("uncommitted_rollout") is False
+                and Path(parent_run["final_checkpoint"]).resolve(strict=True)==checkpoint
+                and parent_run.get("total_timesteps")==24576000
+                and parent_run.get("discarded_uncommitted_rollout_steps")==0
+                and parent_run["guarded_ppo_state"].get("uncommitted_rollout") is False
+                and all(saved["guarded_ppo_state"].get(key)==value
+                        and parent_run["guarded_ppo_state"].get(key)==value
+                        for key,value in (("completed_updates",1000),("actor_optimizer_steps",19200),
+                                          ("critic_optimizer_steps",20000),("rnd_optimizer_steps",20000)))
+                and all(receipt["optimizers"][key]["steps"]==value
+                        for key,value in (("actor",19200),("critic",20000),("rnd",20000))),
+                "Natural parent lacks its exact completed1000 final-checkpoint/counter evidence")
+    if restored:
         require(receipt.get("uncommitted_rollout") is True
                 and Path(parent_run["final_checkpoint"]).resolve(strict=True)==checkpoint,
                 "Restored parent receipt/run do not bind the restored checkpoint")
@@ -248,26 +279,34 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
         parent_run=str(parent_run_path),parent_run_sha256=sha(parent_run_path),parent_source_root=str(parent_source),
         parent_source_sha256=actual,parent_source_commit=parent_run["git_commit"],
         parent_external_dependency_sha256=receipt["external_dependency_sha256"],parent_accepted_updates=parent_updates,
-        parent_last_complete_iteration=parent_iteration,parent_uncommitted_rollout=True,parent_runtime_rollback_completed=projection,
+        parent_last_complete_iteration=parent_iteration,parent_uncommitted_rollout=not natural,parent_runtime_rollback_completed=restored,
         protected_network_input_native_source_sha256=protected,model_and_dualnorm_only=True,
         fresh_actor_optimizer=True,fresh_critic_optimizer=True,fresh_RND=True,fresh_RND_optimizer=True,
         parent_RNG_loaded=False,new_starting_iteration=0,new_checkpoint=None,
         norm_counts={"actor":24576000,"critic":24576000})
     if rollback_evidence is not None:result["parent_rollback_evidence"]=rollback_evidence
+    if natural:result.update(parent_natural_completion=True,parent_rollback_evidence=None)
     return result
 
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL) and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
     expected_kind={MARGIN_TRIAL:"saved_pre_guard_PPO_v1_policy_transfer",
                    PROJECTION_TRIAL:"saved_restored_PPO_v2_policy_transfer",
                    RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer",
                    RESOURCE_TRIAL:"saved_restored_PPO_v4_policy_transfer",
-                   STRICT_TRIAL:"saved_restored_PPO_v5_policy_transfer"}[algorithm.trial_protocol]
+                   STRICT_TRIAL:"saved_restored_PPO_v5_policy_transfer",
+                   COST_TRIAL:"saved_complete_PPO_v6_policy_transfer"}[algorithm.trial_protocol]
     require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
+    if algorithm.trial_protocol==COST_TRIAL:
+        require(provenance.get("parent_natural_completion") is True
+                and provenance.get("parent_uncommitted_rollout") is False
+                and provenance.get("parent_runtime_rollback_completed") is False
+                and provenance.get("parent_rollback_evidence") is None,
+                "Natural-completion initialization must not masquerade as a restored rollout")
     require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
             and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
             "Typed transfer requires fresh independent Adam and RND")
@@ -455,17 +494,17 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.strict_primal_enabled=trial_protocol==STRICT_TRIAL
+        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
                 or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
                 "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
         self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
-        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL)
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL)
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -493,7 +532,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
