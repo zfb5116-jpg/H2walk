@@ -16,8 +16,30 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='outward_tilt_growth_v1'
-POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_v1'
+TRIAL_PROTOCOL='episode_clean_force_eligibility_v1'
+POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_clean_force_v1'
+EPISODE_FORCE_CREDIT_POLICY={
+    'kind':'whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
+    'agreement_absolute_tolerance_N':1.0,
+    'agreement_relative_raw_norm_tolerance':.02,
+    'relevant_norm_threshold_N':5.0,'positive_control_Fz_threshold_N':5.0,
+    'original_force_predicate_unchanged':True,
+    'positive_progress_and_landing_require_no_prior_or_current_relevant_mismatch':True,
+    'qualification_from_existing_cumulative_mismatch':True,
+    'physical_ever_invalid_and_survival_unchanged':True,
+    'native_termination_terms_unchanged':7,'actual_peak_always_consumed':True,
+    'negative_debt_physical_valid_only':True,'negative_debt_unweighted':True,
+    'first_of_union_force_failure_or_native_failure_once':True,'failure_charge':20.0,
+    'no_double_charge_later_native_failure':True,'pure_timeout_exempt':True,
+    'timeout_with_first_force_failure_charged_once':True,
+    'initial_no_contact_or_missing_positive_control_not_failure':True,
+    'per_counter_update_idempotent':True,'reward_reads_non_destructive':True,
+    'record_before_reset':True,'reset_only_real_env_ids':True,
+    'positive_credit_never_reactivated_after_force_failure':True,
+    'all_other_reward_weights_and_kernels_unchanged_relative_v8':True,
+    'no_new_term_sensor_controller_or_policy_input':True,'no_fixed_foot_width_target':True,
+    'scope':'Bounded fixedworld+.3directflat; independent firstepisode gate unchanged, not automatic stairs reuse.',
+}
 
 
 def positive_forward_speed_weight(world_vx, command_speed=.3):
@@ -50,7 +72,9 @@ class FlatBalanceProgress:
         self.ever_below = torch.zeros_like(self.needs_start)
         for name in ('duration', 'paid_m', 'unweighted_paid_m', 'backward_m', 'actual_backward_m', 'event_distance',
                      'slip_integral', 'velocity_error_integral', 'signed_step', 'landing_step',
-                     'slip_square', 'peak_x'):
+                     'slip_square', 'peak_x', 'failure_charge_step',
+                     'positive_forward_paid_after_force_failure_m',
+                     'backward_debt_after_force_failure_m'):
             setattr(self, name, torch.zeros(n, device=device))
         self.positive_speed_weight=torch.ones(n,device=device)
         for name in ('origins', 'start', 'end', 'minimum', 'pre_root'):
@@ -61,6 +85,12 @@ class FlatBalanceProgress:
         self.raw_end = torch.zeros_like(self.ground_end)
         self.positive = torch.zeros(n, 2, dtype=torch.bool, device=device)
         self.mismatch = torch.zeros(n, 2, dtype=torch.long, device=device)
+        self.failure_charge_count = torch.zeros(n, dtype=torch.long, device=device)
+        self.landing_bonus_events_after_force_failure = torch.zeros_like(self.failure_charge_count)
+        self.first_force_failure_control_counter = torch.full_like(self.failure_charge_count,-1)
+        self.first_failure_charge_control_counter = torch.full_like(self.failure_charge_count,-1)
+        self.first_failure_force_cause = torch.zeros(n, dtype=torch.bool, device=device)
+        self.first_failure_native_cause = torch.zeros_like(self.first_failure_force_cause)
         self.start_counter = torch.zeros(n, dtype=torch.long, device=device)
         self.end_counter = torch.zeros_like(self.start_counter)
         self.evidence = StairEpisodeEvidence(directory, {
@@ -73,7 +103,12 @@ class FlatBalanceProgress:
             'trial_protocol':trial_protocol,'reward_profile':reward_profile,
             'positive_speed_weight':'u=clip((world_vx-.3)/.3,0,1); g=1-3u^2+2u^3',
             'unweighted_actual_peak_always_consumed':True,'negative_distance_debt_unweighted':True,
+            'episode_force_credit_policy':dict(EPISODE_FORCE_CREDIT_POLICY),
         })
+
+    @property
+    def force_credit_eligible(self):
+        return self.mismatch.sum(-1)==0
 
     def begin(self, root, soles, origins, episode_lengths, counter):
         ids = self.needs_start.nonzero().flatten()
@@ -90,6 +125,7 @@ class FlatBalanceProgress:
         self.pre_soles.copy_(soles)
         self.signed_step.zero_()
         self.landing_step.zero_()
+        self.failure_charge_step.zero_()
         self.pending = True
 
     def update(self, counter, root, quaternion, velocity, tilt, soles, ground, raw_force, terminated, dt):
@@ -114,6 +150,15 @@ class FlatBalanceProgress:
         agreement = (ground-raw_force).norm(dim=-1) <= 1. + .02*raw_force.norm(dim=-1)
         relevant = (ground.norm(dim=-1)>5.) | (raw_force.norm(dim=-1)>5.)
         self.mismatch += ((~agreement)&relevant).long()
+        force_clean = self.force_credit_eligible
+        first_force = ~force_clean & (self.first_force_failure_control_counter<0)
+        self.first_force_failure_control_counter[first_force] = int(counter)
+        charge = (~force_clean | terminated) & (self.failure_charge_count==0)
+        self.failure_charge_step.copy_(charge.float())
+        self.failure_charge_count += charge.long()
+        self.first_failure_charge_control_counter[charge] = int(counter)
+        self.first_failure_force_cause |= charge & ~force_clean
+        self.first_failure_native_cause |= charge & terminated
         self.positive |= agreement & (ground[..., 2]>5.) & (raw_force[..., 2]>5.)
         contact = ground.norm(dim=-1)>5.
         old_landings = self.footfalls.landings.clone()
@@ -121,7 +166,7 @@ class FlatBalanceProgress:
         new_landing = (self.footfalls.landings>old_landings).any(-1)
         valid_fz = torch.where(agreement & (ground[..., 2]>0.), ground[..., 2], 0.)
         supported = valid_fz.sum(-1) >= .7*self.weight
-        positive_allowed = supported & (tilt<=.5) & ~terminated
+        positive_allowed = supported & (tilt<=.5) & ~terminated & force_clean
         peak, paid, negative = signed_forward_ledger(self.pre_root[:, 0], self.peak_x, root[:, 0],
             positive_allowed, usable, torch.zeros_like(usable), dt, maximum_credit_speed=.3)
         # The actual peak is consumed before weighting. An uncredited fast
@@ -139,6 +184,9 @@ class FlatBalanceProgress:
                  & (self.event_distance>=.04-1e-6) & (paid>0.))
         self.landing_step[:] = event.float()
         self.event_distance[event] = 0.
+        self.positive_forward_paid_after_force_failure_m += torch.where(~force_clean,paid,0.)
+        self.landing_bonus_events_after_force_failure += (event & ~force_clean).long()
+        self.backward_debt_after_force_failure_m -= torch.where(~force_clean,negative,0.)
         speeds = (soles[..., :2]-self.pre_soles[..., :2]).norm(dim=-1)/dt
         loaded = contact & agreement
         self.slip_square[:] = (speeds.square()*loaded).sum(-1)/loaded.sum(-1).clamp_min(1)
@@ -173,6 +221,16 @@ class FlatBalanceProgress:
             signed_forward_credit_m=torch.where(physical_valid,self.paid_m[ids]-self.backward_m[ids],0.),
             actual_backward_distance_m=self.actual_backward_m[ids], positive_control=self.positive[ids],
             force_mismatch_steps=self.mismatch[ids], ground_normal_force=self.ground_end[ids],
+            force_credit_eligible=self.force_credit_eligible[ids],
+            failure_charge_count=self.failure_charge_count[ids],
+            first_force_failure_control_counter=self.first_force_failure_control_counter[ids],
+            first_failure_charge_control_counter=self.first_failure_charge_control_counter[ids],
+            first_failure_force_cause=self.first_failure_force_cause[ids],
+            first_failure_native_cause=self.first_failure_native_cause[ids],
+            failure_charge_this_control=self.failure_charge_step[ids],
+            positive_forward_paid_after_force_failure_m=self.positive_forward_paid_after_force_failure_m[ids],
+            landing_bonus_events_after_force_failure=self.landing_bonus_events_after_force_failure[ids],
+            backward_debt_after_force_failure_m=self.backward_debt_after_force_failure_m[ids],
             raw_foot_normal_force=self.raw_end[ids], valid_alternating_landings=self.footfalls.landings[ids],
             survived20s=survived, progress=progress, bilateral=bilateral, success=success,
             **{'termination_'+name:bits[ids] for name,bits in term_bits.items()}))
@@ -192,8 +250,14 @@ class FlatBalanceProgress:
         self.needs_start[ids] = True
         for name in ('partial','ever_invalid','ever_outside','ever_below','duration','paid_m','unweighted_paid_m','backward_m',
                      'actual_backward_m','event_distance','slip_integral','velocity_error_integral',
-                     'signed_step','landing_step','slip_square','positive','mismatch'):
+                     'signed_step','landing_step','slip_square','positive','mismatch',
+                     'failure_charge_step','failure_charge_count',
+                     'positive_forward_paid_after_force_failure_m',
+                     'landing_bonus_events_after_force_failure','backward_debt_after_force_failure_m',
+                     'first_failure_force_cause','first_failure_native_cause'):
             getattr(self,name)[ids] = 0
+        self.first_force_failure_control_counter[ids]=-1
+        self.first_failure_charge_control_counter[ids]=-1
         self.positive_speed_weight[ids]=1.
         self.footfalls.reset(ids)
 
@@ -252,12 +316,15 @@ class FlatBalanceEnv(DirectInitializationEnv):
         signed_forward_weight=float(self.reward_manager.get_term_cfg('signed_forward').weight)
         command_speed=float(command.ranges.lin_vel_x[0])
         growth_cfg=self.reward_manager.get_term_cfg('outward_tilt_growth')
-        failure_weight=float(self.reward_manager.get_term_cfg('failure').weight)
+        failure_cfg=self.reward_manager.get_term_cfg('failure')
+        failure_weight=float(failure_cfg.weight)
         growth_margin=float(growth_cfg.params['margin_angle'])
         growth_limit=float(self.termination_manager.get_term_cfg('bad_orientation').params['limit_angle'])
         growth_interval=cos(growth_margin)-cos(growth_limit)
         self.runtime_contract={
             'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
+            'episode_force_credit_policy':dict(EPISODE_FORCE_CREDIT_POLICY,
+                actual_failure_weight=failure_weight,actual_failure_function=failure_cfg.func.__name__),
             'positive_credit_speed_weight':{'command_m_s':.3,'full_at_or_below_m_s':.3,
                 'zero_at_or_above_m_s':.6,'formula':'1-3u^2+2u^3; u=clip((world_vx-.3)/.3,0,1)',
                 'actual_peak_consumed_unweighted':True,'negative_debt_unweighted':True,
@@ -372,8 +439,9 @@ def flat_support_slip(env):
 
 
 def flat_failure(env):
-    # RewardManager multiplies by dt: one full event, never a per-second fall reward.
-    return env.termination_manager.terminated.float()/env.step_dt
+    # The original weight applies once to the first force/native failure union.
+    env._update_flat_balance()
+    return env.flat_balance_progress.failure_charge_step/env.step_dt
 
 
 def flat_velocity_error(env):

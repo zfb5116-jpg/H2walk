@@ -11,7 +11,7 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.max_iterations=1000
         self.save_interval=500
         self.algorithm.class_name='H2GuardedPPO'
-        self.algorithm.trial_protocol='outward_tilt_growth_v1'
+        self.algorithm.trial_protocol='episode_clean_force_eligibility_v1'
         self.algorithm.actor_action_budget_penalty_weight=0.
         self.algorithm.actor_action_budget_penalty_epsilon=1.e-6
         self.algorithm.actor_proposal_projection='simultaneous_actual_bank_reserved_linear_v1'
