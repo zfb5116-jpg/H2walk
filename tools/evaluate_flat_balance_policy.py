@@ -26,6 +26,8 @@ PROPOSAL_PROTOCOL='simultaneous_output_proposal_v1'
 PROPOSAL_INITIAL_SHA='319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5'
 RESERVED_PROTOCOL='reserved_simultaneous_output_proposal_v1'
 RESERVED_INITIAL_SHA='ffcec4bbe62f63f77fcdfdac53d322fe19ef355dda40b7a2b1ee394015f81ed0'
+RESOURCE_PROTOCOL='resource_bounded_reserved_output_proposal_v1'
+RESOURCE_INITIAL_SHA='e96a9fd29cc0d7457db742133345c0224f2dbcdde522692b52eba88ebdd6977d'
 NEW_REWARD_PROFILE='overspeed_positive_credit_v1'
 TRANSFER_CPU_RECEIPT_SHA='6300bf22b993ba92bbe5fdfedc7c9278712eb4891e38ac7d8db1b22e7ccbd4d4'
 TRANSFER_RUN_SHA='ffc94e26c39ebf399055bc997a6577fb3e3a481ce08581117583139ba3837e54'
@@ -43,6 +45,13 @@ require,sha,write,source_hashes=physical.require,physical.sha,physical.write,phy
 
 
 def reviewed_parent(protocol):
+    if protocol==RESOURCE_PROTOCOL:
+        return dict(sha=RESOURCE_INITIAL_SHA,
+            receipt='2c488d6e4a67f530e392486d5fd7b42c9c2d1f14bba509698ea3e8b169a14192',
+            run='413c9af79a8e033652eed65daba296af0dd5baada81b51971c10011a1aa04a1f',
+            format='h2_guarded_flat_ppo_v4',iteration=612,updates=613,status='stopped_functional_guard',
+            kind='saved_restored_PPO_v4_policy_transfer',
+            mode='transfer_restored_v4_policy_and_dualnorm_fresh_optimization',restored=True)
     if protocol==RESERVED_PROTOCOL:
         return dict(sha=RESERVED_INITIAL_SHA,
             receipt='338743a01a8590aea06acc58baf2192e4d5026d6875d606859a942ee57802e8e',
@@ -81,10 +90,11 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
         return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
                     checkpoint_format=fmt,typed_policy_transfer=False)
-    reserved=fmt=='h2_guarded_flat_ppo_v4'
+    resource=fmt=='h2_guarded_flat_ppo_v5'
+    reserved=resource or fmt=='h2_guarded_flat_ppo_v4'
     projected=reserved or fmt=='h2_guarded_flat_ppo_v3'
     require(projected or fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
-    protocol=RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
+    protocol=RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
     parent=reviewed_parent(protocol)
     require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
             ==plan.get('trial_protocol')==protocol,'Declared typed profiles disagree')
@@ -98,7 +108,8 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         projection=state['proposal_projection']
         require(projection['kind']==algorithm.get('actor_proposal_projection')==('simultaneous_actual_bank_reserved_linear_v1' if reserved else 'simultaneous_actual_bank_linear_v1')
                 and projection['interior_fraction']==algorithm.get('actor_proposal_interior_fraction')==.5
-                and projection['max_active_rows']==algorithm.get('actor_proposal_max_active_rows')==8
+                and projection['max_active_rows']==(28 if resource else 8)
+                and algorithm.get('actor_proposal_max_active_rows')==(None if resource else 8)
                 and projection['max_solver_sweeps']==algorithm.get('actor_proposal_max_solver_sweeps')==2048
                 and all(projection[k] is True for k in ('whole_update_reference','linear_full_bank','hard_gate_unchanged','no_retry')),
                 'Saved simultaneous proposal contract differs')
@@ -107,6 +118,15 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
                     and projection['whole_update_fixed_working_bound'] is True
                     and projection['solver_tolerance_reserved_inward'] is True,
                     'Saved fixed whole-update working reserve differs')
+        if resource:
+            require(algorithm.get('actor_proposal_jacobian_arena_budget_bytes')==1073741824
+                    and projection.get('jacobian_arena_budget_bytes')==1073741824
+                    and projection.get('configured_max_active_rows','missing') is None
+                    and projection.get('jacobian_mean_parameter_elements')==780428
+                    and projection.get('jacobian_bytes_per_row')==37460544
+                    and projection.get('jacobian_arena_capacity_bytes')==1048895232
+                    and projection.get('resource_kind')=='single_cpu_float32_jacobian_arena_v1',
+                    'Saved compute coverage is not the fixed CPU-byte-derived arena protocol')
     else:
         require(margin['kind']=='worst_actual_input_log_barrier' and margin['weight']==.01
                 and margin['epsilon']==1e-6 and margin['whole_update_reference'] is True
@@ -253,7 +273,7 @@ def validate_cpu(args):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'),'Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
@@ -272,7 +292,7 @@ def validate_cpu(args):
             'Guarded optimizer producer tool fingerprints are incomplete')
     for name,digest in training_tools.items():
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5'):
         require('functional_proposal.py' in training_tools,'Producer omitted simultaneous projection implementation')
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
@@ -308,12 +328,32 @@ def validate_cpu(args):
     if profile['typed_policy_transfer']:
         if profile['proposal_projection'] is not None:
             require(gs['proposal_projection']['committed_minibatches']==expected['actor']
+                    and gs['proposal_projection']['proposal_calls']==expected['actor']
+                    and gs['proposal_projection']['std_hook_calls']==expected['actor']
                     and gs['action_margin']['committed_minibatches']==0,
                     'Proposal-projection committed-minibatch count differs from actual actorAdam')
         else:
             require(gs['action_margin']['committed_minibatches']==expected['actor'],
                     'Action-margin committed-minibatch counter differs from actorAdam')
         require(plan.get('status')=='reviewed_ready','New profile plan has not completed its prelaunch review')
+    if saved['format']=='h2_guarded_flat_ppo_v5':
+        projection=gs['proposal_projection']
+        width=sum(p.numel() for _,p in actor_named[:-1]);row_bytes=12*width*4
+        require(projection['jacobian_mean_parameter_elements']==width==780428
+                and projection['jacobian_bytes_per_row']==row_bytes
+                and projection['max_active_rows']==min(5120,1073741824//row_bytes),
+                'Actual actor parameter layout differs from byte-derived compute coverage')
+        if expected['actor']:
+            summary=projection['latest_summary'];used=summary['jacobian_used_rows']
+            require(summary['resource_kind']==projection['resource_kind']
+                    and summary['jacobian_arena_budget_bytes']==1073741824
+                    and summary['jacobian_bytes_per_row']==row_bytes
+                    and summary['jacobian_derived_max_active_rows']==28
+                    and summary['jacobian_arena_capacity_bytes']==1048895232
+                    and 0<=used<=28 and summary['jacobian_used_bytes']==used*row_bytes
+                    and summary['signed_midpoint_bounds_verified_coordinates']==61440
+                    and summary['nonlinear_hard_check_passed'] is True,
+                    'Actual last committed actor update lacks its full-bank resource and nonlinear certificate')
     require({name:int(gs[name+'_optimizer_steps']) for name in expected}==expected,
             'Committed split/RND update budget differs')
     require(gs['critic_only_iterations']==40 and gs['actor_updates_accepted']==max(0,count-40)
@@ -336,7 +376,7 @@ def validate_cpu(args):
     for name,parameters,lr in (('actor',actor_named,1e-5),('critic',critic_named,.001)):
         optimizers[name]=check_adam(torch,saved[name+'_optimizer_state_dict'],[n for n,_ in parameters],
             [p for _,p in parameters],expected[name],lr,name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5'):
         require(all(g.get('foreach') is False and g.get('fused') in (None,False)
                     for g in saved['actor_optimizer_state_dict']['param_groups']),
                 'Prospective Adam must declare its single-tensor execution path')
@@ -357,6 +397,7 @@ def validate_cpu(args):
     require(gs['initial_policy_sha256']==initial_sha,'Saved guarded state initial-policy binding differs')
     initial_saved=torch.load(initial,map_location='cpu',weights_only=True)
     transfer_receipt=None
+    warm_actor_transfer_checked=False
     if profile['typed_policy_transfer']:
         transfer_receipt=verify_transfer_files(plan,saved['initialization_transfer'],args.source_root)
         parent_expected=reviewed_parent(profile['trial_protocol'])
@@ -377,6 +418,12 @@ def validate_cpu(args):
                 'New trial did not explicitly reset std to the same half exploration budget')
         require(run['external_dependency_sha256']==saved['initialization_transfer']['parent_external_dependency_sha256'],
                 'New typed transfer changed native USD or frozen LiDAR dependencies')
+        if saved['format']=='h2_guarded_flat_ppo_v5' and count<=40:
+            require(all(torch.equal(saved['model_state_dict'][name],initial_saved['model_state_dict'][name])
+                        for name,_ in actor_named[:-1]), 'Actual warm actor differs from the transferred parent')
+            require(torch.equal(saved['model_state_dict']['std'],torch.tensor(start['policy_std'],dtype=model.std.dtype)),
+                    'Warm std differs from the explicitly reset half budget')
+            warm_actor_transfer_checked=True
     for key,width in (('obs_norm_state_dict',1029),('privileged_obs_norm_state_dict',866)):
         norm=saved[key]
         require(set(norm)=={'_mean','_var','_std','count'},'Normalizer state layout differs')
@@ -430,7 +477,12 @@ def validate_cpu(args):
             if profile.get('proposal_projection') is not None else None),
         actor_whole_update_working_reserve=({key:gs['proposal_projection'][key] for key in
             ('working_budget_fraction','whole_update_fixed_working_bound','solver_tolerance_reserved_inward')}
-            if saved['format']=='h2_guarded_flat_ppo_v4' else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5') else None),
+        actor_compute_resource_coverage=({key:gs['proposal_projection'][key] for key in
+            ('resource_kind','configured_max_active_rows','max_active_rows','jacobian_arena_budget_bytes',
+             'jacobian_mean_parameter_elements','jacobian_bytes_per_row','jacobian_arena_capacity_bytes')}
+            if saved['format']=='h2_guarded_flat_ppo_v5' else None),
+        actual_warm_actor44_and_reset_std_checked=warm_actor_transfer_checked,
         uncommitted_rollout=gs['uncommitted_rollout'],rnd_rollout_update_counter=int(gs['rnd_update_counter']),
         source_root=str(args.source_root),source_sha256=hashes,producer_run=str(run_path),producer_run_sha256=sha(run_path),
         producer_training_tool_sha256=training_tools,
@@ -452,7 +504,7 @@ def validate_cpu(args):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4'),'Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and

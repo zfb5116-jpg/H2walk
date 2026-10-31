@@ -10,6 +10,8 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import resource
+import time
 
 import numpy as np
 import torch
@@ -24,6 +26,10 @@ PROJECTION_KIND = "simultaneous_actual_bank_linear_v1"
 RESERVED_FORMAT = "h2_guarded_flat_ppo_v4"
 RESERVED_TRIAL = "reserved_simultaneous_output_proposal_v1"
 RESERVED_KIND = "simultaneous_actual_bank_reserved_linear_v1"
+RESOURCE_FORMAT = "h2_guarded_flat_ppo_v5"
+RESOURCE_TRIAL = "resource_bounded_reserved_output_proposal_v1"
+RESOURCE_PARENT_SHA = "e96a9fd29cc0d7457db742133345c0224f2dbcdde522692b52eba88ebdd6977d"
+JACOBIAN_ARENA_BYTES = 1073741824
 TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 RESTORED_PARENT_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
 RESERVED_PARENT_SHA = "ffcec4bbe62f63f77fcdfdac53d322fe19ef355dda40b7a2b1ee394015f81ed0"
@@ -137,9 +143,18 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    reserved=plan.get("trial_protocol")==RESERVED_TRIAL
-    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL)
-    if reserved:
+    resource=plan.get("trial_protocol")==RESOURCE_TRIAL
+    reserved=resource or plan.get("trial_protocol")==RESERVED_TRIAL
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL)
+    if resource:
+        kind,mode="saved_restored_PPO_v4_policy_transfer","transfer_restored_v4_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=RESOURCE_PARENT_SHA,RESERVED_FORMAT,612,613
+        parent_trial=RESERVED_TRIAL
+        require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
+                and plan.get("parent_accepted_updates")==613 and plan.get("parent_last_complete_iteration")==612
+                and plan.get("parent_runtime_rollback_completed") is True,
+                "Typed restored613 transfer is not the reviewed resource-bounded initialization")
+    elif reserved:
         kind,mode="saved_restored_PPO_v3_policy_transfer","transfer_restored_v3_policy_and_dualnorm_fresh_optimization"
         parent_sha,parent_format,parent_iteration,parent_updates=RESERVED_PARENT_SHA,PROJECTION_FORMAT,104,105
         parent_trial=PROJECTION_TRIAL
@@ -231,12 +246,13 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL) and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
     expected_kind={MARGIN_TRIAL:"saved_pre_guard_PPO_v1_policy_transfer",
                    PROJECTION_TRIAL:"saved_restored_PPO_v2_policy_transfer",
-                   RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer"}[algorithm.trial_protocol]
+                   RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer",
+                   RESOURCE_TRIAL:"saved_restored_PPO_v4_policy_transfer"}[algorithm.trial_protocol]
     require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
     require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
             and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
@@ -410,7 +426,8 @@ class H2GuardedPPO(PPO):
                  trial_protocol="guarded_flat_balance_v1",actor_action_budget_penalty_weight=0.,
                  actor_action_budget_penalty_epsilon=1e-6, actor_proposal_projection=None,
                  actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
-                 actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None, **kwargs):
+                 actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None,
+                 actor_proposal_jacobian_arena_budget_bytes=None, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -424,14 +441,16 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol==RESERVED_TRIAL and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.reserved_projection_enabled=trial_protocol==RESERVED_TRIAL
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL)
+        self.resource_projection_enabled=trial_protocol==RESOURCE_TRIAL
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
-                 and actor_proposal_interior_fraction==.5 and actor_proposal_max_active_rows==8
+                 and actor_proposal_interior_fraction==.5
+                 and actor_proposal_max_active_rows==(None if self.resource_projection_enabled else 8)
                  and actor_proposal_max_solver_sweeps==2048)
                 or (not self.projection_enabled and actor_proposal_projection is None),
                 "Undeclared simultaneous-proposal protocol")
@@ -439,8 +458,15 @@ class H2GuardedPPO(PPO):
                 or (not self.reserved_projection_enabled and actor_proposal_working_budget_fraction is None),
                 "Fixed whole-update working budget belongs only to the reviewed reserved profile")
         self.projection_working_budget_fraction=actor_proposal_working_budget_fraction
+        require((self.resource_projection_enabled and actor_proposal_jacobian_arena_budget_bytes==JACOBIAN_ARENA_BYTES)
+                or (not self.resource_projection_enabled and actor_proposal_jacobian_arena_budget_bytes is None),
+                "Only the new reviewed resource profile may use the fixed1GiB CPU Jacobian arena")
+        self.projection_arena_budget_bytes=actor_proposal_jacobian_arena_budget_bytes
         self.projection_interior_fraction=float(actor_proposal_interior_fraction)
-        self.projection_max_active_rows=int(actor_proposal_max_active_rows)
+        self.projection_mean_elements=sum(p.numel() for p in policy.actor.parameters())
+        self.projection_bytes_per_row=12*self.projection_mean_elements*4
+        self.projection_max_active_rows=(min(5120,JACOBIAN_ARENA_BYTES//self.projection_bytes_per_row)
+            if self.resource_projection_enabled else int(actor_proposal_max_active_rows))
         self.projection_max_solver_sweeps=int(actor_proposal_max_solver_sweeps)
         self.projection_calls=self.projection_committed_minibatches=self.projection_std_hook_calls=0
         self.projection_fullbank_jvp_calls=self.projection_row_jacobian_calls=self.projection_solver_sweeps=0
@@ -448,7 +474,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
@@ -522,6 +548,13 @@ class H2GuardedPPO(PPO):
             if self.reserved_projection_enabled:
                 state["proposal_projection"].update(working_budget_fraction=self.projection_working_budget_fraction,
                     whole_update_fixed_working_bound=True,solver_tolerance_reserved_inward=True)
+            if self.resource_projection_enabled:
+                state["proposal_projection"].update(configured_max_active_rows=None,
+                    jacobian_arena_budget_bytes=self.projection_arena_budget_bytes,
+                    jacobian_bytes_per_row=self.projection_bytes_per_row,
+                    jacobian_arena_capacity_bytes=self.projection_max_active_rows*self.projection_bytes_per_row,
+                    jacobian_mean_parameter_elements=self.projection_mean_elements,
+                    resource_kind="single_cpu_float32_jacobian_arena_v1")
         return state
 
     def _exploration_state(self):
@@ -698,6 +731,17 @@ class H2GuardedPPO(PPO):
     def _projected_actor_step(self,snapshot,minibatch):
         from functional_proposal import adam_proposal,project_actual_bank,ProposalProjectionError
         proposal=None;self.projection_calls+=1
+        started=time.perf_counter()
+        def runtime_resources():
+            result=dict(elapsed_s=time.perf_counter()-started,
+                process_peak_RSS_bytes=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024,
+                RSS_scope="Whole Isaac process lifetime peak; not the isolated CPU diagnostic3GiB cap")
+            if str(self.device).startswith("cuda"):
+                result["GPU_process_allocator"]=dict(allocated_bytes=torch.cuda.memory_allocated(self.device),
+                    reserved_bytes=torch.cuda.memory_reserved(self.device),
+                    lifetime_peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
+                    scope="Whole training process PyTorch allocator; peaks not reset; excludes non-Torch GPU memory")
+            return result
         try:
             proposal=adam_proposal(self.actor_optimizer)
             if len(proposal.parameters)!=45 or any(p is not q for p,q in zip(proposal.parameters,self.actor_parameters)):
@@ -708,6 +752,8 @@ class H2GuardedPPO(PPO):
                 max_active_rows=self.projection_max_active_rows,max_solver_sweeps=self.projection_max_solver_sweeps)
             if self.reserved_projection_enabled:
                 projection_options["working_budget_fraction"]=self.projection_working_budget_fraction
+            if self.resource_projection_enabled:
+                projection_options.update(max_active_rows=None,jacobian_arena_budget_bytes=self.projection_arena_budget_bytes)
             projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
                 self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
                 **projection_options)
@@ -718,10 +764,27 @@ class H2GuardedPPO(PPO):
                     and metadata.get("whole_update_fixed_working_bound") is True
                     and metadata.get("solver_tolerance_reserved_inward") is True):
                 raise ProposalProjectionError(dict(metadata,reason="Missing fixed working-bound inward-reserve certificate"))
+            if self.resource_projection_enabled:
+                row_bytes=self.projection_bytes_per_row;used=metadata.get("jacobian_used_rows",-1)
+                if not (metadata.get("resource_kind")=="single_cpu_float32_jacobian_arena_v1"
+                        and metadata.get("configured_max_active_rows","missing") is None
+                        and metadata.get("jacobian_storage_location")=="cpu_numpy"
+                        and metadata.get("jacobian_storage_dtype")=="float32"
+                        and metadata.get("jacobian_arena_budget_bytes")==self.projection_arena_budget_bytes
+                        and metadata.get("jacobian_bytes_per_row")==row_bytes
+                        and metadata.get("jacobian_derived_max_active_rows")==metadata.get("max_active_rows")==self.projection_max_active_rows
+                        and metadata.get("jacobian_arena_capacity_bytes")==row_bytes*self.projection_max_active_rows
+                        and metadata.get("jacobian_used_bytes")==metadata.get("jacobian_storage_bytes")==used*row_bytes
+                        and 0<=used<=self.projection_max_active_rows
+                        and metadata.get("jacobian_arena_allocated_bytes") in (0,row_bytes*self.projection_max_active_rows)
+                        and metadata.get("signed_midpoint_bounds_verified_coordinates")==61440):
+                    raise ProposalProjectionError(dict(metadata,reason="Incomplete or inconsistent CPU arena coverage certificate"))
+                metadata["runtime_resources"]=runtime_resources()
             # Std keeps its actual Adam proposal. commit dispatches no optimizer
             # hook; run the unchanged exploration post-hook exactly once here.
             proposal.commit(tuple(projected)+(proposal.deltas[44],))
         except ProposalProjectionError as error:
+            if self.resource_projection_enabled:error.metadata["runtime_resources"]=runtime_resources()
             self._projection_veto(snapshot,error.metadata,minibatch,proposal)
         hook_before=self.exploration.optimizer_steps
         self.exploration._after_step(self.actor_optimizer,(),{})

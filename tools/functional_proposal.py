@@ -22,6 +22,8 @@ LINEAR_TOLERANCE_RAD = 2e-7
 ROW_VALUE_TOLERANCE_RAD = 5e-6
 MAX_BANK_ROWS, NUM_OUTPUTS, NUM_MEAN_PARAMETERS = 5120, 12, 44
 GRAM_COLUMN_CHUNK = 65536
+MAX_CPU_JACOBIAN_ARENA_BYTES = 2**30
+JACOBIAN_RESOURCE_KIND = "single_cpu_float32_jacobian_arena_v1"
 
 
 def _metadata_value(value):
@@ -268,7 +270,7 @@ def _gram_and_direction(jacobian, proposed, upper, lower, sweeps, tolerance):
 
 def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
                         interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048,
-                        working_budget_fraction=None):
+                        working_budget_fraction=None, jacobian_arena_budget_bytes=None):
     """Project44 Adam directions into simultaneous actual-output linear bounds.
 
     The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
@@ -281,8 +283,12 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     The optional reserved mode intersects the original midpoint with a fixed
     whole-update ``abs(e+Jd)<=.5*b`` domain, then reserves the same solver
     tolerance inward on BOTH sides of that intersection. ``None`` is legacy.
+    Optional CPU-arena mode requires ``max_active_rows=None``. Its finite row
+    ceiling is derived from bytes, actual44-parameter width and float32 storage;
+    it changes compute coverage/storage only, never the constraint boundaries.
     """
     reserved = working_budget_fraction is not None
+    resource_mode = jacobian_arena_budget_bytes is not None
     metadata = dict(kind=RESERVED_KIND if reserved else KIND, feasible=False, interior_fraction=.5,
                     max_active_rows=8, max_solver_sweeps=2048,
                     tolerance_rad=LINEAR_TOLERANCE_RAD,
@@ -297,7 +303,22 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         metadata.update(more)
         raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False))
 
-    if interior_fraction != .5 or max_active_rows != 8 or max_solver_sweeps != 2048:
+    if interior_fraction != .5 or max_solver_sweeps != 2048:
+        fail("Fixed prospective projection protocol changed")
+    if resource_mode:
+        if max_active_rows is not None:
+            fail("Byte-derived coverage requires max_active_rows=None")
+        if type(jacobian_arena_budget_bytes) is not int or not 0 < jacobian_arena_budget_bytes <= MAX_CPU_JACOBIAN_ARENA_BYTES:
+            fail("CPU Jacobian arena requires a positive integer byte budget at most1GiB")
+        if not reserved:
+            fail("Byte-derived coverage requires the declared reserved working mode")
+        metadata.update(resource_kind=JACOBIAN_RESOURCE_KIND, configured_max_active_rows=None,
+                        max_active_rows=None,
+                        jacobian_storage_location="cpu_numpy", jacobian_storage_dtype="float32",
+                        jacobian_arena_budget_bytes=jacobian_arena_budget_bytes,
+                        jacobian_arena_allocated_bytes=0, jacobian_used_rows=0,
+                        jacobian_used_bytes=0, jacobian_storage_bytes=0)
+    elif max_active_rows != 8:
         fail("Fixed prospective projection protocol changed")
     if reserved:
         if working_budget_fraction != .5:
@@ -322,6 +343,8 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     device, dtype = parameters[0].device, parameters[0].dtype
     if dtype not in (torch.float32, torch.float64):
         fail("Unsupported actor dtype")
+    if resource_mode and dtype != torch.float32:
+        fail("CPU Jacobian arena requires the unchanged float32 actor dtype")
     for i, (p, d) in enumerate(zip(parameters, directions)):
         if p.device != device or p.dtype != dtype or not isinstance(d, torch.Tensor) or d.shape != p.shape \
                 or d.device != device or d.dtype != dtype or not _finite(p) or not _finite(d):
@@ -335,6 +358,14 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     metadata.update(mean_parameter_tensors=len(parameters), mean_parameter_elements=len(proposed),
                     original_direction_norm=float(np.linalg.norm(proposed)),
                     bank_rows=MAX_BANK_ROWS, output_coordinates=NUM_OUTPUTS)
+    if resource_mode:
+        row_bytes = NUM_OUTPUTS * len(proposed) * np.dtype(np.float32).itemsize
+        max_active_rows = min(MAX_BANK_ROWS, jacobian_arena_budget_bytes // row_bytes)
+        metadata.update(max_active_rows=int(max_active_rows), jacobian_bytes_per_row=int(row_bytes),
+                        jacobian_derived_max_active_rows=int(max_active_rows),
+                        jacobian_arena_capacity_bytes=int(max_active_rows * row_bytes))
+        if max_active_rows < 1:
+            fail("CPU Jacobian arena cannot fit one complete actual row", required_next_row_bytes=int(row_bytes))
 
     def tensor(value):
         return torch.as_tensor(value, device=device, dtype=dtype).detach()
@@ -404,6 +435,7 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     metadata.update(initial_max_linear_violation_rad=float(np.maximum(tangent-upper,lower-tangent).max()),
                     initial_linearized_total_max_ratio=float(np.max(np.abs(error+tangent)/limit_array)))
     jacobians = []
+    arena = None
     direction = directions
     active_matrix = None
     row_value_max, row_jvp_max = 0., 0.
@@ -437,6 +469,9 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
                 fail("Projection mutated real actor/normalizer")
             return direction, _metadata_value(metadata)
         if iteration == max_active_rows:
+            if resource_mode:
+                fail("jacobian_arena_capacity", attempted_new_row=int(worst[0]),
+                     required_next_row_bytes=int(row_bytes))
             fail("active_row_cap", attempted_new_row=int(worst[0]))
         row = int(worst[0])
         if row in metadata["active_row_ids"]:
@@ -462,10 +497,29 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         if row_jvp_max > LINEAR_TOLERANCE_RAD:
             fail("Single-row Jacobian/full-bank JVP disagreement", row=row,
                  row_JVP_max_disagreement_rad=row_jvp_max)
-        jacobians.append(matrix)
-        metadata["active_row_ids"].append(row)
-        del row_derivatives
-        active_matrix = np.concatenate(jacobians, axis=0)
+        if resource_mode:
+            if matrix.dtype != np.float32:
+                fail("CPU Jacobian row dtype differs from declared arena")
+            if arena is None:
+                try:
+                    arena = np.empty((max_active_rows*NUM_OUTPUTS,len(proposed)),dtype=np.float32)
+                except MemoryError:
+                    fail("jacobian_arena_allocation_failed", attempted_new_row=row)
+                metadata["jacobian_arena_allocated_bytes"] = int(arena.nbytes)
+            arena_start = len(jacobians)*NUM_OUTPUTS
+            arena[arena_start:arena_start+NUM_OUTPUTS] = matrix
+            jacobians.append(arena[arena_start:arena_start+NUM_OUTPUTS])
+            metadata["active_row_ids"].append(row)
+            del row_derivatives,matrix
+            active_matrix = arena[:len(jacobians)*NUM_OUTPUTS]
+            metadata.update(jacobian_used_rows=len(jacobians),
+                            jacobian_used_bytes=int(active_matrix.nbytes),
+                            jacobian_storage_bytes=int(active_matrix.nbytes))
+        else:
+            jacobians.append(matrix)
+            metadata["active_row_ids"].append(row)
+            del row_derivatives
+            active_matrix = np.concatenate(jacobians, axis=0)
         remaining = max_solver_sweeps - metadata["solver_sweeps"]
         if remaining <= 0:
             fail("solver_sweep_cap")
