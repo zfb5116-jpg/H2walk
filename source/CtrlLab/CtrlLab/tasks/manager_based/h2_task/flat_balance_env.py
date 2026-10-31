@@ -4,6 +4,7 @@ No reference trajectory, teacher action, pose preload, or extra actuator port
 is installed. Episode evidence is finalized before the real scene reset.
 """
 from collections import deque
+from math import cos
 from pathlib import Path
 
 import numpy as np
@@ -15,8 +16,8 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='command_scaled_velocity_cost_v1'
-POSITIVE_CREDIT_PROFILE='overspeed_positive_credit_v1'
+TRIAL_PROTOCOL='outward_tilt_growth_v1'
+POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_v1'
 
 
 def positive_forward_speed_weight(world_vx, command_speed=.3):
@@ -250,6 +251,11 @@ class FlatBalanceEnv(DirectInitializationEnv):
         velocity_error_weight=float(self.reward_manager.get_term_cfg('world_xy_velocity_error').weight)
         signed_forward_weight=float(self.reward_manager.get_term_cfg('signed_forward').weight)
         command_speed=float(command.ranges.lin_vel_x[0])
+        growth_cfg=self.reward_manager.get_term_cfg('outward_tilt_growth')
+        failure_weight=float(self.reward_manager.get_term_cfg('failure').weight)
+        growth_margin=float(growth_cfg.params['margin_angle'])
+        growth_limit=float(self.termination_manager.get_term_cfg('bad_orientation').params['limit_angle'])
+        growth_interval=cos(growth_margin)-cos(growth_limit)
         self.runtime_contract={
             'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
             'positive_credit_speed_weight':{'command_m_s':.3,'full_at_or_below_m_s':.3,
@@ -257,13 +263,31 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 'actual_peak_consumed_unweighted':True,'negative_debt_unweighted':True,
                 'physical_or_action_speed_limit_changed':False},
             'velocity_cost_scaling':{
-                'kind':'command_scaled_existing_world_xy_error_v1',
+                'kind':'restored_existing_world_xy_error_v1',
                 'actual_world_xy_velocity_error_weight':velocity_error_weight,
                 'actual_signed_forward_weight':signed_forward_weight,
                 'command_m_s':command_speed,
                 'maximum_positive_forward_rate':signed_forward_weight*command_speed,
                 'one_command_speed_error_cost_per_s':velocity_error_weight*command_speed**2,
                 'function_unchanged':True,'no_new_reward_information':True},
+            'outward_tilt_growth_cost':{
+                'kind':'existing_body_gravity_gyro_outward_potential_rate_v1',
+                'actual_function_name':growth_cfg.func.__name__,
+                'actual_weight':float(growth_cfg.weight),
+                'actual_failure_weight':failure_weight,
+                'failure_charge':abs(failure_weight),
+                'margin_rad':growth_margin,'original_native_termination_rad':growth_limit,
+                'margin_potential':1.-cos(growth_margin),
+                'termination_potential':1.-cos(growth_limit),
+                'potential_interval':growth_interval,
+                'continuous_monotone_margin_to_termination_cost':float(growth_cfg.weight)*growth_interval,
+                'actual_tilt_margin_weight':float(self.reward_manager.get_term_cfg('tilt_margin').weight),
+                'actual_body_angular_rate_weight':float(self.reward_manager.get_term_cfg('body_angular_rate').weight),
+                'actual_world_xy_velocity_error_weight':velocity_error_weight,
+                'command_m_s':command_speed,
+                'uses_existing_body_gravity_and_gyro':True,'same_reward_endpoint':True,
+                'no_new_policy_input':True,'reward_dt_multiplications':1,
+                'discrete_total_not_exact_failure_charge':True},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),
             'terrain_subtypes':{name:type(term).__name__ for name,term in generator.sub_terrains.items()},
@@ -370,6 +394,14 @@ def flat_tilt_margin(env):
 
 def flat_body_angular_rate(env):
     return env.asset.data.root_ang_vel_w[:,:2].square().sum(-1)
+
+
+def flat_outward_tilt_growth(env, margin_angle=.35):
+    """Positive root-tilt-potential rate beyond the existing angular margin."""
+    gravity=env.asset.data.projected_gravity_b
+    angular=env.asset.data.root_ang_vel_b
+    outward=torch.relu(gravity[:,0]*angular[:,1]-gravity[:,1]*angular[:,0])
+    return outward * (-gravity[:,2] < cos(margin_angle))
 
 
 def flat_drive_request(env):

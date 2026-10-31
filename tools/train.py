@@ -92,7 +92,7 @@ def main():
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
         trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
-        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1")
+        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1")
         expected_initial_sha = {
             "guarded_flat_balance_v1":"ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688",
             "overspeed_credit_action_margin_v1":"01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68",
@@ -101,6 +101,7 @@ def main():
             "resource_bounded_reserved_output_proposal_v1":"e96a9fd29cc0d7457db742133345c0224f2dbcdde522692b52eba88ebdd6977d",
             "strict_primal_resource_output_proposal_v1":"4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2",
             "command_scaled_velocity_cost_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
+            "outward_tilt_growth_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
         }.get(trial_protocol)
         if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != [1029,866,73,12]
                 or guarded_plan["initial_policy_sha256"] != expected_initial_sha
@@ -158,7 +159,7 @@ def main():
         training_tool_names.append("stair_exploration.py")
     if guarded_flat:
         training_tool_names.append("guarded_flat_ppo.py")
-        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1"):
+        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1"):
             training_tool_names.append("functional_proposal.py")
     for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)

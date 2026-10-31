@@ -32,7 +32,10 @@ PRECISION_PROTOCOL='strict_primal_resource_output_proposal_v1'
 PRECISION_INITIAL_SHA='4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2'
 VELOCITY_COST_PROTOCOL='command_scaled_velocity_cost_v1'
 VELOCITY_COST_INITIAL_SHA='fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa'
+OUTWARD_TILT_PROTOCOL='outward_tilt_growth_v1'
+NATURAL_PARENT_PROTOCOLS=(VELOCITY_COST_PROTOCOL,OUTWARD_TILT_PROTOCOL)
 NEW_REWARD_PROFILE='overspeed_positive_credit_v1'
+OUTWARD_REWARD_PROFILE='overspeed_outward_tilt_growth_v1'
 TRANSFER_CPU_RECEIPT_SHA='6300bf22b993ba92bbe5fdfedc7c9278712eb4891e38ac7d8db1b22e7ccbd4d4'
 TRANSFER_RUN_SHA='ffc94e26c39ebf399055bc997a6577fb3e3a481ce08581117583139ba3837e54'
 PROTECTED_RELATIVE_FILES=(
@@ -48,8 +51,64 @@ physical.__doc__=__doc__
 require,sha,write,source_hashes=physical.require,physical.sha,physical.write,physical.source_hashes
 
 
+def validate_outward_reward_plan(plan):
+    """Pure metadata admission for the reported fixed outward-growth cost."""
+    cost=plan.get('outward_tilt_growth_cost',{})
+    interval=math.cos(.35)-math.cos(.75)
+    require(plan.get('trial_protocol')==OUTWARD_TILT_PROTOCOL
+            and cost.get('kind')=='existing_body_gravity_gyro_outward_potential_rate_v1'
+            and cost.get('margin_rad')==.35 and cost.get('original_native_termination_rad')==.75
+            and cost.get('failure_charge')==20.
+            and math.isclose(cost.get('weight',0.),-20./interval,rel_tol=0.,abs_tol=1e-10)
+            and math.isclose(cost.get('potential_interval',0.),interval,rel_tol=0.,abs_tol=1e-12)
+            and cost.get('continuous_monotone_margin_to_termination_cost')==-20.
+            and cost.get('reward_dt_multiplications')==1
+            and cost.get('existing_XY_weight_restored')==-.5
+            and cost.get('new_policy_input_or_structure') is False
+            and cost.get('old_tilt_margin_cost_unchanged') is True
+            and cost.get('old_angular_rate_cost_unchanged') is True,
+            'Reviewed outward-growth reward plan differs from its fixed original-margin/failure calibration')
+    return cost
+
+
+def validate_outward_reward_metadata(runtime,plan=None):
+    """Check recorded actual RewardManager getters, without a model or Sim."""
+    if plan is not None:
+        validate_outward_reward_plan(plan)
+    cost=runtime.get('outward_tilt_growth_cost',{})
+    speed=runtime.get('velocity_cost_scaling',{})
+    interval=math.cos(.35)-math.cos(.75)
+    require(runtime.get('reward_profile')==OUTWARD_REWARD_PROFILE
+            and cost.get('kind')=='existing_body_gravity_gyro_outward_potential_rate_v1'
+            and cost.get('actual_function_name')=='flat_outward_tilt_growth'
+            and cost.get('actual_failure_weight')==-20. and cost.get('failure_charge')==20.
+            and cost.get('margin_rad')==.35 and cost.get('original_native_termination_rad')==.75
+            and math.isclose(cost.get('actual_weight',0.),-20./interval,rel_tol=0.,abs_tol=1e-10)
+            and math.isclose(cost.get('margin_potential',0.),1.-math.cos(.35),rel_tol=0.,abs_tol=1e-12)
+            and math.isclose(cost.get('termination_potential',0.),1.-math.cos(.75),rel_tol=0.,abs_tol=1e-12)
+            and math.isclose(cost.get('potential_interval',0.),interval,rel_tol=0.,abs_tol=1e-12)
+            and math.isclose(cost.get('continuous_monotone_margin_to_termination_cost',0.),-20.,rel_tol=0.,abs_tol=1e-10)
+            and cost.get('actual_tilt_margin_weight')==-1.
+            and cost.get('actual_body_angular_rate_weight')==-.025
+            and cost.get('actual_world_xy_velocity_error_weight')==-.5
+            and cost.get('command_m_s')==.3
+            and all(cost.get(key) is True for key in ('uses_existing_body_gravity_and_gyro',
+                'same_reward_endpoint','no_new_policy_input','discrete_total_not_exact_failure_charge'))
+            and type(cost.get('reward_dt_multiplications')) is int
+            and cost.get('reward_dt_multiplications')==1,
+            'Actual outward-growth RewardManager function/weight/frame/margin/dt profile differs')
+    require(speed.get('kind')=='restored_existing_world_xy_error_v1'
+            and speed.get('actual_world_xy_velocity_error_weight')==-.5
+            and speed.get('actual_signed_forward_weight')==10.
+            and speed.get('command_m_s')==.3 and speed.get('maximum_positive_forward_rate')==3.
+            and math.isclose(speed.get('one_command_speed_error_cost_per_s',0.),-.045,rel_tol=0.,abs_tol=1e-12)
+            and speed.get('function_unchanged') is True and speed.get('no_new_reward_information') is True,
+            'Outward-growth trial must restore the original unchanged-kernel XY cost')
+    return cost
+
+
 def reviewed_parent(protocol):
-    if protocol==VELOCITY_COST_PROTOCOL:
+    if protocol in NATURAL_PARENT_PROTOCOLS:
         return dict(sha=VELOCITY_COST_INITIAL_SHA,
             receipt='e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b',
             run='797aecdb0c137d57f396fd7705940921b0ea9624c7b75323f8bcde58caf9e33c',
@@ -108,13 +167,15 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
         return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
                     checkpoint_format=fmt,typed_policy_transfer=False)
+    outward_tilt=fmt=='h2_guarded_flat_ppo_v8'
     velocity_cost=fmt=='h2_guarded_flat_ppo_v7'
-    precision=velocity_cost or fmt=='h2_guarded_flat_ppo_v6'
+    natural_parent=outward_tilt or velocity_cost
+    precision=natural_parent or fmt=='h2_guarded_flat_ppo_v6'
     resource=precision or fmt=='h2_guarded_flat_ppo_v5'
     reserved=resource or fmt=='h2_guarded_flat_ppo_v4'
     projected=reserved or fmt=='h2_guarded_flat_ppo_v3'
     require(projected or fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
-    protocol=VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
+    protocol=OUTWARD_TILT_PROTOCOL if outward_tilt else VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
     parent=reviewed_parent(protocol)
     require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
             ==plan.get('trial_protocol')==protocol,'Declared typed profiles disagree')
@@ -172,8 +233,8 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
     require(transfer['kind']==parent['kind']
             and transfer['mode']==plan['initialization_mode'] and transfer['parent_checkpoint_sha256']==parent['sha']
             and transfer['parent_accepted_updates']==parent['updates'] and transfer['parent_last_complete_iteration']==parent['iteration']
-            and transfer['parent_uncommitted_rollout'] is (not velocity_cost)
-            and transfer.get('parent_natural_completion',False) is velocity_cost
+            and transfer['parent_uncommitted_rollout'] is (not natural_parent)
+            and transfer.get('parent_natural_completion',False) is natural_parent
             and transfer['parent_runtime_rollback_completed'] is parent['restored'],'Parent transfer identity/history differs')
     require(all(transfer[k] is True for k in ('model_and_dualnorm_only','fresh_actor_optimizer',
             'fresh_critic_optimizer','fresh_RND','fresh_RND_optimizer','actor_and_critic_loaded_bitwise',
@@ -182,7 +243,7 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
             and transfer['new_checkpoint'] is None and transfer['norm_counts']=={'actor':24576000,'critic':24576000},
             'Typed policy transfer must not resume parent optimization/RND/RNG')
     runtime=run['runtime_flat_geometry']
-    require(runtime['trial_protocol']==protocol and runtime['reward_profile']==NEW_REWARD_PROFILE,
+    require(runtime['trial_protocol']==protocol and runtime['reward_profile']==(OUTWARD_REWARD_PROFILE if outward_tilt else NEW_REWARD_PROFILE),
             'Actual environment reward profile differs from the declared optimization')
     speed=runtime['positive_credit_speed_weight']
     require(speed['command_m_s']==speed['full_at_or_below_m_s']==.3
@@ -198,6 +259,8 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
                 and abs(cost.get('one_command_speed_error_cost_per_s',0.)+3.)<1e-12
                 and cost.get('function_unchanged') is True and cost.get('no_new_reward_information') is True,
                 'Actual existing-XY-cost calibration differs from its reviewed command/rate scale')
+    if outward_tilt:
+        validate_outward_reward_metadata(runtime,plan)
     return dict(trial_protocol=protocol,initial_sha256=parent['sha'],
                 checkpoint_format=fmt,typed_policy_transfer=True,action_margin=margin,
                 proposal_projection=state.get('proposal_projection') if projected else None)
@@ -238,7 +301,7 @@ def verify_transfer_files(plan, transfer, child_source):
     require(parent_run['git_commit']==transfer['parent_source_commit']
             and parent_run['completed_iterations']==expected['updates'] and parent_run['status']==expected['status'],
             'Parent source/budget/terminal status differs from its exact reviewed protocol')
-    if plan['trial_protocol']==VELOCITY_COST_PROTOCOL:
+    if plan['trial_protocol'] in NATURAL_PARENT_PROTOCOLS:
         require(plan.get('parent_natural_completion') is True
                 and plan.get('parent_runtime_rollback_completed') is False
                 and parent_run.get('actual_sampled_environment_steps')==24576000
@@ -325,7 +388,7 @@ def validate_cpu(args):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'),'Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
@@ -344,7 +407,7 @@ def validate_cpu(args):
             'Guarded optimizer producer tool fingerprints are incomplete')
     for name,digest in training_tools.items():
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'):
         require('functional_proposal.py' in training_tools,'Producer omitted simultaneous projection implementation')
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
@@ -388,7 +451,7 @@ def validate_cpu(args):
             require(gs['action_margin']['committed_minibatches']==expected['actor'],
                     'Action-margin committed-minibatch counter differs from actorAdam')
         require(plan.get('status')=='reviewed_ready','New profile plan has not completed its prelaunch review')
-    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'):
         projection=gs['proposal_projection']
         width=sum(p.numel() for _,p in actor_named[:-1]);row_bytes=12*width*4
         require(projection['jacobian_mean_parameter_elements']==width==780428
@@ -406,7 +469,7 @@ def validate_cpu(args):
                     and summary['signed_midpoint_bounds_verified_coordinates']==61440
                     and summary['nonlinear_hard_check_passed'] is True,
                     'Actual last committed actor update lacks its full-bank resource and nonlinear certificate')
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'):
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'):
                 precision=summary.get('primal_precision_summary',{})
                 require(summary.get('primal_precision_policy')=='direct_fp64_primal_envelope_v1'
                         and precision.get('direct_primal_certified') is True
@@ -438,7 +501,7 @@ def validate_cpu(args):
     for name,parameters,lr in (('actor',actor_named,1e-5),('critic',critic_named,.001)):
         optimizers[name]=check_adam(torch,saved[name+'_optimizer_state_dict'],[n for n,_ in parameters],
             [p for _,p in parameters],expected[name],lr,name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'):
         require(all(g.get('foreach') is False and g.get('fused') in (None,False)
                     for g in saved['actor_optimizer_state_dict']['param_groups']),
                 'Prospective Adam must declare its single-tensor execution path')
@@ -465,7 +528,7 @@ def validate_cpu(args):
         parent_expected=reviewed_parent(profile['trial_protocol'])
         require(initial_saved['format']==parent_expected['format'] and initial_saved['iter']==parent_expected['iteration']
                 and initial_saved['guarded_ppo_state']['completed_updates']==parent_expected['updates']
-                and initial_saved['guarded_ppo_state']['uncommitted_rollout'] is (profile['trial_protocol'] != VELOCITY_COST_PROTOCOL),
+                and initial_saved['guarded_ppo_state']['uncommitted_rollout'] is (profile['trial_protocol'] not in NATURAL_PARENT_PROTOCOLS),
                 'Actual parent packet differs from the exact reviewed accepted/restored budget')
         start=run['initial_learning_state']
         require(start['checkpoint_loaded'] is False and run['checkpoint'] is None
@@ -480,7 +543,7 @@ def validate_cpu(args):
                 'New trial did not explicitly reset std to the same half exploration budget')
         require(run['external_dependency_sha256']==saved['initialization_transfer']['parent_external_dependency_sha256'],
                 'New typed transfer changed native USD or frozen LiDAR dependencies')
-        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7') and count<=40:
+        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8') and count<=40:
             require(all(torch.equal(saved['model_state_dict'][name],initial_saved['model_state_dict'][name])
                         for name,_ in actor_named[:-1]), 'Actual warm actor differs from the transferred parent')
             require(torch.equal(saved['model_state_dict']['std'],torch.tensor(start['policy_std'],dtype=model.std.dtype)),
@@ -539,18 +602,20 @@ def validate_cpu(args):
             if profile.get('proposal_projection') is not None else None),
         actor_whole_update_working_reserve=({key:gs['proposal_projection'][key] for key in
             ('working_budget_fraction','whole_update_fixed_working_bound','solver_tolerance_reserved_inward')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8') else None),
         actor_compute_resource_coverage=({key:gs['proposal_projection'][key] for key in
             ('resource_kind','configured_max_active_rows','max_active_rows','jacobian_arena_budget_bytes',
              'jacobian_mean_parameter_elements','jacobian_bytes_per_row','jacobian_arena_capacity_bytes')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8') else None),
         actor_primal_precision=({key:gs['proposal_projection'][key] for key in
             ('primal_precision_policy','max_polish_per_QP','max_support_pivots','max_polish_per_projection',
              'solver_optimality_and_direct_primal_separate','primal_envelope_is_machine_derived',
              'final_same_direction_cast_JVP_required','primal_precision_summary')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8') else None),
         world_xy_velocity_cost_scaling=(run['runtime_flat_geometry'].get('velocity_cost_scaling')
-            if saved['format']=='h2_guarded_flat_ppo_v7' else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8') else None),
+        outward_tilt_growth_cost=(run['runtime_flat_geometry'].get('outward_tilt_growth_cost')
+            if saved['format']=='h2_guarded_flat_ppo_v8' else None),
         actual_warm_actor44_and_reset_std_checked=warm_actor_transfer_checked,
         uncommitted_rollout=gs['uncommitted_rollout'],rnd_rollout_update_counter=int(gs['rnd_update_counter']),
         source_root=str(args.source_root),source_sha256=hashes,producer_run=str(run_path),producer_run_sha256=sha(run_path),
@@ -573,7 +638,7 @@ def validate_cpu(args):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7'),'Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and

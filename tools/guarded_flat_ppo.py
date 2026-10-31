@@ -34,6 +34,8 @@ STRICT_TRIAL = "strict_primal_resource_output_proposal_v1"
 STRICT_PARENT_SHA = "4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2"
 COST_FORMAT = "h2_guarded_flat_ppo_v7"
 COST_TRIAL = "command_scaled_velocity_cost_v1"
+OUTWARD_FORMAT = "h2_guarded_flat_ppo_v8"
+OUTWARD_TRIAL = "outward_tilt_growth_v1"
 COST_PARENT_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
 COST_PARENT_RECEIPT_SHA = "e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b"
 COST_PARENT_RUN_SHA = "797aecdb0c137d57f396fd7705940921b0ea9624c7b75323f8bcde58caf9e33c"
@@ -152,11 +154,11 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    natural=plan.get("trial_protocol")==COST_TRIAL
+    natural=plan.get("trial_protocol") in (COST_TRIAL,OUTWARD_TRIAL)
     strict=plan.get("trial_protocol")==STRICT_TRIAL
-    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
     reserved=resource or plan.get("trial_protocol")==RESERVED_TRIAL
-    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
     restored=projection and not natural
     if natural:
         kind,mode="saved_complete_PPO_v6_policy_transfer","transfer_completed_v6_policy_and_dualnorm_fresh_optimization"
@@ -168,7 +170,7 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
                 and plan.get("parent_runtime_rollback_completed") is False
                 and plan.get("initial_policy_CPU_receipt_sha256")==COST_PARENT_RECEIPT_SHA
                 and plan.get("initial_parent_run_sha256")==COST_PARENT_RUN_SHA,
-                "Typed natural1000 transfer is not the reviewed command-scaled initialization")
+                "Typed natural1000 transfer is not the reviewed completed-v6 initialization")
     elif strict:
         kind,mode="saved_restored_PPO_v5_policy_transfer","transfer_restored_v5_policy_and_dualnorm_fresh_optimization"
         parent_sha,parent_format,parent_iteration,parent_updates=STRICT_PARENT_SHA,RESOURCE_FORMAT,182,183
@@ -291,7 +293,7 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL) and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
     expected_kind={MARGIN_TRIAL:"saved_pre_guard_PPO_v1_policy_transfer",
@@ -299,9 +301,10 @@ def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
                    RESERVED_TRIAL:"saved_restored_PPO_v3_policy_transfer",
                    RESOURCE_TRIAL:"saved_restored_PPO_v4_policy_transfer",
                    STRICT_TRIAL:"saved_restored_PPO_v5_policy_transfer",
-                   COST_TRIAL:"saved_complete_PPO_v6_policy_transfer"}[algorithm.trial_protocol]
+                   COST_TRIAL:"saved_complete_PPO_v6_policy_transfer",
+                   OUTWARD_TRIAL:"saved_complete_PPO_v6_policy_transfer"}[algorithm.trial_protocol]
     require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
-    if algorithm.trial_protocol==COST_TRIAL:
+    if algorithm.trial_protocol in (COST_TRIAL,OUTWARD_TRIAL):
         require(provenance.get("parent_natural_completion") is True
                 and provenance.get("parent_uncommitted_rollout") is False
                 and provenance.get("parent_runtime_rollback_completed") is False
@@ -494,17 +497,17 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL)
+        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
                 or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
                 "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
         self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
-        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL)
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -532,7 +535,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,

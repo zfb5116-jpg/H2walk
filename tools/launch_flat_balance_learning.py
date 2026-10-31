@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snapshot,
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy, LEGS
+from evaluate_flat_balance_policy import validate_outward_reward_plan, validate_outward_reward_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -45,6 +46,7 @@ PRECISION_PROTOCOL = "strict_primal_resource_output_proposal_v1"
 PRECISION_SHA = "4cecd1fc24d618502402c1bd3ed5bcb0fdc7f44a0981a3bfe5855895715176b2"
 VELOCITY_COST_PROTOCOL = "command_scaled_velocity_cost_v1"
 VELOCITY_COST_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
+OUTWARD_TILT_PROTOCOL = "outward_tilt_growth_v1"
 TERMINAL = {"completed", "failed", "stopped_no_improvement", "stopped_functional_guard"}
 
 
@@ -160,13 +162,15 @@ def preflight(args):
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
     require(declared["network_or_input_structure_change"] is False, "Network/input change requires prior reporting")
     initial = inside(declared["initial_policy"])
+    outward_tilt = declared.get("trial_protocol") == OUTWARD_TILT_PROTOCOL
     velocity_cost = declared.get("trial_protocol") == VELOCITY_COST_PROTOCOL
-    precision = velocity_cost or declared.get("trial_protocol") == PRECISION_PROTOCOL
+    natural_parent = outward_tilt or velocity_cost
+    precision = natural_parent or declared.get("trial_protocol") == PRECISION_PROTOCOL
     resource = precision or declared.get("trial_protocol") == RESOURCE_PROTOCOL
     reserved = resource or declared.get("trial_protocol") == RESERVED_PROTOCOL
     projected = reserved or declared.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    expected_initial_sha = VELOCITY_COST_SHA if velocity_cost else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
+    expected_initial_sha = VELOCITY_COST_SHA if natural_parent else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
     require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
     receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
@@ -186,15 +190,15 @@ def preflight(args):
     frozen = {str(initial): expected_initial_sha, str(receipt_path): digest(receipt_path),
               str(plan): digest(plan), **dependencies}
     if transfer:
-        require(declared.get("initial_parent_kind") == ("saved_complete_PPO_v6_policy_transfer" if velocity_cost else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
-                and declared.get("initialization_mode") == ("transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if velocity_cost else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
+        require(declared.get("initial_parent_kind") == ("saved_complete_PPO_v6_policy_transfer" if natural_parent else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
+                and declared.get("initialization_mode") == ("transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if natural_parent else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
                 "New trial must explicitly transfer model/norm only and start fresh optimization")
-        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v6" if velocity_cost else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
-                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (1000 if velocity_cost else 183 if precision else 613 if resource else 105 if reserved else 101 if projected else 165)
+        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v6" if natural_parent else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
+                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (1000 if natural_parent else 183 if precision else 613 if resource else 105 if reserved else 101 if projected else 165)
                 and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
         parent_run = inside(declared["initial_parent_run"])
         require(str(parent_run) == receipt["producer_run"] and digest(parent_run) == receipt["producer_run_sha256"]
-                == declared["initial_parent_run_sha256"] and read(parent_run)["status"] == ("completed" if velocity_cost else "stopped_functional_guard" if projected else "failed"),
+                == declared["initial_parent_run_sha256"] and read(parent_run)["status"] == ("completed" if natural_parent else "stopped_functional_guard" if projected else "failed"),
                 "Reviewed parent terminal provenance changed or was relabeled")
         if velocity_cost:
             calibration=declared.get("reward_velocity_cost_calibration",{})
@@ -207,6 +211,13 @@ def preflight(args):
                     and calibration.get("command_m_s")==.3
                     and calibration.get("maximum_positive_forward_rate")==3.,
                     "Reviewed complete-parent/command-scaled existing-cost profile changed")
+        if outward_tilt:
+            require(declared.get("parent_natural_completion") is True
+                    and declared.get("parent_runtime_rollback_completed") is False
+                    and declared.get("parent_accepted_updates")==1000
+                    and declared.get("parent_last_complete_iteration")==999,
+                    "Outward-growth trial requires the exact reviewed natural completed-v6 parent")
+            validate_outward_reward_plan(declared)
         parent_source = inside(declared["initial_parent_source_root"])
         actual_source = {"source/" + str(Path(path).relative_to(parent_source)): value for path, value in hashes(parent_source).items()}
         require(actual_source == receipt["source_sha256"], "Parent model's training source changed")
@@ -531,8 +542,9 @@ def startup_contract(metadata, request):
     expect(learning.get("critic_only_iterations") == 40 and learning.get("actor_learning_rate") == 1e-5
            and learning.get("critic_learning_rate") == .001 and learning.get("rnd_reward_weight") == 0,
            "Actual split optimizer protocol changed")
+    outward_tilt = request.get("trial_protocol") == OUTWARD_TILT_PROTOCOL
     velocity_cost = request.get("trial_protocol") == VELOCITY_COST_PROTOCOL
-    precision = velocity_cost or request.get("trial_protocol") == PRECISION_PROTOCOL
+    precision = outward_tilt or velocity_cost or request.get("trial_protocol") == PRECISION_PROTOCOL
     resource = precision or request.get("trial_protocol") == RESOURCE_PROTOCOL
     reserved = resource or request.get("trial_protocol") == RESERVED_PROTOCOL
     projected = reserved or request.get("trial_protocol") == PROPOSAL_PROTOCOL
@@ -544,7 +556,7 @@ def startup_contract(metadata, request):
     if transfer:
         expect(metadata.get("initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == ("h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
+        expect(guarded.get("optimizer_format") == ("h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
         expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
@@ -591,6 +603,11 @@ def startup_contract(metadata, request):
                and abs(cost.get("one_command_speed_error_cost_per_s",0.)+3.)<1e-12
                and cost.get("function_unchanged") is True and cost.get("no_new_reward_information") is True,
                "Runtime actual RewardManager velocity-cost scale differs from its fixed reviewed calibration")
+    if outward_tilt:
+        try:
+            validate_outward_reward_metadata(runtime)
+        except (RuntimeError,TypeError,ValueError) as error:
+            errors.append(str(error))
     expect(runtime.get("domain_bounds_local_m") == [-7.9, 7.9, -2.9, 2.9]
            and runtime.get("below_floor_tolerance_m") == .05, "Actual flat physical domain changed")
     expect(runtime.get("generator_size_m") == [16., 6.] and runtime.get("terrain_rows") == 1
@@ -605,8 +622,8 @@ def startup_contract(metadata, request):
     expect(bool(runtime.get("episode_evidence_directory")), "Pre-reset physical episode recorder is absent")
     if transfer:
         expect(runtime.get("trial_protocol") == request.get("trial_protocol")
-               and runtime.get("reward_profile") == "overspeed_positive_credit_v1",
-               "Actual overspeed positive-credit reward profile is missing")
+               and runtime.get("reward_profile") == ("overspeed_outward_tilt_growth_v1" if outward_tilt else "overspeed_positive_credit_v1"),
+               "Actual declared flat reward profile is missing")
         speed = runtime.get("positive_credit_speed_weight", {})
         expect(speed.get("command_m_s") == speed.get("full_at_or_below_m_s") == .3
                and speed.get("zero_at_or_above_m_s") == .6

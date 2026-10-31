@@ -1,4 +1,6 @@
 """Independent autonomous direct-flat balance learning configuration."""
+from math import cos
+
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.utils import configclass
 
@@ -11,10 +13,12 @@ class FlatBalanceRewardsCfg:
     signed_forward = RewTerm(func=rewards.flat_signed_progress,weight=10.)
     valid_alternating_landing = RewTerm(func=rewards.flat_valid_landing,weight=.2)
     failure = RewTerm(func=rewards.flat_failure,weight=-20.)
-    world_xy_velocity_error = RewTerm(func=rewards.flat_velocity_error,weight=-(10.0/.3))
+    world_xy_velocity_error = RewTerm(func=rewards.flat_velocity_error,weight=-.5)
     world_heading_error = RewTerm(func=rewards.flat_heading_error,weight=-.1)
     tilt_margin = RewTerm(func=rewards.flat_tilt_margin,weight=-1.)
     body_angular_rate = RewTerm(func=rewards.flat_body_angular_rate,weight=-.025)
+    outward_tilt_growth = RewTerm(func=rewards.flat_outward_tilt_growth,
+        weight=-20.0/(cos(.35)-cos(.75)),params={'margin_angle':.35})
     supported_slip = RewTerm(func=rewards.flat_support_slip,weight=-1.)
     normalized_drive_request = RewTerm(func=rewards.flat_drive_request,weight=-.02)
     bounded_target_change = RewTerm(func=rewards.flat_target_change,weight=-.02)
