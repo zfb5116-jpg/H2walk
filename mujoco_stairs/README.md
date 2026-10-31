@@ -78,9 +78,9 @@ sole-clearance rewards for each swinging foot:
 - Only forward-moving airborne feet with the other foot supporting the robot
   earn swing reward. Static raised legs, backward swing, two-foot jumps and
   planted feet earn none. Overshooting the target reduces the reward.
-- A low moving foot near a riser is penalized. First supported placement of
-  each foot fully inside each higher tread earns a one-time landing bonus;
-  repeatedly hopping on the same tread cannot earn this bonus again.
+- A low moving foot near a riser is penalized. Ordered, alternating tread
+  contact shaping below replaces the previous one-time `landing` bonus; both
+  are not applied together. Fully landed levels remain success diagnostics.
 - Stair swing reward weight defaults to 2.5 (flat: 0.5), replacing the old 0.25
   height term. Tune with `--swing-reward-weight` and `--clearance-margin`.
 - Positive knee/negative hip action ranges expand gradually with stair height.
@@ -100,7 +100,73 @@ not success. Flat success uses the same x/upright/support criterion.
 
 `info` exposes target/actual sole heights, support states, highest landed stair,
 and all reward components. TensorBoard logs `reward/swing_clearance`,
-`reward/low_clearance`, `reward/landing`, `reward/stall`, and terrain heights.
+`reward/low_clearance`, `reward/stall`, the three stair terms, and terrain heights.
+
+## Three stair-specific rewards adapted from WM-LOCO
+
+Source: *World-Model-Augmented Visual Locomotion for Humanoids on
+Foothold-Constrained Terrain*, arXiv:2609.02542v1, Section 2.2, Eqs. (2)--(5),
+and Appendix B, Table 3: https://arxiv.org/html/2609.02542v1#S2.SS2
+
+The paper adds three terms to a standard walking reward, shared by its PPO
+baseline and world-model policy. This H2 adaptation implements the reward
+ideas only; it does not reproduce the paper's G1 robot, perception, MoE
+policy, training setup, world model, or reported performance.
+
+```text
+r = r_current_without_old_landing
+    - 0.05 * N_boundary
+    - 0.50 * N_riser
+    + 0.50 * r_sequential_tread
+```
+
+The three default weights match the paper's Table 3 as initial settings, but
+their numerical scale is not equivalent to the paper's simulator: raw point
+counts depend on sampling density and this environment sums rewards each
+control step. They need evaluation/tuning on the intended H2 physics model.
+
+1. **`stair_boundary`** counts foot volume samples in forbidden side strips
+   near the stairs. The bundled physical stairs are 4 m wide. To discourage
+   detouring within that width, the H2 version constrains a central walking
+   lane, default y in [-0.60, +0.60] m, from x=0.70 m to the end of the landing.
+   This lane is an adaptation, not the paper's exact per-tile boundary layout.
+2. **`stair_riser`** counts foot volume samples inside 4 cm-thick cuboids
+   centered on each vertical riser. The upper 4 cm of each riser is excluded
+   as in the paper, avoiding false penalties on near-edge tread contacts.
+   A 4 cm curriculum riser therefore has no active riser cuboid; the existing
+   swing-clearance reward still teaches that shallow stage.
+3. **`stair_tread`** consumes tread regions in ascending order. At least 50%
+   of a sole's sample points must be inside the current tread, within 2 cm
+   of its surface, and that foot must have actual upward terrain contact.
+   Contact starts a window `tau=clip(depth/(2*command_speed*dt), 5, 50)` steps.
+   The first tread accepts either foot. Subsequent treads prefer alternation;
+   a wrong-foot contact gets a 0.3 multiplier. Inside the window the raw score
+   is `alternation*rho_contact - 0.7*max(rho_other-0.05, 0)`. Holding contact
+   for `ceil(0.3*tau)` consecutive steps consumes the tread. Later treads earn
+   nothing until the current one is consumed; consumed treads never pay again.
+
+Explicit H2 implementation choices: each collision geom uses a 5x3x3 volume
+grid and 7x5 sole grid, transformed into world space (45 and 35 points per
+foot in the bundled box-foot model). Bounds approximate detailed meshes;
+they are not a replacement for true mesh-surface sensors on other models.
+The long top landing uses nominal 35 cm tread depth for window timing. A
+window never reopens on the same tread after expiry, but later sustained
+contact can consume that tread without reward to avoid deadlocking learning.
+Reward sequence history resets per episode. It is not part of policy input,
+so adding these terms leaves the 56-observation/12-action interface unchanged.
+
+All three terms are exactly zero in `flat` mode and at the flat curriculum
+level. They also do not pay tread reward while approaching the stairs on
+flat ground. The existing walking/clearance rewards, PD controller, physical
+model, and flat -> low stairs -> 20 cm curriculum stay unchanged by this patch.
+
+Training and evaluation accept `--stair-boundary-weight`,
+`--stair-riser-weight`, `--stair-tread-weight`, and `--stair-lane-half-width`.
+Set all three weights to zero for a reward ablation (the superseded `landing`
+bonus is not restored). TensorBoard logs `reward/stair_boundary`,
+`reward/stair_riser`, and `reward/stair_tread`; `info` additionally reports
+violation point counts, per-foot/tread contact ratios, completed sequential
+treads, and the remaining activation window.
 
 ## Evaluate and verify
 

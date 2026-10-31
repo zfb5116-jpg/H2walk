@@ -71,6 +71,10 @@ def main() -> None:
     parser.add_argument("--curriculum-success-rate", type=float, default=0.8)
     parser.add_argument("--clearance-margin", type=float, default=0.05)
     parser.add_argument("--swing-reward-weight", type=float, default=2.5)
+    parser.add_argument("--stair-boundary-weight", type=float, default=-0.05)
+    parser.add_argument("--stair-riser-weight", type=float, default=-0.5)
+    parser.add_argument("--stair-tread-weight", type=float, default=0.5)
+    parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--init-from", default=None)
     parser.add_argument("--resume-curriculum", action="store_true",
                         help="Restore curriculum sidecar as well as policy/optimizer state")
@@ -90,7 +94,8 @@ def main() -> None:
     Path(args.run_dir).mkdir(parents=True, exist_ok=True)
     env_kwargs = {name: getattr(args, name) for name in (
         "terrain_mode", "low_step_height", "start_stage", "curriculum_window",
-        "curriculum_success_rate", "clearance_margin", "swing_reward_weight")}
+        "curriculum_success_rate", "clearance_margin", "swing_reward_weight",
+        "stair_boundary_weight", "stair_riser_weight", "stair_tread_weight", "stair_lane_half_width")}
     if args.model_path:
         env_kwargs["model_path"] = args.model_path
     env = make_vec_env("CtrlLab-H2-Stairs-MuJoCo-v0", n_envs=args.n_envs,

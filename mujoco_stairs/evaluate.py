@@ -22,12 +22,18 @@ def main() -> None:
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--terrain-mode", choices=("flat", "low", "20cm"), default="20cm")
     parser.add_argument("--low-step-height", type=float, default=0.05)
+    parser.add_argument("--stair-boundary-weight", type=float, default=-0.05)
+    parser.add_argument("--stair-riser-weight", type=float, default=-0.5)
+    parser.add_argument("--stair-tread-weight", type=float, default=0.5)
+    parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default=None, help="Write per-episode diagnostics as JSON")
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error("episodes must be positive")
     kwargs = {"terrain_mode": args.terrain_mode, "low_step_height": args.low_step_height}
+    kwargs.update({name: getattr(args, name) for name in ("stair_boundary_weight", "stair_riser_weight",
+                                                         "stair_tread_weight", "stair_lane_half_width")})
     if args.model_path:
         kwargs["model_path"] = args.model_path
     env = gym.make("CtrlLab-H2-Stairs-MuJoCo-v0", **kwargs)
@@ -41,6 +47,7 @@ def main() -> None:
         max_x = -np.inf
         steps = 0
         totals = {}
+        max_treads = 0
         while not done:
             action, _ = policy.predict(obs, deterministic=True)
             obs, _, terminated, truncated, info = env.step(action)
@@ -48,11 +55,13 @@ def main() -> None:
             success = bool(info.get("success", False))
             steps += 1
             max_x = max(max_x, info["x_position"])
+            max_treads = max(max_treads, info["stair_completed_treads"])
             for name, value in info["reward_terms"].items():
                 totals[name] = totals.get(name, 0.0) + value
         successes.append(success)
         episodes.append({"success": success, "max_x": float(max_x), "steps": steps,
-                         "max_landed_level": info["max_landed_level"], "reward_totals": totals})
+                         "max_landed_level": info["max_landed_level"],
+                         "sequential_treads": max_treads, "reward_totals": totals})
     env.close()
     print(f"{args.terrain_mode} success: {np.mean(successes):.1%} ({sum(successes)}/{len(successes)})")
     print(f"mean max x: {np.mean([e['max_x'] for e in episodes]):.3f} m; "

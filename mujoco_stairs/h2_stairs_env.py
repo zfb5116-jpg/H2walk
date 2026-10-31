@@ -11,6 +11,8 @@ from gymnasium import spaces
 
 from .clearance_reward import FootState, swing_score
 from .curriculum import StairCurriculum
+from .stair_rewards import (SequentialTreadReward, StairGeometry, sole_contact_ratios,
+                            stair_boundary_count, stair_riser_count)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -106,6 +108,10 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         curriculum_success_rate: float = 0.8,
         clearance_margin: float = 0.05,
         swing_reward_weight: float = 2.5,
+        stair_boundary_weight: float = -0.05,
+        stair_riser_weight: float = -0.5,
+        stair_tread_weight: float = 0.5,
+        stair_lane_half_width: float = 0.60,
     ) -> None:
         super().__init__()
         if render_mode not in (None, "human", "rgb_array"):
@@ -116,12 +122,20 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
             raise ValueError("low_step_height must be in (0, 0.20] and episode length positive")
         if not 0.0 < clearance_margin <= 0.15 or swing_reward_weight < 0.0:
             raise ValueError("clearance_margin must be in (0, 0.15] and reward weight nonnegative")
+        if (not np.isfinite([stair_boundary_weight, stair_riser_weight, stair_tread_weight]).all()
+                or stair_boundary_weight > 0.0 or stair_riser_weight > 0.0 or stair_tread_weight < 0.0):
+            raise ValueError("stair penalty weights must be finite and <=0; tread weight must be finite and >=0")
+        if not 0.0 < stair_lane_half_width <= 1.6:
+            raise ValueError("stair_lane_half_width must be in (0, 1.6]")
         self.render_mode = render_mode
         self.terrain_mode = terrain_mode
         self.max_episode_steps = int(max_episode_steps)
         self.low_step_height = float(low_step_height)
         self.clearance_margin = float(clearance_margin)
         self.swing_reward_weight = float(swing_reward_weight)
+        self.stair_boundary_weight = float(stair_boundary_weight)
+        self.stair_riser_weight = float(stair_riser_weight)
+        self.stair_tread_weight = float(stair_tread_weight)
         self.curriculum = StairCurriculum(start_stage, curriculum_window, curriculum_success_rate)
         selected = model_path or os.environ.get("CTRLLAB_H2_MJCF", str(DEFAULT_MODEL))
         self.model_path = Path(selected).expanduser().resolve()
@@ -150,6 +164,9 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         landing = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "stair_landing")
         self._terrain_geom_ids = list(self._stair_geom_ids) + ([landing] if landing >= 0 else [])
         self._landing_end = 4.3 if landing >= 0 else 3.0
+        self._stair_geometry = StairGeometry(landing_end=self._landing_end,
+                                             lane_half_width=stair_lane_half_width)
+        self._tread_reward = SequentialTreadReward(self._stair_geometry)
         self._terrain_collision = [(int(self.model.geom_contype[g]), int(self.model.geom_conaffinity[g]))
                                    for g in self._terrain_geom_ids]
         self._foot_geoms = [self._collision_geoms(b) for b in (self._left_foot, self._right_foot)]
@@ -159,6 +176,15 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         # transformed corners conservatively account for toe/heel pitch and roll.
         self._foot_corners = {g: self.model.geom_aabb[g, :3] + corners * self.model.geom_aabb[g, 3:]
                               for geoms in self._foot_geoms for g in geoms}
+        # Fixed sample density makes raw point-count penalties reproducible.
+        volume_grid = np.asarray(list(product(np.linspace(-1, 1, 5), np.linspace(-1, 1, 3),
+                                              np.linspace(-1, 1, 3))))
+        sole_grid = np.asarray([(x, y, -1.0) for x in np.linspace(-1, 1, 7)
+                                for y in np.linspace(-1, 1, 5)])
+        self._foot_volume_local = {g: self.model.geom_aabb[g, :3] + volume_grid * self.model.geom_aabb[g, 3:]
+                                   for geoms in self._foot_geoms for g in geoms}
+        self._foot_sole_local = {g: self.model.geom_aabb[g, :3] + sole_grid * self.model.geom_aabb[g, 3:]
+                                 for geoms in self._foot_geoms for g in geoms}
         self._qpos_adrs = np.asarray([self.model.jnt_qposadr[i] for i in self._joint_ids], dtype=np.int32)
         self._qvel_adrs = np.asarray([self.model.jnt_dofadr[i] for i in self._joint_ids], dtype=np.int32)
         self._upper_qpos_adrs = np.asarray(
@@ -327,6 +353,33 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         end = self._landing_end if level == 6 else start + 0.35
         return level if foot.rear_x >= start + 0.005 and foot.toe_x <= end - 0.005 else 0
 
+    def _world_foot_points(self, local_points: dict[int, np.ndarray]) -> list[np.ndarray]:
+        return [np.concatenate([local_points[g] @ self.data.geom_xmat[g].reshape(3, 3).T
+                                + self.data.geom_xpos[g] for g in geoms])
+                for geoms in self._foot_geoms]
+
+    def _stair_reward_terms(self, feet: list[FootState], dt: float) -> tuple[dict, dict]:
+        """Three WM-LOCO-inspired terms; no contribution on a flat stage."""
+        height = self._terrain_step_height()
+        if height > 0.0:
+            volume_points = self._world_foot_points(self._foot_volume_local)
+            boundary = stair_boundary_count(volume_points, height, self._stair_geometry)
+            riser = stair_riser_count(volume_points, height, self._stair_geometry)
+            ratios = sole_contact_ratios(self._world_foot_points(self._foot_sole_local),
+                                         [f.support for f in feet], height, self._stair_geometry)
+        else:
+            boundary, riser = 0, 0
+            ratios = np.zeros((2, self._stair_geometry.step_count))
+        sequential = self._tread_reward.step(ratios, float(self.command[0]), dt, active=height > 0.0)
+        terms = {"stair_boundary": self.stair_boundary_weight * boundary,
+                 "stair_riser": self.stair_riser_weight * riser,
+                 "stair_tread": self.stair_tread_weight * sequential}
+        diagnostics = {"stair_boundary_points": boundary, "stair_riser_points": riser,
+                       "stair_sole_contact_ratios": ratios.tolist(),
+                       "stair_completed_treads": self._tread_reward.current_index,
+                       "stair_window_remaining": self._tread_reward.window_remaining}
+        return terms, diagnostics
+
     def _is_fallen(self) -> bool:
         torso_pos = self.data.xpos[self._torso]
         torso_mat = self.data.xmat[self._torso].reshape(3, 3)
@@ -365,6 +418,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         self._last_x = float(self.data.xpos[self._torso, 0])
         self._support_heights[:] = 0.0
         self._best_landed_levels[:] = 0
+        self._tread_reward.reset()
         self._foot_states(1.0)  # Initialize foot positions before differencing.
         self._goal_hold = 0.0
         self._stall_time = 0.0
@@ -405,11 +459,9 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
                               command_speed=float(self.command[0]), margin=self.clearance_margin)
                   for i, foot in enumerate(feet)]
         swing_count = max(sum(not f.support for f in feet), 1)
-        landing_reward = 0.0
         for i, foot in enumerate(feet):
             level = self._landed_level(foot)
             if level > self._best_landed_levels[i]:
-                landing_reward += 1.5 * (level - self._best_landed_levels[i])
                 self._best_landed_levels[i] = level
             if foot.support:
                 # Only a sole near a horizontal surface can update the support
@@ -425,13 +477,14 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
             "swing_clearance": (self.swing_reward_weight if height > 0.0 else 0.5)
                                * sum(s.clearance for s in scores) / swing_count,
             "low_clearance": -0.8 * sum(s.low_clearance for s in scores) / swing_count,
-            "landing": landing_reward,
             "stumble": -0.25 * float(stumble),
             "stall": -0.75 * float(self._stall_time >= 2.0),
             "action": -0.002 * float(np.square(action).sum()),
             "fall": 0.0,
             "success": 0.0,
         }
+        stair_terms, stair_diagnostics = self._stair_reward_terms(feet, dt)
+        reward_terms.update(stair_terms)
         reward = sum(reward_terms.values())
         terminated = self._is_fallen()
         feet_on_top = height == 0.0 or (np.all(self._best_landed_levels == 6)
@@ -464,6 +517,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
             "foot_support": [f.support for f in feet],
             "max_landed_level": int(self._best_landed_levels.max()),
             "curriculum_level": self.curriculum.level,
+            **stair_diagnostics,
         }
         if self.render_mode == "human":
             self.render()

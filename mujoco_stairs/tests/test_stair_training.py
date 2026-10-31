@@ -135,7 +135,7 @@ def test_landing_requires_a_foot_on_the_tread_not_a_toe_on_the_edge():
         env.close()
 
 
-def test_top_landing_can_finish_and_landing_bonus_does_not_repeat():
+def test_top_landing_can_finish_but_cannot_skip_sequential_reward():
     env = H2StairsEnv(terrain_mode="20cm")
     try:
         env.reset(seed=1)
@@ -143,17 +143,18 @@ def test_top_landing_can_finish_and_landing_bonus_does_not_repeat():
         env.data.qpos[2] += 1.2
         mujoco.mj_forward(env.model, env.data)
         env._foot_states(1.0)
-        bonuses = []
+        tread_rewards = []
         for _ in range(100):
             _, _, terminated, truncated, info = env.step(np.zeros(12))
-            bonuses.append(info["reward_terms"]["landing"])
+            tread_rewards.append(info["reward_terms"]["stair_tread"])
             if terminated or truncated:
                 break
         assert info["success"]
         assert info["max_landed_level"] == 6
-        # Each foot can earn its six-level cumulative bonus only once.
-        assert sum(bonuses) == pytest.approx(18.0)
-        assert sum(b > 0 for b in bonuses) <= 2
+        # Teleporting directly to the top cannot collect the first five treads.
+        assert sum(tread_rewards) == 0.0
+        assert info["stair_completed_treads"] == 0
+        assert "landing" not in info["reward_terms"]
     finally:
         env.close()
 
