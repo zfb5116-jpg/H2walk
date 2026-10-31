@@ -16,6 +16,9 @@ import torch
 from rsl_rl.algorithms.ppo import PPO
 
 FORMAT = "h2_guarded_flat_ppo_v1"
+MARGIN_FORMAT = "h2_guarded_flat_ppo_v2"
+MARGIN_TRIAL = "overspeed_credit_action_margin_v1"
+TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 MAX_ANGLE = [0.02, 0.015, 0.015, 0.02, 0.01, 0.0075] * 2
 FIXED_BANK_ROWS, CURRENT_BANK_ROWS, ROLLOUT_STEPS = 4096, 1024, 24
 
@@ -112,6 +115,86 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
     return metadata
 
 
+def validate_typed_policy_transfer(saved, checkpoint, plan, root):
+    """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
+    checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
+    require(plan.get("trial_protocol")==MARGIN_TRIAL and plan.get("initial_parent_kind")=="saved_pre_guard_PPO_v1_policy_transfer",
+            "Typed policy transfer is only declared for the reviewed margin trial")
+    require(str(checkpoint)==str(Path(plan["initial_policy"]).resolve(strict=True))
+            and sha(checkpoint)==plan["initial_policy_sha256"]==TRANSFER_PARENT_SHA,
+            "Typed parent checkpoint identity differs")
+    require(saved.get("format")==FORMAT and saved.get("iter")==164
+            and saved["guarded_ppo_state"]["completed_updates"]==165
+            and saved["guarded_ppo_state"]["uncommitted_rollout"] is True,
+            "Typed parent is not the preserved165-committed pre-guard policy")
+    receipt_path=Path(plan["initial_policy_CPU_receipt"]).resolve(strict=True)
+    require(receipt_path==checkpoint.with_suffix(".validation.json")
+            and sha(receipt_path)==plan["initial_policy_CPU_receipt_sha256"],"Typed parent CPU receipt changed")
+    receipt=json.loads(receipt_path.read_text())
+    require(receipt.get("status")=="passed" and receipt.get("cpu_only") is True
+            and receipt["sha256"]==TRANSFER_PARENT_SHA and receipt["checkpoint_format"]==FORMAT
+            and receipt["committed_updates"]==165,"Typed parent lacks its exact strict CPU receipt")
+    parent_run_path=Path(plan["initial_parent_run"]).resolve(strict=True)
+    require(sha(parent_run_path)==plan["initial_parent_run_sha256"]==receipt["producer_run_sha256"]
+            and Path(receipt["producer_run"]).resolve(strict=True)==parent_run_path,"Typed producer run receipt changed")
+    parent_run=json.loads(parent_run_path.read_text())
+    require(parent_run["status"]=="failed" and parent_run["completed_iterations"]==165,
+            "The typed transfer must preserve the failed parent status and actual accepted budget")
+    parent_source=Path(plan["initial_parent_source_root"]).resolve(strict=True)
+    require(parent_source==Path(receipt["source_root"]).resolve(strict=True),"Typed parent source binding differs")
+    actual={"source/"+str(p.relative_to(parent_source)):sha(p) for p in parent_source.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts and p.suffix!=".pyc"}
+    require(actual==receipt["source_sha256"],"Typed parent production source changed")
+    protected=plan["protected_network_input_native_source_sha256"]
+    require(len(protected)==14,"The reviewed14 protected network/input/native sources must be explicit")
+    for key,digest in protected.items():
+        require(key.startswith("source/") and actual.get(key)==digest and sha(root/key)==digest,
+                "Protected model/input/native source differs across transfer: "+key)
+    for path,digest in receipt["external_dependency_sha256"].items():
+        require(sha(Path(path).resolve(strict=True))==digest,"Typed parent's physical external dependency changed")
+    for key in ("obs_norm_state_dict","privileged_obs_norm_state_dict"):
+        require(int(saved[key]["count"])==24576000,"Typed inherited own-normalizer count changed")
+    return dict(kind="saved_pre_guard_PPO_v1_policy_transfer",mode="transfer_pre_guard_policy_and_dualnorm_fresh_optimization",
+        parent_checkpoint=str(checkpoint),parent_checkpoint_sha256=TRANSFER_PARENT_SHA,
+        parent_CPU_receipt=str(receipt_path),parent_CPU_receipt_sha256=sha(receipt_path),
+        parent_run=str(parent_run_path),parent_run_sha256=sha(parent_run_path),parent_source_root=str(parent_source),
+        parent_source_sha256=actual,parent_source_commit=parent_run["git_commit"],
+        parent_external_dependency_sha256=receipt["external_dependency_sha256"],parent_accepted_updates=165,
+        parent_last_complete_iteration=164,parent_uncommitted_rollout=True,parent_runtime_rollback_completed=False,
+        protected_network_input_native_source_sha256=protected,model_and_dualnorm_only=True,
+        fresh_actor_optimizer=True,fresh_critic_optimizer=True,fresh_RND=True,fresh_RND_optimizer=True,
+        parent_RNG_loaded=False,new_starting_iteration=0,new_checkpoint=None,
+        norm_counts={"actor":24576000,"critic":24576000})
+
+
+def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
+    """Load only parameters/own norms; prove that no learning/RNG state moved."""
+    require(algorithm.trial_protocol==MARGIN_TRIAL and algorithm.completed_updates==0
+            and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
+            "Typed transfer attempted after fresh optimization started")
+    require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
+            and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
+            "Typed transfer requires fresh independent Adam and RND")
+    rnd_before=state_digest(algorithm.rnd.state_dict())
+    rng_before=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    algorithm.policy.load_state_dict(saved["model_state_dict"],strict=True)
+    for name,key in (("actor","obs_norm_state_dict"),("critic","privileged_obs_norm_state_dict")):
+        normalizers[name].load_state_dict(saved[key],strict=True);normalizers[name].eval()
+        require(state_digest(normalizers[name].state_dict())==state_digest(saved[key]),"Transferred own normalization differs")
+    for key,value in algorithm.policy.state_dict().items():
+        require(torch.equal(value.detach().cpu(),saved["model_state_dict"][key].detach().cpu()),"Transferred full model differs: "+key)
+    require(rnd_before==state_digest(algorithm.rnd.state_dict()),"Typed initialization imported parent RND")
+    rng_after=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    require(rng_before==rng_after,"Typed initialization changed or imported RNG state")
+    provenance=copy.deepcopy(provenance)
+    provenance.update(actor_and_critic_loaded_bitwise=True,dualnorm_loaded_bitwise=True,
+                      fresh_RND_digest=rnd_before,loading_did_not_change_fresh_RNG=True)
+    algorithm.initialization_transfer=provenance
+    return provenance
+
+
 class FunctionalUpdateRejected(RuntimeError):
     def __init__(self, evidence, restored_checkpoint, discarded_environment_steps):
         super().__init__("Whole PPO update rejected by finite-real-input deterministic-target budget; all update state restored")
@@ -206,6 +289,47 @@ class RealInputFunctionalGuard:
         if np.any(delta>self.budget): return candidate,delta,ratio
         return None
 
+    def margin_objective(self, weight, epsilon):
+        """Full actual-bank forward value, one real-row max subgradient."""
+        scanned=self.targets()
+        delta=np.abs(scanned-self._baseline_q);ratio=delta/self.budget
+        if np.any(delta>self.budget):
+            return None,None,(scanned,delta,ratio)
+        squared=np.square(ratio)
+        row,joint=np.unravel_index(int(np.argmax(squared)),squared.shape)
+        full_u=float(squared[row,joint])
+        def tensor(name):return torch.from_numpy(self._bank[name][row:row+1]).to(self.algorithm.device)
+        with torch.no_grad():normalized=self.normalizers["actor"](tensor("obs"))
+        raw=self.algorithm.policy.act_inference(normalized).clamp(-100,100)
+        lo,hi=tensor("lower"),tensor("upper")
+        q=(lo+hi)*.5+(hi-lo)*.5*torch.tanh(raw)
+        q0=torch.as_tensor(self._baseline_q[row,joint],device=q.device,dtype=q.dtype).detach()
+        budget=torch.as_tensor(self.budget[row,joint],device=q.device,dtype=q.dtype)
+        raw_row_u=((q[0,joint]-q0)/budget).square()
+        scan_q=torch.as_tensor(scanned[row,joint],device=q.device,dtype=q.dtype)
+        corrected_q=scan_q+(q[0,joint]-q[0,joint].detach())
+        row_u=((corrected_q-q0)/budget).square()
+        # Exact scanned forward value; gradient of this actual coordinate only.
+        # No epsilon, roundoff correction, or penalty changes the hard check.
+        full_u_tensor=torch.as_tensor(full_u,device=q.device,dtype=q.dtype)
+        u=full_u_tensor+(row_u-row_u.detach())
+        eps=torch.as_tensor(epsilon,device=q.device,dtype=q.dtype)
+        penalty=weight*(torch.log1p(eps)-torch.log1p(eps-u))
+        require(bool(torch.isfinite(penalty)),"Nonfinite actual-input action-margin penalty")
+        record=dict(kind="worst_actual_input_log_barrier",weight=weight,epsilon=epsilon,
+            full_scan_rows=len(scanned),worst_row=int(row),worst_joint=int(joint),
+            full_scan_u=full_u,straight_through_u=float(u.detach()),row_autograd_u=float(row_u.detach()),
+            raw_single_row_u=float(raw_row_u.detach()),squared_ratio_roundoff=float(raw_row_u.detach())-full_u,
+            q_roundoff_rad=float(q[0,joint].detach())-float(scanned[row,joint]),
+            single_row_q_rad=float(q[0,joint].detach()),single_row_raw_mean=float(raw[0,joint].detach()),
+            full_scan_ratio=float(ratio[row,joint]),remaining_budget_ratio=1-float(ratio[row,joint]),
+            budget_rad=float(self.budget[row,joint]),baseline_q_rad=float(q0),full_scan_q_rad=float(scanned[row,joint]),
+            source_kind=int(self._bank["source_kind"][row]),source_uid=int(self._bank["source_uid"][row]),
+            source_row=int(self._bank["source_row"][row]),env_id=int(self._bank["env_id"][row]),
+            control_step=int(self._bank["control_step"][row]),rollout_step=int(self._bank["rollout_step"][row]),
+            actual_raw_row_digest=state_digest(self._bank["obs"][row]),penalty=float(penalty.detach()))
+        return penalty,record,None
+
     def persist_bank(self,path,**extra):
         np.savez_compressed(path,**self._bank,baseline_q=self._baseline_q,budget_rad=self.budget,**extra)
 
@@ -215,7 +339,9 @@ class RealInputFunctionalGuard:
 
 class H2GuardedPPO(PPO):
     def __init__(self, policy, *, actor_learning_rate=1e-5, critic_learning_rate=.001,
-                 critic_only_iterations=40, actor_max_grad_norm=1., critic_max_grad_norm=1., **kwargs):
+                 critic_only_iterations=40, actor_max_grad_norm=1., critic_max_grad_norm=1.,
+                 trial_protocol="guarded_flat_balance_v1",actor_action_budget_penalty_weight=0.,
+                 actor_action_budget_penalty_epsilon=1e-6, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -224,6 +350,15 @@ class H2GuardedPPO(PPO):
         require(kwargs.get("learning_rate",actor_learning_rate)==actor_learning_rate,"Conflicting declared actor LR")
         kwargs["learning_rate"]=actor_learning_rate
         super().__init__(policy,**kwargs)
+        require((trial_protocol=="guarded_flat_balance_v1" and actor_action_budget_penalty_weight==0.)
+                or (trial_protocol==MARGIN_TRIAL and actor_action_budget_penalty_weight==.01
+                    and self.gamma==.99 and self.lam==.95),"Undeclared actor-margin profile or discount change")
+        require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
+        self.trial_protocol=trial_protocol
+        self.action_margin_weight=float(actor_action_budget_penalty_weight)
+        self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
+        self.checkpoint_format=MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT
+        self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
                 "Guarded-flat PPO epochs/batches/entropy changed")
         require(self.rnd is not None and self.rnd.num_states==73 and self.rnd.initial_weight==0.,
@@ -271,6 +406,11 @@ class H2GuardedPPO(PPO):
             rnd_optimizer_steps_per_accepted_iteration=20,rnd_initialization="fresh independent RND and Adam, never BC/imitation state",
             normalizers_frozen=True,normalizer_counts={k:int(v.count) for k,v in self.normalizers.items()} if self.normalizers else {},
             initial_policy_sha256=self.initial_policy_sha256,uncommitted_rollout=self.uncommitted_rollout,
+            trial_protocol=self.trial_protocol,action_margin=dict(kind="worst_actual_input_log_barrier" if self.action_margin_weight else "disabled",
+                weight=self.action_margin_weight,epsilon=self.action_margin_epsilon,whole_update_reference=True,
+                hard_gate_unchanged=True,forward_value="full_actual_bank_scan_with_straight_through_single_real_row_gradient",
+                committed_minibatches=self.actor_updates_accepted*20 if self.action_margin_weight else 0,
+                latest_summary=self.last_margin_summary),
             finite_guard_limitation="5120 actual inputs; update-change bound is not unseen-state or physical-stability proof",
             last_guard=self.last_guard_summary)
 
@@ -281,7 +421,8 @@ class H2GuardedPPO(PPO):
     def packet(self,iteration,infos=None):
         self.guard.assert_frozen()
         np_rng=np.random.get_state()
-        return dict(format=FORMAT,model_state_dict=cpu_state(self.policy.state_dict()),
+        return dict(format=self.checkpoint_format,trial_protocol=self.trial_protocol,
+            initialization_transfer=copy.deepcopy(self.initialization_transfer),model_state_dict=cpu_state(self.policy.state_dict()),
             actor_optimizer_state_dict=cpu_state(self.actor_optimizer.state_dict()),
             critic_optimizer_state_dict=cpu_state(self.critic_optimizer.state_dict()),
             optimizer_parameter_names={"actor":self.actor_names,"critic":self.critic_names},
@@ -329,6 +470,8 @@ class H2GuardedPPO(PPO):
             setattr(self,key,state[key])
         self.learning_rate=self.actor_learning_rate=state["actor_learning_rate"]
         self.critic_learning_rate=state["critic_learning_rate"]
+        if "action_margin" in state:
+            self.last_margin_summary=copy.deepcopy(state["action_margin"]["latest_summary"])
         for name,value in packet["rnd_runtime"].items():setattr(self.rnd,name,value)
         ex=packet["exploration_state"]
         self.exploration.optimizer_steps=ex["optimizer_steps"]
@@ -389,7 +532,9 @@ class H2GuardedPPO(PPO):
                 save_packet(self.guard.directory/"first_actor_preupdate.pt",snapshot["packet"])
                 self.guard.persist_bank(self.guard.directory/"first_actor_actual_bank.npz")
                 self.guard.first_actor_baseline_saved=True
-        losses={key:0. for key in ("value_function","surrogate","entropy","rnd","actor_gradient_norm","critic_gradient_norm","KL")}
+        losses={key:0. for key in ("value_function","surrogate","entropy","rnd","actor_gradient_norm","critic_gradient_norm","KL",
+                                  "action_budget_margin","action_budget_margin_gradient_norm")}
+        margin_records=[]
         generator=self.storage.mini_batch_generator(self.num_mini_batches,self.num_learning_epochs)
         batches=0
         for batch in generator:
@@ -408,6 +553,22 @@ class H2GuardedPPO(PPO):
                 value_loss=torch.maximum((values-returns).square(),(clipped-returns).square()).mean()
             else:value_loss=(values-returns).square().mean()
             actor_loss=surrogate-self.entropy_coef*entropy.mean()
+            margin_loss=torch.zeros((),device=self.device)
+            margin_gradient_norm=torch.zeros((),device=self.device)
+            margin_record=None
+            if actor_enabled and self.action_margin_weight:
+                margin_loss,margin_record,violation=self.guard.margin_objective(self.action_margin_weight,self.action_margin_epsilon)
+                if violation is not None:self._veto(snapshot,violation,batches+1)
+                components=torch.autograd.grad(margin_loss,self.actor_parameters,retain_graph=True,allow_unused=True)
+                margin_gradient_norm=torch.sqrt(sum(g.detach().square().sum() for g in components if g is not None))
+                del components
+                require(bool(torch.isfinite(margin_gradient_norm)),"Nonfinite action-margin gradient")
+                margin_record.update(update_index=self.completed_updates,minibatch=batches+1,
+                    margin_gradient_norm=float(margin_gradient_norm),base_actor_loss=float(actor_loss.detach()))
+                margin_records.append(margin_record)
+                with (self.guard.directory/"action_margin_minibatches.jsonl").open("a") as stream:
+                    stream.write(json.dumps(margin_record)+"\n")
+                actor_loss=actor_loss+margin_loss
             with torch.no_grad():
                 kl=(torch.log(sigma/old_sigma+1e-5)+(old_sigma.square()+(old_mu-mu).square())/(2*sigma.square())-.5).sum(-1).mean()
             rnd_loss=(self.rnd.predictor(rnd_state)-self.rnd.target(rnd_state).detach()).square().mean()
@@ -429,10 +590,18 @@ class H2GuardedPPO(PPO):
                 violation=self.guard.check()
                 if violation is not None:self._veto(snapshot,violation,batches)
             for key,value in dict(value_function=value_loss,surrogate=surrogate,entropy=entropy.mean(),rnd=rnd_loss,
-                                   actor_gradient_norm=actor_grad,critic_gradient_norm=critic_grad,KL=kl).items():losses[key]+=float(value.detach())
+                                   actor_gradient_norm=actor_grad,critic_gradient_norm=critic_grad,KL=kl,
+                                   action_budget_margin=margin_loss,action_budget_margin_gradient_norm=margin_gradient_norm).items():losses[key]+=float(value.detach())
         require(batches==20,"Original PPO minibatch/epoch count changed")
         self.completed_updates+=1;self.actor_updates_accepted+=int(actor_enabled);self.uncommitted_rollout=False
         self.last_guard_summary=dict(self.guard.last_summary) if actor_enabled else dict(critic_only=True,actor_steps=0)
+        if margin_records:
+            self.last_margin_summary=dict(minibatches=len(margin_records),weight=self.action_margin_weight,epsilon=self.action_margin_epsilon,
+                max_full_scan_ratio=max(r["full_scan_ratio"] for r in margin_records),
+                max_abs_q_roundoff_rad=max(abs(r["q_roundoff_rad"]) for r in margin_records),
+                max_abs_u_roundoff=max(abs(r["squared_ratio_roundoff"]) for r in margin_records),
+                max_margin_gradient_norm=max(r["margin_gradient_norm"] for r in margin_records),
+                mean_weighted_penalty=sum(r["penalty"] for r in margin_records)/len(margin_records))
         record=dict(update_index=self.completed_updates-1,completed_updates=self.completed_updates,
             actor_enabled=actor_enabled,learning_state=self.learning_state(),guard=self.last_guard_summary,
             before_whole_actor_update=None if snapshot is None else snapshot["digests"],

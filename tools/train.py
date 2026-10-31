@@ -29,7 +29,7 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--run_name", default="")
 parser.add_argument("--checkpoint", type=Path, default=None)
 parser.add_argument("--initial_policy", type=Path, default=None,
-                    help="Behavior-cloned direct-policy initialization; PPO/Adam/RND start fresh.")
+                    help="Reviewed direct-policy model/own-normalizer initialization; optimization starts fresh.")
 parser.add_argument("--guarded_flat_plan", type=Path, default=None,
                     help="Immutable reviewed protocol for the separate bounded guarded-flat trial.")
 parser.add_argument("--expected_completed_iterations", type=int, default=None,
@@ -88,10 +88,16 @@ def main():
     state = json.loads(args.supervision_state.read_text())
     guarded_flat = args.task == "Unitree-H2-Flat-Balance-Policy"
     guarded_plan = None
+    typed_flat_transfer = False
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
+        trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
+        typed_flat_transfer = trial_protocol == "overspeed_credit_action_margin_v1"
+        expected_initial_sha = ("01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
+                                if typed_flat_transfer else "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688")
         if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != [1029,866,73,12]
-                or guarded_plan["initial_policy_sha256"] != "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
+                or guarded_plan["initial_policy_sha256"] != expected_initial_sha
+                or trial_protocol not in ("guarded_flat_balance_v1", "overspeed_credit_action_margin_v1")
                 or args.num_envs != 1024 or args.seed != 42):
             raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
     spec = gym.spec(args.task)
@@ -108,6 +114,8 @@ def main():
     if guarded_flat and (agent_cfg.max_iterations != 1000 or agent_cfg.save_interval != 500
             or agent_cfg.num_steps_per_env != 24 or agent_cfg.algorithm.class_name != "H2GuardedPPO"):
         raise ValueError("Guarded-flat bounded1000/save500/24-step split-PPO protocol changed")
+    if guarded_flat and getattr(agent_cfg.algorithm,"trial_protocol","guarded_flat_balance_v1") != trial_protocol:
+        raise ValueError("Guarded-flat saved config and reviewed trial profile differ")
     agent_cfg.experiment_name = f"h2_main_{args.task.rsplit('-', 1)[-1].lower()}_manager_based"
     agent_cfg.run_name = args.run_name
     agent_cfg.logger = "tensorboard"
@@ -210,7 +218,8 @@ def main():
                                   if agent_cfg.algorithm.rnd_cfg is not None else None),
             "desired_kl": agent_cfg.algorithm.desired_kl,
         },
-        "initialization_mode": "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch",
+        "initialization_mode": ("transfer_pre_guard_policy_and_dualnorm_fresh_optimization" if typed_flat_transfer
+                                else "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch"),
         "initial_policy": str(initial_policy) if initial_policy else None,
         "external_dependency_sha256": {
             str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -283,42 +292,59 @@ def main():
                                   guarded_flat=guarded_flat)
         runner.add_git_repo_to_log(__file__)
         if initial_policy:
-            boot = torch.load(initial_policy, map_location=agent_cfg.device, weights_only=True)
-            if (boot.get("format") != "h2_direct_policy_initialization_v1"
-                    or boot.get("ppo_completed_iterations") != 0
-                    or boot.get("action_semantics") != "full_soft_tanh_position_v1"
-                    or boot.get("policy_dimensions") != [1029, 866, 73, 12]):
-                raise ValueError("Initial policy does not match the direct-action contract")
-            receipt = json.loads((initial_policy.parent / "result.json").read_text())
-            if not guarded_flat and not receipt.get("initialization_ready", False):
-                raise ValueError("Behavior initialization did not pass its declared quality gate")
+            boot = torch.load(initial_policy, map_location="cpu" if typed_flat_transfer else agent_cfg.device, weights_only=True)
+            if typed_flat_transfer:
+                from guarded_flat_ppo import validate_typed_policy_transfer, apply_typed_policy_transfer
+                transfer = validate_typed_policy_transfer(boot, initial_policy, guarded_plan, ROOT)
+                transfer = apply_typed_policy_transfer(runner.alg,
+                    {"actor":runner.obs_normalizer,"critic":runner.privileged_obs_normalizer},boot,transfer)
+                metadata["initial_policy_transfer"] = transfer
+                parent_source_hashes = transfer["parent_source_sha256"]
+            else:
+                if (boot.get("format") != "h2_direct_policy_initialization_v1"
+                        or boot.get("ppo_completed_iterations") != 0
+                        or boot.get("action_semantics") != "full_soft_tanh_position_v1"
+                        or boot.get("policy_dimensions") != [1029, 866, 73, 12]):
+                    raise ValueError("Initial policy does not match the direct-action contract")
+                receipt = json.loads((initial_policy.parent / "result.json").read_text())
+                if not guarded_flat and not receipt.get("initialization_ready", False):
+                    raise ValueError("Behavior initialization did not pass its declared quality gate")
+                runner.alg.policy.load_state_dict(boot["model_state_dict"], strict=True)
+                runner.obs_normalizer.load_state_dict(boot["obs_norm_state_dict"], strict=True)
+                runner.privileged_obs_normalizer.load_state_dict(boot["privileged_obs_norm_state_dict"], strict=True)
+                parent_source_hashes = boot["source_sha256"]
+                metadata["behavior_initialization_quality"] = boot["metadata"]
             if guarded_flat:
                 digest = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
                 if (initial_policy != Path(guarded_plan["initial_policy"]).resolve(strict=True)
                         or digest != guarded_plan["initial_policy_sha256"]):
-                    raise ValueError("Guarded-flat is not initializing the reviewed physically evaluated ce822 candidate")
+                    raise ValueError("Guarded-flat is not initializing its exact reviewed policy parent")
                 for name in ("obs_norm_state_dict", "privileged_obs_norm_state_dict"):
                     if int(boot[name]["count"]) != 24576000:
                         raise ValueError("Guarded-flat inherited normalization count changed")
                 # Only this distinct repair trial permits the already measured
                 # unsuccessful initializer; it is not a declaration of readiness.
                 metadata["guarded_flat_initial_policy_not_ready"] = True
-            runner.alg.policy.load_state_dict(boot["model_state_dict"], strict=True)
-            runner.obs_normalizer.load_state_dict(boot["obs_norm_state_dict"], strict=True)
-            runner.privileged_obs_normalizer.load_state_dict(boot["privileged_obs_norm_state_dict"], strict=True)
             metadata["initial_policy_sha256"] = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
-            metadata["behavior_initialization_quality"] = boot["metadata"]
             if guarded_flat:
                 if any(not torch.equal(value.detach().cpu(), boot["model_state_dict"]["actor."+name].detach().cpu())
                        for name,value in runner.alg.policy.actor.state_dict().items()):
                     raise RuntimeError("Initial guarded-flat actor is not bitwise the reviewed candidate")
-                metadata["initial_actor_weights_match_ce822_exactly"] = True
+                metadata["initial_actor_weights_match_parent_exactly"] = True
+                metadata["initial_critic_weights_match_parent_exactly"] = all(
+                    torch.equal(value.detach().cpu(),boot["model_state_dict"]["critic."+name].detach().cpu())
+                    for name,value in runner.alg.policy.critic.state_dict().items())
+                if not metadata["initial_critic_weights_match_parent_exactly"]:
+                    raise RuntimeError("Initial guarded-flat critic differs from the reviewed transferred model")
                 for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
                     if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
                         key = str(path.relative_to(ROOT))
-                        if hashlib.sha256(path.read_bytes()).hexdigest() != boot["source_sha256"].get(key):
-                            raise RuntimeError("Guarded-flat initialization network source differs from ce822")
-                metadata["initial_network_source_matches_ce822_exactly"] = True
+                        if hashlib.sha256(path.read_bytes()).hexdigest() != parent_source_hashes.get(key):
+                            raise RuntimeError("Guarded-flat initialization network source differs from its parent")
+                metadata["initial_network_source_matches_parent_exactly"] = True
+                if not typed_flat_transfer:
+                    metadata["initial_actor_weights_match_ce822_exactly"] = True
+                    metadata["initial_network_source_matches_ce822_exactly"] = True
             del boot
         if checkpoint:
             runner.load(str(checkpoint), load_optimizer=True)
@@ -346,12 +372,20 @@ def main():
                 stiffness=robot.data.joint_stiffness[:, ids],
                 effort_limits=robot.data.joint_effort_limits[:, ids], **budget_cfg)
             metadata["stair_exploration_budget"] = runner.stair_exploration_budget.snapshot()
-            metadata["variance_initialization_overrides_BC_std"] = initial_policy is not None
+            metadata["variance_initialization_overrides_parent_std"] = initial_policy is not None
+            if not typed_flat_transfer:
+                metadata["variance_initialization_overrides_BC_std"] = initial_policy is not None
+            if guarded_flat:
+                metadata["std_reset_to_half_budget"] = torch.equal(runner.alg.policy.std.detach(),
+                    runner.stair_exploration_budget.initial)
+                if not metadata["std_reset_to_half_budget"]:
+                    raise RuntimeError("New guarded-flat optimization did not reset its declared half noise budget")
         if guarded_flat:
             from guarded_flat_ppo import create_fixed_real_bank
             guard_dir = log_dir / "functional_guard"
             fixed_bank = guard_dir / "fixed_real_bank.npz"
-            bank_receipt = create_fixed_real_bank(initial_policy.parent / "dataset", fixed_bank, seed=args.seed)
+            audit_dataset = Path(guarded_plan["fixed_real_audit_dataset"]).resolve(strict=True) if typed_flat_transfer else initial_policy.parent/"dataset"
+            bank_receipt = create_fixed_real_bank(audit_dataset, fixed_bank, seed=args.seed)
             runner.obs_normalizer.eval();runner.privileged_obs_normalizer.eval()
             runner.alg.attach_guard({"actor":runner.obs_normalizer,"critic":runner.privileged_obs_normalizer},
                 runner.stair_exploration_budget,fixed_bank,guard_dir,metadata["initial_policy_sha256"])
@@ -370,7 +404,9 @@ def main():
                 "fixed_real_bank":bank_receipt,"current_rollout_real_rows":1024,"total_guard_rows":5120,
                 "normalizers_frozen":True,"normalizer_counts":{"actor":int(runner.obs_normalizer.count),
                     "critic":int(runner.privileged_obs_normalizer.count)},
-                "optimizer_format":"h2_guarded_flat_ppo_v1","state":runner.alg.learning_state(),
+                "optimizer_format":runner.alg.checkpoint_format,"trial_protocol":runner.alg.trial_protocol,
+                "state":runner.alg.learning_state(),
+                "action_margin":runner.alg.learning_state()["action_margin"],
                 "snapshot_policy":"RAM before every whole actor update; first persisted once; veto permanently preserves baseline/candidate/restored",
                 "physical_acceptance_claimed":False,
             }
@@ -390,7 +426,8 @@ def main():
             } if runner.empirical_normalization else {},
         }
         if guarded_flat:
-            metadata["initialization_mode"] = "guarded_flat_reward_repair_fresh_split_PPO"
+            metadata["initialization_mode"] = ("transfer_pre_guard_policy_and_dualnorm_fresh_optimization"
+                if typed_flat_transfer else "guarded_flat_reward_repair_fresh_split_PPO")
             metadata["initial_learning_state"].update(
                 actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
                 critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),

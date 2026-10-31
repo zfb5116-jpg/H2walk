@@ -19,12 +19,142 @@ import traceback
 ROOT=Path(__file__).resolve().parents[1]
 TASK='Unitree-H2-Flat-Balance-Policy'
 PACKAGE=Path('CtrlLab/CtrlLab/tasks/manager_based/h2_task')
+LEGACY_INITIAL_SHA='ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688'
+TRANSFER_INITIAL_SHA='01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68'
+NEW_PROTOCOL='overspeed_credit_action_margin_v1'
+NEW_REWARD_PROFILE='overspeed_positive_credit_v1'
+TRANSFER_CPU_RECEIPT_SHA='6300bf22b993ba92bbe5fdfedc7c9278712eb4891e38ac7d8db1b22e7ccbd4d4'
+TRANSFER_RUN_SHA='ffc94e26c39ebf399055bc997a6577fb3e3a481ce08581117583139ba3837e54'
+PROTECTED_RELATIVE_FILES=(
+    'action_contract.py','direct_leg_action.py','config/observations_cfg.py','mdp/observations.py',
+    'manager/action_manager.py','manager/actuators.py','manager/leg_action.py','assets/robot.py',
+    'direct_initialization.py','stair_ascent_cfg.py','networks/__init__.py','networks/actor_critic_our.py',
+    'networks/terrain_reconstructor.py','networks/lidar_terrain_reconstructor.py')
 spec=importlib.util.spec_from_file_location('h2_preserved_direct_physical',Path(__file__).with_name('evaluate_direct_initialization.py'))
 physical=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(physical)
 physical.TASK=TASK
 physical.__doc__=__doc__
 require,sha,write,source_hashes=physical.require,physical.sha,physical.write,physical.source_hashes
+
+
+def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None, packet_protocol=None):
+    """Metadata protocol discrimination; never authorizes arbitrary init SHAs."""
+    if fmt=='h2_guarded_flat_ppo_v1':
+        require(algorithm.get('trial_protocol','guarded_flat_balance_v1')=='guarded_flat_balance_v1'
+                and state.get('trial_protocol','guarded_flat_balance_v1')=='guarded_flat_balance_v1'
+                and plan.get('trial_protocol','guarded_flat_balance_v1')=='guarded_flat_balance_v1',
+                'A new protocol must not masquerade as legacyv1')
+        require(float(algorithm.get('actor_action_budget_penalty_weight',0.))==0.,
+                'Legacyv1 cannot claim the new action-margin optimization')
+        require(state.get('action_margin',{}).get('weight',0.)==0.
+                and packet_protocol in (None,'guarded_flat_balance_v1')
+                and run.get('runtime_flat_geometry',{}).get('reward_profile') in (None,'legacy_supported_peak_credit_v1'),
+                'Legacyv1 may not conceal a new reward/margin profile')
+        require(plan['initial_policy_sha256']==LEGACY_INITIAL_SHA,'Legacyv1 initializer changed')
+        require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
+        return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
+                    checkpoint_format=fmt,typed_policy_transfer=False)
+    require(fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
+    require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
+            ==plan.get('trial_protocol')==NEW_PROTOCOL,'Declaredv2 profiles disagree')
+    require(algorithm.get('actor_action_budget_penalty_weight')==.01
+            and algorithm.get('actor_action_budget_penalty_epsilon')==1e-6
+            and algorithm['gamma']==.99 and algorithm['lam']==.95,
+            'New action-margin/gamma/GAE contract differs')
+    margin=state['action_margin']
+    require(margin['kind']=='worst_actual_input_log_barrier' and margin['weight']==.01
+            and margin['epsilon']==1e-6 and margin['whole_update_reference'] is True
+            and margin['hard_gate_unchanged'] is True,'Saved action-margin contract differs')
+    require(plan['initial_policy_sha256']==TRANSFER_INITIAL_SHA
+            and plan['initialization_mode']=='transfer_pre_guard_policy_and_dualnorm_fresh_optimization'
+            and run['initialization_mode']==plan['initialization_mode'],'New typed initializer is not the reviewedPT164 transfer')
+    require(isinstance(transfer,dict) and transfer==run['initial_policy_transfer'],'Packet/run transfer provenance disagrees')
+    require(transfer['kind']=='saved_pre_guard_PPO_v1_policy_transfer'
+            and transfer['mode']==plan['initialization_mode'] and transfer['parent_checkpoint_sha256']==TRANSFER_INITIAL_SHA
+            and transfer['parent_accepted_updates']==165 and transfer['parent_last_complete_iteration']==164
+            and transfer['parent_uncommitted_rollout'] is True
+            and transfer['parent_runtime_rollback_completed'] is False,'Parent transfer identity/history differs')
+    require(all(transfer[k] is True for k in ('model_and_dualnorm_only','fresh_actor_optimizer',
+            'fresh_critic_optimizer','fresh_RND','fresh_RND_optimizer','actor_and_critic_loaded_bitwise',
+            'dualnorm_loaded_bitwise','loading_did_not_change_fresh_RNG'))
+            and transfer['parent_RNG_loaded'] is False and transfer['new_starting_iteration']==0
+            and transfer['new_checkpoint'] is None and transfer['norm_counts']=={'actor':24576000,'critic':24576000},
+            'Typed policy transfer must not resume parent optimization/RND/RNG')
+    runtime=run['runtime_flat_geometry']
+    require(runtime['trial_protocol']==NEW_PROTOCOL and runtime['reward_profile']==NEW_REWARD_PROFILE,
+            'Actual environment reward profile differs from the declared optimization')
+    speed=runtime['positive_credit_speed_weight']
+    require(speed['command_m_s']==speed['full_at_or_below_m_s']==.3
+            and speed['zero_at_or_above_m_s']==.6 and speed['actual_peak_consumed_unweighted'] is True
+            and speed['negative_debt_unweighted'] is True and speed['physical_or_action_speed_limit_changed'] is False,
+            'Actual positive-credit weighting changed the declared reward/physical semantics')
+    return dict(trial_protocol=NEW_PROTOCOL,initial_sha256=TRANSFER_INITIAL_SHA,
+                checkpoint_format=fmt,typed_policy_transfer=True,action_margin=margin)
+
+
+def verify_transfer_files(plan, transfer, child_source):
+    """Verify old-source provenance and only the declared protected shared files.
+
+    A new reward implementation must have its own full source manifest. It is
+    not required to be byte-identical to all old reward/task files.
+    """
+    require(plan['initial_policy_CPU_receipt_sha256']==TRANSFER_CPU_RECEIPT_SHA
+            and plan['initial_parent_run_sha256']==TRANSFER_RUN_SHA,
+            'New protocol must use the reviewed immutable parentCPU/run receipts')
+    bindings=(('parent_checkpoint','initial_policy'),('parent_CPU_receipt','initial_policy_CPU_receipt'),
+              ('parent_run','initial_parent_run'),('parent_source_root','initial_parent_source_root'))
+    for key,plan_key in bindings:
+        require(Path(transfer[key]).resolve(strict=True)==Path(plan[plan_key]).resolve(strict=True),
+                'Typed transfer file identity changed: '+key)
+        if key!='parent_source_root':
+            require(transfer[key+'_sha256']==plan[plan_key+'_sha256']==sha(Path(plan[plan_key])),
+                    'Typed transfer bytes changed: '+key)
+    parent_receipt=json.loads(Path(plan['initial_policy_CPU_receipt']).read_text())
+    parent_run=json.loads(Path(plan['initial_parent_run']).read_text())
+    parent_source=Path(plan['initial_parent_source_root']).resolve(strict=True)
+    parent_hashes=source_hashes(parent_source)
+    require(parent_receipt['status']=='passed' and parent_receipt['cpu_only'] is True
+            and parent_receipt['sha256']==TRANSFER_INITIAL_SHA
+            and parent_receipt['checkpoint_format']=='h2_guarded_flat_ppo_v1'
+            and parent_receipt['checkpoint_iteration']==164 and parent_receipt['committed_updates']==165,
+            'ParentCPU receipt is not the exact reviewed pre-update snapshot')
+    require(Path(parent_receipt['checkpoint']).resolve(strict=True)==Path(plan['initial_policy']).resolve(strict=True)
+            and parent_receipt['source_root']==str(parent_source)
+            and parent_receipt['producer_run_sha256']==plan['initial_parent_run_sha256']
+            and parent_receipt['source_sha256']==parent_hashes==transfer['parent_source_sha256'],
+            'ParentCPU/source/run custody differs')
+    require(parent_run['git_commit']==transfer['parent_source_commit']
+            and parent_run['completed_iterations']==165 and parent_run['status']=='failed',
+            'Parent pre-update snapshot must not be described as natural1000 completion')
+    require(transfer['parent_external_dependency_sha256']==parent_receipt['external_dependency_sha256']
+            ==parent_run['external_dependency_sha256'],'Parent external asset/reconstruction provenance differs')
+    require(isinstance(transfer['fresh_RND_digest'],str) and len(transfer['fresh_RND_digest'])==64,
+            'Typed transfer lacks the freshRND state digest')
+    protected=plan['protected_network_input_native_source_sha256']
+    expected_keys={'source/'+str(PACKAGE/name) for name in PROTECTED_RELATIVE_FILES}
+    require(set(protected)==expected_keys and transfer['protected_network_input_native_source_sha256']==protected,
+            'Protected network/input/native file declaration changed')
+    for key,digest in protected.items():
+        require(key.startswith('source/') and '..' not in Path(key).parts,'Invalid protected source key')
+        relative=key.removeprefix('source/')
+        require(parent_receipt['source_sha256'][key]==sha(parent_source/relative)==sha(Path(child_source)/relative)==digest,
+                'Protected parent/child network/input/native source changed: '+key)
+    return dict(parent_checkpoint=str(Path(plan['initial_policy'])),parent_CPU_receipt=str(Path(plan['initial_policy_CPU_receipt'])),
+        parent_CPU_receipt_sha256=plan['initial_policy_CPU_receipt_sha256'],
+        parent_run=str(Path(plan['initial_parent_run'])),parent_run_sha256=plan['initial_parent_run_sha256'],
+        parent_source_root=str(parent_source),parent_source_sha256=parent_hashes,
+        parent_external_dependency_sha256=transfer['parent_external_dependency_sha256'],
+        parent_accepted_updates=165,parent_last_complete_iteration=164,protected_file_count=14,
+        model_and_dualnorm_only=True,parent_optimization_and_RND_and_RNG_not_resumed=True)
+
+
+def transfer_provenance_unchanged(receipt):
+    transfer=receipt.get('typed_initialization_transfer')
+    return transfer is None or (sha(Path(transfer['parent_checkpoint']))==TRANSFER_INITIAL_SHA
+        and sha(Path(transfer['parent_CPU_receipt']))==transfer['parent_CPU_receipt_sha256']
+        and sha(Path(transfer['parent_run']))==transfer['parent_run_sha256']
+        and source_hashes(Path(transfer['parent_source_root']))==transfer['parent_source_sha256'])
 
 
 def check_adam(torch, state, names, parameters, expected_step, expected_lr, label):
@@ -63,7 +193,7 @@ def validate_cpu(args):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format']=='h2_guarded_flat_ppo_v1','Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
@@ -84,6 +214,12 @@ def validate_cpu(args):
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
+    protocol=run['guarded_flat_learning']
+    plan_path=Path(protocol['plan_path']).resolve(strict=True)
+    require(sha(plan_path)==protocol['plan_sha256'],'Authorized flat plan no longer matches producer receipt')
+    plan=json.loads(plan_path.read_text())
+    profile=declared_checkpoint_profile(saved['format'],algo,saved['guarded_ppo_state'],run,plan,
+        saved.get('initialization_transfer'),saved.get('trial_protocol'))
     require(algo['class_name']=='H2GuardedPPO' and algo['schedule']=='fixed'
             and algo['num_learning_epochs']==5 and algo['num_mini_batches']==4,'Saved algorithm contract differs')
     for key,value in (('actor_learning_rate',1e-5),('critic_learning_rate',.001),
@@ -107,6 +243,10 @@ def validate_cpu(args):
     count=int(gs['completed_updates'])
     require(0<=count<=1000 and count<=iteration+1,'Invalid committed PPO update count')
     expected=dict(actor=max(0,count-40)*20,critic=count*20,rnd=count*20)
+    if profile['typed_policy_transfer']:
+        require(gs['action_margin']['committed_minibatches']==expected['actor'],
+                'Action-margin committed-minibatch counter differs from actorAdam')
+        require(plan.get('status')=='reviewed_ready','New profile plan has not completed its prelaunch review')
     require({name:int(gs[name+'_optimizer_steps']) for name in expected}==expected,
             'Committed split/RND update budget differs')
     require(gs['critic_only_iterations']==40 and gs['actor_updates_accepted']==max(0,count-40)
@@ -141,10 +281,30 @@ def validate_cpu(args):
     optimizers['rnd']=check_adam(torch,saved['rnd_optimizer_state_dict'],[n for n,_ in rnd_named],
         [p for _,p in rnd_named],expected['rnd'],rlr,'RND predictor')
     initial=Path(run['initial_policy']).resolve(strict=True)
-    initial_sha='ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688'
-    require(sha(initial)==run['initial_policy_sha256']==initial_sha,'Initial physically evaluated policy changed')
+    initial_sha=profile['initial_sha256']
+    require(sha(initial)==run['initial_policy_sha256']==initial_sha,'Reviewed initial policy changed')
     require(gs['initial_policy_sha256']==initial_sha,'Saved guarded state initial-policy binding differs')
     initial_saved=torch.load(initial,map_location='cpu',weights_only=True)
+    transfer_receipt=None
+    if profile['typed_policy_transfer']:
+        transfer_receipt=verify_transfer_files(plan,saved['initialization_transfer'],args.source_root)
+        require(initial_saved['format']=='h2_guarded_flat_ppo_v1' and initial_saved['iter']==164
+                and initial_saved['guarded_ppo_state']['completed_updates']==165
+                and initial_saved['guarded_ppo_state']['uncommitted_rollout'] is True,
+                'Actual parent packet does not match reviewedPT164/165accepted')
+        start=run['initial_learning_state']
+        require(start['checkpoint_loaded'] is False and run['checkpoint'] is None
+                and start['iteration']==0 and start['imitation_optimizer_loaded'] is False
+                and all(start[k]==0 for k in ('actor_optimizer_state_entries','critic_optimizer_state_entries','rnd_optimizer_state_entries')),
+                'New typed transfer imported parent optimization or iteration')
+        initial_gs=start['guarded_ppo_state']
+        require(all(initial_gs[k]==0 for k in ('completed_updates','actor_optimizer_steps',
+            'critic_optimizer_steps','rnd_optimizer_steps','rnd_update_counter')),'New RND/optimizer counters were not fresh')
+        require(run['std_reset_to_half_budget'] is True and
+                start['policy_std']==run['stair_exploration_budget']['initial_raw_std'],
+                'New trial did not explicitly reset std to the same half exploration budget')
+        require(run['external_dependency_sha256']==saved['initialization_transfer']['parent_external_dependency_sha256'],
+                'New typed transfer changed native USD or frozen LiDAR dependencies')
     for key,width in (('obs_norm_state_dict',1029),('privileged_obs_norm_state_dict',866)):
         norm=saved[key]
         require(set(norm)=={'_mean','_var','_std','count'},'Normalizer state layout differs')
@@ -170,10 +330,6 @@ def validate_cpu(args):
             and bool((model.std<=maximum).all())
             and torch.allclose(angle,torch.tensor([.02,.015,.015,.02,.01,.0075]*2,dtype=model.std.dtype)),
             'Policy std left the original per-joint target-RMS projection budget')
-    protocol=run['guarded_flat_learning']
-    plan_path=Path(protocol['plan_path']).resolve(strict=True)
-    require(sha(plan_path)==protocol['plan_sha256'],'Authorized flat plan no longer matches producer receipt')
-    plan=json.loads(plan_path.read_text())
     require(plan['task']==TASK and plan['max_iterations']==1000 and plan['num_envs']==1024
             and plan['initial_policy_sha256']==initial_sha,'Producer plan is not this bounded flat protocol')
     tensors=0
@@ -192,6 +348,10 @@ def validate_cpu(args):
         flat_balance_ready=False,initialization_ready=False,formal_acceptance_passed=False,stairs_acceptance_passed=False,
         checkpoint=str(args.checkpoint),sha256=sha(args.checkpoint),checkpoint_format=saved['format'],
         checkpoint_iteration=iteration,committed_updates=count,optimizers=optimizers,finite_tensors=tensors,
+        trial_protocol=profile['trial_protocol'],typed_initialization_transfer=transfer_receipt,
+        actor_action_margin=({key:gs['action_margin'][key] for key in
+            ('kind','weight','epsilon','whole_update_reference','hard_gate_unchanged','committed_minibatches')}
+            if profile['typed_policy_transfer'] else None),
         uncommitted_rollout=gs['uncommitted_rollout'],rnd_rollout_update_counter=int(gs['rnd_update_counter']),
         source_root=str(args.source_root),source_sha256=hashes,producer_run=str(run_path),producer_run_sha256=sha(run_path),
         producer_training_tool_sha256=training_tools,
@@ -213,13 +373,14 @@ def validate_cpu(args):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format']=='h2_guarded_flat_ppo_v1','Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and
             receipt['physical_validator_sha256']==sha(Path(physical.__file__)),'Validator changed after CPU receipt')
     require(sha(Path(receipt['producer_run']))==receipt['producer_run_sha256'],'Producer run evidence changed')
     require(sha(Path(receipt['plan_path']))==receipt['plan_sha256'],'Producer plan changed after CPU validation')
+    require(transfer_provenance_unchanged(receipt),'Typed parent provenance changed after CPU validation')
     for name,digest in receipt['producer_training_tool_sha256'].items():
         require(sha(args.source_root.parent/name)==digest,'Producer tool changed after CPU validation: '+name)
     for path,digest in receipt['external_dependency_sha256'].items():
@@ -260,6 +421,7 @@ def main():
         training_updates=0,teacher_constructed=False,teacher_interventions=0,initialization_ready=False,
         flat_balance_ready=False,formal_acceptance_passed=False,stairs_acceptance_passed=False,
         validator_sha256=sha(Path(__file__)),checkpoint_format=receipt['checkpoint_format'],
+        trial_protocol=receipt.get('trial_protocol','guarded_flat_balance_v1'),
         optimizer_loaded_for_control=False,physical_procedure='Unmodified evaluate_direct_initialization.evaluate with new independent TASK only')
     app=None
     try:
@@ -271,6 +433,7 @@ def main():
             and sha(Path(physical.__file__))==receipt['physical_validator_sha256']
             and sha(Path(receipt['producer_run']))==receipt['producer_run_sha256']
             and sha(Path(receipt['plan_path']))==receipt['plan_sha256']
+            and transfer_provenance_unchanged(receipt)
             and all(sha(args.source_root.parent/name)==digest
                     for name,digest in receipt['producer_training_tool_sha256'].items()))
         result.update(flat_balance_ready=bool(result['initialization_ready']),

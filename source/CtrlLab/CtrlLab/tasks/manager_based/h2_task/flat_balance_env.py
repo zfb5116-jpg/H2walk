@@ -15,11 +15,27 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
+TRIAL_PROTOCOL='overspeed_credit_action_margin_v1'
+POSITIVE_CREDIT_PROFILE='overspeed_positive_credit_v1'
+
+
+def positive_forward_speed_weight(world_vx, command_speed=.3):
+    """Smooth reward weighting only; no native/action speed limit is changed."""
+    if command_speed != .3:
+        raise ValueError('This declared flat reward profile requires its0.3m/s command')
+    u=((world_vx-command_speed)/command_speed).clamp(0.,1.)
+    # Algebraically1-3u^2+2u^3; factored to avoid cancellation nearu=1.
+    return ((1.-u).square()*(1.+2.*u)).clamp(0.,1.)
+
 
 class FlatBalanceProgress:
     """One physical endpoint per epoch; invalid/partial episodes remain explicit."""
-    def __init__(self, n, device, masses, bounds, floor_tolerance, directory=None):
+    def __init__(self, n, device, masses, bounds, floor_tolerance, directory=None,
+                 *,trial_protocol=TRIAL_PROTOCOL,reward_profile=POSITIVE_CREDIT_PROFILE):
+        if trial_protocol!=TRIAL_PROTOCOL or reward_profile!=POSITIVE_CREDIT_PROFILE:
+            raise ValueError('Unrecognized declared flat reward/optimization profile')
         self.n, self.device = n, device
+        self.trial_protocol,self.reward_profile=trial_protocol,reward_profile
         self.bounds, self.floor_tolerance = tuple(bounds), float(floor_tolerance)
         self.weight = masses * 9.81
         self.footfalls = FootfallTracker(n, device)
@@ -31,10 +47,11 @@ class FlatBalanceProgress:
         self.ever_invalid = torch.zeros_like(self.needs_start)
         self.ever_outside = torch.zeros_like(self.needs_start)
         self.ever_below = torch.zeros_like(self.needs_start)
-        for name in ('duration', 'paid_m', 'backward_m', 'actual_backward_m', 'event_distance',
+        for name in ('duration', 'paid_m', 'unweighted_paid_m', 'backward_m', 'actual_backward_m', 'event_distance',
                      'slip_integral', 'velocity_error_integral', 'signed_step', 'landing_step',
                      'slip_square', 'peak_x'):
             setattr(self, name, torch.zeros(n, device=device))
+        self.positive_speed_weight=torch.ones(n,device=device)
         for name in ('origins', 'start', 'end', 'minimum', 'pre_root'):
             setattr(self, name, torch.zeros(n, 3, device=device))
         self.pre_soles = torch.zeros(n, 2, 3, device=device)
@@ -52,6 +69,9 @@ class FlatBalanceProgress:
             'invalid_episodes_kept_as_failures': True, 'initial_partial_excluded_from_rolling_metrics': True,
             'positive_forward_speed_cap_m_s': .3, 'forward_upright_gate_rad': .5,
             'forward_supported_weight_fraction': .7, 'landing_reward_min_new_progress_m': .04,
+            'trial_protocol':trial_protocol,'reward_profile':reward_profile,
+            'positive_speed_weight':'u=clip((world_vx-.3)/.3,0,1); g=1-3u^2+2u^3',
+            'unweighted_actual_peak_always_consumed':True,'negative_distance_debt_unweighted':True,
         })
 
     def begin(self, root, soles, origins, episode_lengths, counter):
@@ -103,7 +123,12 @@ class FlatBalanceProgress:
         positive_allowed = supported & (tilt<=.5) & ~terminated
         peak, paid, negative = signed_forward_ledger(self.pre_root[:, 0], self.peak_x, root[:, 0],
             positive_allowed, usable, torch.zeros_like(usable), dt, maximum_credit_speed=.3)
+        # The actual peak is consumed before weighting. An uncredited fast
+        # excursion can never be saved for a later slow transition or retrace.
         self.peak_x.copy_(peak)
+        self.unweighted_paid_m += paid
+        self.positive_speed_weight.copy_(positive_forward_speed_weight(velocity[:,0]))
+        paid=paid*self.positive_speed_weight
         self.paid_m += paid
         self.backward_m -= negative
         self.actual_backward_m += (root[:, 0]-self.pre_root[:, 0]).clamp_max(0).neg()
@@ -142,6 +167,8 @@ class FlatBalanceProgress:
             end_root_quaternion_wxyz=self.end_quaternion[ids], origins=self.origins[ids],
             minimum_world_xyz=self.minimum[ids], minimum_local_xyz=self.minimum[ids]-self.origins[ids],
             net_world_x_m=dx, forward_paid_m=self.paid_m[ids], backward_debt_m=self.backward_m[ids],
+            unweighted_eligible_forward_paid_m=self.unweighted_paid_m[ids],
+            positive_speed_weight_at_terminal=self.positive_speed_weight[ids],
             signed_forward_credit_m=torch.where(physical_valid,self.paid_m[ids]-self.backward_m[ids],0.),
             actual_backward_distance_m=self.actual_backward_m[ids], positive_control=self.positive[ids],
             force_mismatch_steps=self.mismatch[ids], ground_normal_force=self.ground_end[ids],
@@ -162,10 +189,11 @@ class FlatBalanceProgress:
 
     def reset(self, ids):
         self.needs_start[ids] = True
-        for name in ('partial','ever_invalid','ever_outside','ever_below','duration','paid_m','backward_m',
+        for name in ('partial','ever_invalid','ever_outside','ever_below','duration','paid_m','unweighted_paid_m','backward_m',
                      'actual_backward_m','event_distance','slip_integral','velocity_error_integral',
                      'signed_step','landing_step','slip_square','positive','mismatch'):
             getattr(self,name)[ids] = 0
+        self.positive_speed_weight[ids]=1.
         self.footfalls.reset(ids)
 
     def summary(self):
@@ -207,7 +235,8 @@ class FlatBalanceEnv(DirectInitializationEnv):
         directory = getattr(cfg,'io_descriptors_output_dir',None)
         directory = str(Path(directory)/'flat_episode_evidence') if directory else None
         self.flat_balance_progress = FlatBalanceProgress(self.num_envs,self.device,self.masses,
-            self.domain_bounds_local,self._stair_below_floor_tolerance,directory)
+            self.domain_bounds_local,self._stair_below_floor_tolerance,directory,
+            trial_protocol=cfg.flat_trial_protocol,reward_profile=cfg.flat_reward_profile)
         generator=self.scene.terrain.cfg.terrain_generator
         command=self.command_manager.get_term('base_velocity').cfg
         held=[int(i) for i in self.action_manager.held_joint_ids]
@@ -219,6 +248,11 @@ class FlatBalanceEnv(DirectInitializationEnv):
         upper_error=float((self.asset.data.joint_pos_target[:,held]
                            -self.asset.data.default_joint_pos[:,held]).abs().max())
         self.runtime_contract={
+            'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
+            'positive_credit_speed_weight':{'command_m_s':.3,'full_at_or_below_m_s':.3,
+                'zero_at_or_above_m_s':.6,'formula':'1-3u^2+2u^3; u=clip((world_vx-.3)/.3,0,1)',
+                'actual_peak_consumed_unweighted':True,'negative_debt_unweighted':True,
+                'physical_or_action_speed_limit_changed':False},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),
             'terrain_subtypes':{name:type(term).__name__ for name,term in generator.sub_terrains.items()},

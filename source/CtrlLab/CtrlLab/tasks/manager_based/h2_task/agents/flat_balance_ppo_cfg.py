@@ -11,6 +11,9 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.max_iterations=1000
         self.save_interval=500
         self.algorithm.class_name='H2GuardedPPO'
+        self.algorithm.trial_protocol='overspeed_credit_action_margin_v1'
+        self.algorithm.actor_action_budget_penalty_weight=.01
+        self.algorithm.actor_action_budget_penalty_epsilon=1.e-6
         self.algorithm.learning_rate=1.e-5
         self.algorithm.actor_learning_rate=1.e-5
         self.algorithm.critic_learning_rate=1.e-3
@@ -22,3 +25,5 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.algorithm.num_learning_epochs=5
         self.algorithm.num_mini_batches=4
         self.algorithm.rnd_cfg.weight=0.
+        self.algorithm.gamma=.99
+        self.algorithm.lam=.95

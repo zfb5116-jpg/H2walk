@@ -24,6 +24,9 @@ class FlatBalanceRewardsCfg:
 
 @configclass
 class FlatBalanceEnvCfg(DirectInitializationEnvCfg):
+    flat_trial_protocol: str = rewards.TRIAL_PROTOCOL
+    flat_reward_profile: str = rewards.POSITIVE_CREDIT_PROFILE
+
     def __post_init__(self):
         super().__post_init__()
         self.rewards=FlatBalanceRewardsCfg()

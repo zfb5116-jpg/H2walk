@@ -34,6 +34,7 @@ KIND = "guarded_flat_balance_ppo_learning"
 EVAL_KIND = "guarded_flat_balance_frozen_validation"
 BRANCH = "codex/h2-stair-ascent-20261030"
 INIT_SHA = "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
+TRANSFER_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
 TERMINAL = {"completed", "failed", "stopped_no_improvement", "stopped_functional_guard"}
 
 
@@ -102,17 +103,19 @@ def preflight(args):
     require(not gpu_snapshot()["compute_processes"] and not active_simulators(), "Another Isaac/GPU task is active")
     require(git("branch", "--show-current") == BRANCH, "Wrong development branch")
     require(not git("status", "--porcelain=v1"), "Commit all reviewed source/tools before launch")
-    plan = inside(args.plan or pointer["guarded_flat_balance_plan"])
+    plan = inside(args.plan or pointer.get("next_repair_plan") or pointer["guarded_flat_balance_plan"])
     declared = read(plan)
     require(declared.get("status") == "reviewed_ready", "Flat repair implementation has not been reviewed")
     require([declared[k] for k in ("task", "num_envs", "num_steps_per_env", "max_iterations", "save_interval")]
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
     require(declared["network_or_input_structure_change"] is False, "Network/input change requires prior reporting")
     initial = inside(declared["initial_policy"])
-    require(digest(initial) == declared["initial_policy_sha256"] == INIT_SHA, "Wrong reviewed actual initialization")
-    receipt_path = initial.with_suffix(".validation.json")
+    transfer = declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+    expected_initial_sha = TRANSFER_SHA if transfer else INIT_SHA
+    require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
+    receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
-    require(receipt.get("status") == "passed" and receipt["sha256"] == INIT_SHA, "Initializer CPU integrity receipt is missing")
+    require(receipt.get("status") == "passed" and receipt["sha256"] == expected_initial_sha, "Initializer CPU integrity receipt is missing")
     dependencies = {str(ROOT / "assets/isaaclab/unitree_robots/h2/h2.usd"):
                     "7f3432d01756efaeb6d4337536a3ead5a9d0c2f4130654bd43a353012b6c2dbd",
                     str(ROOT / "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt"):
@@ -125,8 +128,29 @@ def preflight(args):
         require(digest(ROOT / "source" / path) == expected, "Original network architecture/source changed")
     kind, source, parent, checkpoint = KIND, ROOT / "source", None, None
     entry = ROOT / "tools/train.py"
-    frozen = {str(initial): INIT_SHA, str(receipt_path): digest(receipt_path),
+    frozen = {str(initial): expected_initial_sha, str(receipt_path): digest(receipt_path),
               str(plan): digest(plan), **dependencies}
+    if transfer:
+        require(declared.get("initial_parent_kind") == "saved_pre_guard_PPO_v1_policy_transfer"
+                and declared.get("initialization_mode") == "transfer_pre_guard_policy_and_dualnorm_fresh_optimization",
+                "New trial must explicitly transfer model/norm only and start fresh optimization")
+        require(receipt.get("checkpoint_format") == "h2_guarded_flat_ppo_v1"
+                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == 165
+                and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
+        parent_run = inside(declared["initial_parent_run"])
+        require(str(parent_run) == receipt["producer_run"] and digest(parent_run) == receipt["producer_run_sha256"]
+                == declared["initial_parent_run_sha256"] and read(parent_run)["status"] == "failed",
+                "Failed parent provenance changed or was relabeled completed")
+        parent_source = inside(declared["initial_parent_source_root"])
+        actual_source = {"source/" + str(Path(path).relative_to(parent_source)): value for path, value in hashes(parent_source).items()}
+        require(actual_source == receipt["source_sha256"], "Parent model's training source changed")
+        for name, expected in declared["protected_network_input_native_source_sha256"].items():
+            require(digest(ROOT / name) == expected == receipt["source_sha256"][name], "Protected network/input/native code changed: " + name)
+        require(declared["learning"]["actor_action_budget_penalty"]["weight"] == .01
+                and declared["learning"]["actor_action_budget_penalty"]["epsilon"] == 1e-6,
+                "Reviewed fixed target-margin protocol changed")
+        frozen[str(parent_run)] = digest(parent_run)
+        frozen[str(parent_run.parent / "params/agent.yaml")] = digest(parent_run.parent / "params/agent.yaml")
     for value in declared.get("evidence", {}).values():
         path = inside(value)
         frozen[str(path)] = digest(path)
@@ -141,7 +165,7 @@ def preflight(args):
     require(boundary_receipt.get("status") == "passed"
             and boundary_receipt.get("manager_sha256") == digest(SELF), "Current monitor startup/checkpoint boundary contract is missing")
     frozen[str(boundary)] = digest(boundary)
-    dataset = initial.parent / "dataset"
+    dataset = inside(declared["fixed_real_audit_dataset"]) if transfer else initial.parent / "dataset"
     if args.validate:
         parent = inside(args.validate)
         parent_request = request_for(parent)[1]
@@ -174,7 +198,7 @@ def preflight(args):
     frozen[str(review)] = digest(review)
     roots = root_hashes()
     key = hashlib.sha256(json.dumps(dict(kind=kind, root=roots, source=hashes(source),
-        initial=INIT_SHA, checkpoint=digest(checkpoint) if checkpoint else None,
+        initial=expected_initial_sha, checkpoint=digest(checkpoint) if checkpoint else None,
         plan=digest(plan)), sort_keys=True).encode()).hexdigest()[:20]
     guard = ROOT / "logs/stair_learning" / ("flat_balance_" + key + ".launch.lock")
     require(not guard.exists(), "Identical inputs/protocol already dispatched; no blind retry")
@@ -182,7 +206,9 @@ def preflight(args):
                 source_branch=BRANCH, source_commit=git("rev-parse", "HEAD"),
                 job_kind=kind, entrypoint=str(entry), source_root=str(source),
                 source_hashes=hashes(source), root_hashes=roots, frozen_files=frozen,
-                initial_policy=str(initial), initial_policy_sha256=INIT_SHA,
+                initial_policy=str(initial), initial_policy_sha256=expected_initial_sha,
+                initial_parent_kind=declared.get("initial_parent_kind", "direct_imitation_initializer_v1"),
+                trial_protocol=declared.get("trial_protocol", "guarded_flat_balance_v1"),
                 plan_path=str(plan), plan_sha256=digest(plan), duplicate_guard=str(guard),
                 parent_case=str(parent) if parent else None,
                 checkpoint=str(checkpoint) if checkpoint else None,
@@ -311,7 +337,7 @@ def startup_contract(metadata, request):
     expect(metadata.get("task") == TASK, "Wrong physical task")
     expect(metadata.get("git_commit") == request["source_commit"], "Wrong runtime source commit")
     expect(metadata.get("checkpoint") is None and metadata.get("starting_iteration") == 0, "Unexpected PPO resume")
-    expect(metadata.get("initial_policy_sha256") == INIT_SHA, "Wrong actual initializer")
+    expect(metadata.get("initial_policy_sha256") == request["initial_policy_sha256"], "Wrong actual initializer")
     expect([metadata.get(k) for k in ("num_envs", "num_steps_per_env", "max_iterations", "save_interval", "num_actions")]
            == [1024, 24, 1000, 500, 12], "Wrong sampling/action/iteration budget")
     expect(metadata.get("policy_shape") == [1024, 1029], "Actor layout changed")
@@ -336,9 +362,20 @@ def startup_contract(metadata, request):
     expect(learning.get("critic_only_iterations") == 40 and learning.get("actor_learning_rate") == 1e-5
            and learning.get("critic_learning_rate") == .001 and learning.get("rnd_reward_weight") == 0,
            "Actual split optimizer protocol changed")
-    expect(metadata.get("initial_actor_weights_match_ce822_exactly") is True
-           and metadata.get("initial_network_source_matches_ce822_exactly") is True,
+    transfer = request.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+    actor_flag = "initial_actor_weights_match_parent_exactly" if transfer else "initial_actor_weights_match_ce822_exactly"
+    source_flag = "initial_network_source_matches_parent_exactly" if transfer else "initial_network_source_matches_ce822_exactly"
+    expect(metadata.get(actor_flag) is True and metadata.get(source_flag) is True,
            "Actual initialized actor/network does not match the reviewed candidate")
+    if transfer:
+        expect(metadata.get("initial_critic_weights_match_parent_exactly") is True,
+               "Transferred critic weights do not match the declared parent")
+        expect(guarded.get("optimizer_format") == "h2_guarded_flat_ppo_v2", "New loss protocol lacks the explicit v2 checkpoint format")
+        margin = learning.get("action_margin", {})
+        expect(margin.get("weight") == .01 and margin.get("epsilon") == 1e-6,
+               "Actual actor target-margin coefficient differs from reviewed fixed protocol")
+        expect(metadata.get("algorithm_settings", {}).get("gamma") == .99,
+               "Temporal discount was changed without support from the selected repair")
     runtime = metadata.get("runtime_flat_geometry", {})
     expect(runtime.get("domain_bounds_local_m") == [-7.9, 7.9, -2.9, 2.9]
            and runtime.get("below_floor_tolerance_m") == .05, "Actual flat physical domain changed")
@@ -352,6 +389,17 @@ def startup_contract(metadata, request):
     expect({"stair_below_floor", "stair_out_of_tile"}.issubset(runtime.get("termination_terms", []))
            and len(runtime.get("termination_terms", [])) == 7, "Original five plus two physical guard terms required")
     expect(bool(runtime.get("episode_evidence_directory")), "Pre-reset physical episode recorder is absent")
+    if transfer:
+        expect(runtime.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+               and runtime.get("reward_profile") == "overspeed_positive_credit_v1",
+               "Actual overspeed positive-credit reward profile is missing")
+        speed = runtime.get("positive_credit_speed_weight", {})
+        expect(speed.get("command_m_s") == speed.get("full_at_or_below_m_s") == .3
+               and speed.get("zero_at_or_above_m_s") == .6
+               and speed.get("actual_peak_consumed_unweighted") is True
+               and speed.get("negative_debt_unweighted") is True
+               and speed.get("physical_or_action_speed_limit_changed") is False,
+               "Actual credit weighting changed the reviewed reward or physical authority")
     return dict(status="passed" if not errors else "failed", errors=errors)
 
 
