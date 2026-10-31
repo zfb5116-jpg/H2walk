@@ -234,8 +234,108 @@ def preflight(args):
                 accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
 
 
+def postmortem_custody(review, parent, parent_request, state):
+    """Bind a preserved baseline or a completely restored policy without loading it."""
+    legacy = review.get("kind") == "single_frozen_validation_of_preserved_pre_guard_baseline_v1"
+    restored = review.get("kind") == "single_frozen_validation_of_controlled_guard_restored_v4"
+    require(legacy or restored, "Unknown postmortem custody protocol")
+    expected_status = "failed" if legacy else "stopped_functional_guard"
+    require(parent_request["job_kind"] == KIND and state.get("status") == expected_status,
+            "Postmortem producer has the wrong terminal state")
+    if legacy:
+        require(state.get("failure_kind") == "functional_guard_rollback_inference_tensor_error",
+                "Legacy preserved baseline requires its recorded rollback failure")
+    else:
+        require(parent_request.get("trial_protocol") == RESERVED_PROTOCOL,
+                "Restored v4 policy requires its actual reserved-proposal producer")
+        require(digest(parent / "launch.json") == read(parent / "launch.identity.sha256.json")["sha256"],
+                "Producer birth record changed")
+    checkpoint = inside(review["checkpoint"])
+    run = inside(state["run_dir"])
+    require(checkpoint == inside(state["final_checkpoint"]) and checkpoint.parent == run,
+            "Only the recorded trusted terminal checkpoint can be replayed")
+    original = inside(review["original_baseline_snapshot"])
+    require(original.parent == run / "functional_guard" and original.name.endswith("_baseline.pt"),
+            "Missing original whole-update baseline")
+    checkpoint_sha = digest(checkpoint)
+    require(checkpoint_sha == review["checkpoint_sha256"], "Reviewed checkpoint changed")
+    extra = []
+    if legacy:
+        require(checkpoint_sha == digest(original), "Rejected candidate cannot replace the preserved baseline")
+        extra.append(parent / "guard_rollback_failure_reconciliation.json")
+    else:
+        guard_path = inside(review["rollback_evidence"])
+        guard = read(guard_path)
+        require(guard_path == inside(state["functional_guard_evidence"])
+                and guard_path.parent == run / "functional_guard"
+                and digest(guard_path) == review["rollback_evidence_sha256"], "Whole-update rollback evidence changed")
+        require(guard.get("status") == expected_status and guard.get("complete_update_restored") is True
+                and guard.get("retry_allowed") is False
+                and guard["rollback_state_digest_before"] == guard["rollback_state_digest_after"]
+                == review["rollback_state_digest"], "Actual complete learning-state rollback is not established")
+        require(inside(guard["restored_checkpoint"]) == checkpoint
+                and guard["restored_checkpoint_sha256"] == checkpoint_sha
+                and inside(guard["baseline"]) == original and guard["baseline_sha256"] == digest(original),
+                "Candidate, baseline, and restored policy identities were mixed")
+        require(guard["completed_updates"] == guard["update_index"] == state["completed_iterations"]
+                and checkpoint.name == f"model_{guard['completed_updates'] - 1}_guard_restored.pt",
+                "Restored checkpoint iteration differs from committed history")
+        terminal_path = inside(review["terminal_review"])
+        terminal = read(terminal_path)
+        require(digest(terminal_path) == review["terminal_review_sha256"]
+                and terminal.get("complete_update_restored") is True
+                and terminal.get("checkpoint_sha256") == checkpoint_sha
+                and terminal.get("rollback_evidence_sha256") == digest(guard_path),
+                "Independent terminal review is not bound to this restored policy")
+        extra.extend([guard_path, terminal_path])
+    receipt_path = inside(review["CPU_receipt"])
+    receipt = read(receipt_path)
+    require(digest(receipt_path) == review["CPU_receipt_sha256"] and receipt.get("status") == "passed"
+            and receipt.get("cpu_only") is True and receipt["sha256"] == checkpoint_sha
+            and receipt["checkpoint_format"] == ("h2_guarded_flat_ppo_v1" if legacy else "h2_guarded_flat_ppo_v4")
+            and receipt["committed_updates"] == state["completed_iterations"] == review["committed_updates"],
+            "Complete split-optimizer checkpoint lacks its actual strict CPU receipt")
+    source = inside(receipt["source_root"])
+    require(source == inside(run / "training_source/source"), "Replay must use this weight's own training source")
+    actual = {"source/" + str(Path(path).relative_to(source)): value for path, value in hashes(source).items()}
+    require(actual == receipt["source_sha256"], "Frozen imported model/plant source changed")
+    producer_path = inside(receipt["producer_run"])
+    producer = read(producer_path)
+    require(producer_path == run / "run.json" and digest(producer_path) == receipt["producer_run_sha256"],
+            "Reconciled producer evidence changed")
+    require(producer["status"] == expected_status, "Do not relabel a stopped producer as natural completion")
+    if restored:
+        count = review["committed_updates"]
+        require(inside(receipt["checkpoint"]) == checkpoint
+                and inside(producer["final_checkpoint"]) == checkpoint
+                and inside(producer["functional_guard_evidence"]) == guard_path,
+                "Actual producer and integrity receipt target another checkpoint")
+        require(receipt["checkpoint_iteration"] == count - 1 and receipt["finite_tensors"] == 253
+                and receipt["trial_protocol"] == RESERVED_PROTOCOL
+                and receipt["normalizers_frozen_and_parent_bitwise_equal"] is True,
+                "Restored policy lacks its complete typed v4 integrity audit")
+        require(digest(ROOT / "tools/evaluate_flat_balance_policy.py") == receipt["validator_sha256"]
+                and digest(ROOT / "tools/evaluate_direct_initialization.py") == receipt["physical_validator_sha256"],
+                "Restored-policy integrity or physical acceptance validator changed")
+        require(producer["completed_iterations"] == count and producer["total_timesteps"] == count * 24576
+                and producer["actual_sampled_environment_steps"] == (count + 1) * 24576
+                and producer["discarded_uncommitted_rollout_steps"] == 24576,
+                "Committed and discarded producer sampling counts disagree")
+        require(producer["git_commit"] == parent_request["source_commit"] == review["model_source_commit"],
+                "Model source commit differs from immutable producer request")
+        for name, parameters, steps in (("actor", 45, (count - 40) * 20),
+                                        ("critic", 8, count * 20), ("rnd", 4, count * 20)):
+            entry = receipt["optimizers"][name]
+            require(entry["parameter_count"] == parameters and entry["steps"] == steps,
+                    "Restored split optimizer counters disagree")
+    frozen = {str(path): digest(path) for path in
+              (checkpoint, original, receipt_path, producer_path, run / "params/agent.yaml", *extra)}
+    return dict(checkpoint=checkpoint, source=source, source_hashes=actual,
+                receipt=receipt, frozen_files=frozen)
+
+
 def preflight_postmortem(args):
-    """A reviewed saved baseline may be measured without resuming failed PPO."""
+    """Measure one reviewed trusted terminal policy without resuming PPO."""
     pointer = read(POINTER)
     require(not pointer.get("stair_experiments_paused_by_user"), "User paused experiments")
     previous = prior_finished(pointer)
@@ -245,7 +345,8 @@ def preflight_postmortem(args):
     review_path = inside(args.postmortem_review)
     review = read(review_path)
     require(review.get("status") == "reviewed_ready" and
-            review.get("kind") == "single_frozen_validation_of_preserved_pre_guard_baseline_v1",
+            review.get("kind") in ("single_frozen_validation_of_preserved_pre_guard_baseline_v1",
+                                   "single_frozen_validation_of_controlled_guard_restored_v4"),
             "A specific reviewed postmortem measurement plan is required")
     require(review.get("protocol") == dict(num_envs=1024, duration_s=20, speed_m_s=.3, seed=42,
         minimum_successful_envs=922, minimum_forward_m=4.8, maximum_forward_m=7.2,
@@ -255,32 +356,10 @@ def preflight_postmortem(args):
     require(str(parent) == pointer["active_stair_job"], "Postmortem plan targets another previous job")
     parent_request = request_for(parent)[1]
     state = read(parent / "supervision.json")
-    require(parent_request["job_kind"] == KIND and state.get("status") == "failed"
-            and state.get("failure_kind") == "functional_guard_rollback_inference_tensor_error",
-            "Postmortem source is not the reviewed failed bounded PPO")
-    checkpoint = inside(review["checkpoint"])
-    run = inside(state["run_dir"])
-    require(checkpoint == inside(state["final_checkpoint"]) and checkpoint.parent == run,
-            "Only the preserved pre-update baseline can be replayed")
-    original = inside(review["original_baseline_snapshot"])
-    require(original.parent == run / "functional_guard" and original.name.endswith("_baseline.pt")
-            and digest(checkpoint) == digest(original) == review["checkpoint_sha256"],
-            "Rejected candidate or altered checkpoint cannot be substituted for the baseline")
-    receipt_path = inside(review["CPU_receipt"])
-    receipt = read(receipt_path)
-    require(digest(receipt_path) == review["CPU_receipt_sha256"] and receipt.get("status") == "passed"
-            and receipt.get("cpu_only") is True and receipt["sha256"] == digest(checkpoint)
-            and receipt["checkpoint_format"] == "h2_guarded_flat_ppo_v1"
-            and receipt["committed_updates"] == state["completed_iterations"] == review["committed_updates"],
-            "Preserved split optimizer checkpoint has not passed actual CPU validation")
-    source = inside(receipt["source_root"])
-    require(source == inside(run / "training_source/source"), "Replay must use this weight's actual training source")
-    actual = {"source/" + str(Path(path).relative_to(source)): value for path, value in hashes(source).items()}
-    require(actual == receipt["source_sha256"], "Frozen imported model/plant source changed")
-    require(digest(receipt["producer_run"]) == receipt["producer_run_sha256"], "Reconciled producer evidence changed")
-    require(read(receipt["producer_run"])["status"] == "failed", "Do not relabel failed PPO as natural completion")
-    frozen = {str(path): digest(path) for path in (review_path, checkpoint, original, receipt_path,
-        inside(receipt["producer_run"]), run / "params/agent.yaml", parent / "guard_rollback_failure_reconciliation.json")}
+    custody = postmortem_custody(review, parent, parent_request, state)
+    checkpoint, source = custody["checkpoint"], custody["source"]
+    actual, receipt = custody["source_hashes"], custody["receipt"]
+    frozen = {str(review_path): digest(review_path), **custody["frozen_files"]}
     for value in review.get("evidence", []):
         path = inside(value)
         frozen[str(path)] = digest(path)
@@ -301,7 +380,7 @@ def preflight_postmortem(args):
         source_branch=BRANCH, source_commit=parent_request["source_commit"], launcher_commit=git("rev-parse", "HEAD"),
         job_kind=EVAL_KIND, entrypoint=str(ROOT / "tools/evaluate_flat_balance_policy.py"),
         source_root=str(source), source_hashes=hashes(source), root_hashes=root_hashes(), frozen_files=frozen,
-        initial_policy=parent_request["initial_policy"], initial_policy_sha256=INIT_SHA,
+        initial_policy=parent_request["initial_policy"], initial_policy_sha256=parent_request["initial_policy_sha256"],
         plan_path=str(review_path), plan_sha256=digest(review_path), duplicate_guard=str(guard),
         parent_case=str(parent), checkpoint=str(checkpoint), dataset=None, dataset_stats={},
         producer_completed_iterations=review["committed_updates"],
