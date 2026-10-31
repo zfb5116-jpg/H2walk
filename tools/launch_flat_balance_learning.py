@@ -35,6 +35,8 @@ EVAL_KIND = "guarded_flat_balance_frozen_validation"
 BRANCH = "codex/h2-stair-ascent-20261030"
 INIT_SHA = "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
 TRANSFER_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
+PROPOSAL_PROTOCOL = "simultaneous_output_proposal_v1"
+RESTORED_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
 TERMINAL = {"completed", "failed", "stopped_no_improvement", "stopped_functional_guard"}
 
 
@@ -110,8 +112,9 @@ def preflight(args):
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
     require(declared["network_or_input_structure_change"] is False, "Network/input change requires prior reporting")
     initial = inside(declared["initial_policy"])
-    transfer = declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    expected_initial_sha = TRANSFER_SHA if transfer else INIT_SHA
+    projected = declared.get("trial_protocol") == PROPOSAL_PROTOCOL
+    transfer = projected or declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+    expected_initial_sha = RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
     require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
     receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
@@ -131,24 +134,30 @@ def preflight(args):
     frozen = {str(initial): expected_initial_sha, str(receipt_path): digest(receipt_path),
               str(plan): digest(plan), **dependencies}
     if transfer:
-        require(declared.get("initial_parent_kind") == "saved_pre_guard_PPO_v1_policy_transfer"
-                and declared.get("initialization_mode") == "transfer_pre_guard_policy_and_dualnorm_fresh_optimization",
+        require(declared.get("initial_parent_kind") == ("saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
+                and declared.get("initialization_mode") == ("transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
                 "New trial must explicitly transfer model/norm only and start fresh optimization")
-        require(receipt.get("checkpoint_format") == "h2_guarded_flat_ppo_v1"
-                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == 165
+        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
+                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (101 if projected else 165)
                 and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
         parent_run = inside(declared["initial_parent_run"])
         require(str(parent_run) == receipt["producer_run"] and digest(parent_run) == receipt["producer_run_sha256"]
-                == declared["initial_parent_run_sha256"] and read(parent_run)["status"] == "failed",
+                == declared["initial_parent_run_sha256"] and read(parent_run)["status"] == ("stopped_functional_guard" if projected else "failed"),
                 "Failed parent provenance changed or was relabeled completed")
         parent_source = inside(declared["initial_parent_source_root"])
         actual_source = {"source/" + str(Path(path).relative_to(parent_source)): value for path, value in hashes(parent_source).items()}
         require(actual_source == receipt["source_sha256"], "Parent model's training source changed")
         for name, expected in declared["protected_network_input_native_source_sha256"].items():
             require(digest(ROOT / name) == expected == receipt["source_sha256"][name], "Protected network/input/native code changed: " + name)
-        require(declared["learning"]["actor_action_budget_penalty"]["weight"] == .01
+        require(declared["learning"]["actor_action_budget_penalty"]["weight"] == (0. if projected else .01)
                 and declared["learning"]["actor_action_budget_penalty"]["epsilon"] == 1e-6,
                 "Reviewed fixed target-margin protocol changed")
+        if projected:
+            projection=declared["learning"]["actor_proposal_projection"]
+            require(projection["kind"] == "simultaneous_actual_bank_linear_v1"
+                    and projection["interior_fraction"] == .5 and projection["max_active_rows"] == 8
+                    and projection["max_solver_sweeps"] == 2048,
+                    "Reviewed simultaneous proposal geometry/bounded solver changed")
         frozen[str(parent_run)] = digest(parent_run)
         frozen[str(parent_run.parent / "params/agent.yaml")] = digest(parent_run.parent / "params/agent.yaml")
     for value in declared.get("evidence", {}).values():
@@ -362,7 +371,8 @@ def startup_contract(metadata, request):
     expect(learning.get("critic_only_iterations") == 40 and learning.get("actor_learning_rate") == 1e-5
            and learning.get("critic_learning_rate") == .001 and learning.get("rnd_reward_weight") == 0,
            "Actual split optimizer protocol changed")
-    transfer = request.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+    projected = request.get("trial_protocol") == PROPOSAL_PROTOCOL
+    transfer = projected or request.get("trial_protocol") == "overspeed_credit_action_margin_v1"
     actor_flag = "initial_actor_weights_match_parent_exactly" if transfer else "initial_actor_weights_match_ce822_exactly"
     source_flag = "initial_network_source_matches_parent_exactly" if transfer else "initial_network_source_matches_ce822_exactly"
     expect(metadata.get(actor_flag) is True and metadata.get(source_flag) is True,
@@ -370,12 +380,21 @@ def startup_contract(metadata, request):
     if transfer:
         expect(metadata.get("initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == "h2_guarded_flat_ppo_v2", "New loss protocol lacks the explicit v2 checkpoint format")
+        expect(guarded.get("optimizer_format") == ("h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
-        expect(margin.get("weight") == .01 and margin.get("epsilon") == 1e-6,
+        expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
         expect(metadata.get("algorithm_settings", {}).get("gamma") == .99,
                "Temporal discount was changed without support from the selected repair")
+        if projected:
+            proposal=learning.get("proposal_projection",{})
+            expect(proposal.get("kind")=="simultaneous_actual_bank_linear_v1"
+                   and proposal.get("interior_fraction")==.5 and proposal.get("max_active_rows")==8
+                   and proposal.get("max_solver_sweeps")==2048
+                   and all(proposal.get(k) is True for k in ("whole_update_reference","linear_full_bank","hard_gate_unchanged","no_retry")),
+                   "Runtime simultaneous proposal coverage/fixed geometry differs")
+            expect("functional_proposal.py" in metadata.get("training_tool_sha256",{}),
+                   "Actual producer snapshot omitted its prospective optimizer/projector")
     runtime = metadata.get("runtime_flat_geometry", {})
     expect(runtime.get("domain_bounds_local_m") == [-7.9, 7.9, -2.9, 2.9]
            and runtime.get("below_floor_tolerance_m") == .05, "Actual flat physical domain changed")
@@ -390,7 +409,7 @@ def startup_contract(metadata, request):
            and len(runtime.get("termination_terms", [])) == 7, "Original five plus two physical guard terms required")
     expect(bool(runtime.get("episode_evidence_directory")), "Pre-reset physical episode recorder is absent")
     if transfer:
-        expect(runtime.get("trial_protocol") == "overspeed_credit_action_margin_v1"
+        expect(runtime.get("trial_protocol") == request.get("trial_protocol")
                and runtime.get("reward_profile") == "overspeed_positive_credit_v1",
                "Actual overspeed positive-credit reward profile is missing")
         speed = runtime.get("positive_credit_speed_weight", {})

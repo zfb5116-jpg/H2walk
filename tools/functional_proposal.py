@@ -1,0 +1,450 @@
+"""Prospective Adam and a finite-real-bank simultaneous output projection.
+
+This module does not step an optimizer, run its hooks, or launch an environment.
+The projection is first order only. The caller must retain its exact nonlinear
+bank check, coherent whole-update rollback, and one explicit std hook on commit.
+"""
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+
+import numpy as np
+import torch
+from torch import nn
+from torch.func import functional_call, jacrev, jvp
+
+
+KIND = "simultaneous_actual_bank_linear_v1"
+LINEAR_TOLERANCE_RAD = 2e-7
+ROW_VALUE_TOLERANCE_RAD = 5e-6
+MAX_BANK_ROWS, NUM_OUTPUTS, NUM_MEAN_PARAMETERS = 5120, 12, 44
+GRAM_COLUMN_CHUNK = 65536
+
+
+def _metadata_value(value):
+    """Diagnostic packets remain JSON/weights_only-safe, even on failure."""
+    if isinstance(value, dict):
+        return {str(key): _metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_metadata_value(item) for item in value]
+    if isinstance(value, np.generic):
+        return _metadata_value(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nonfinite:" + str(value)
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError("Projection diagnostic metadata contains " + type(value).__name__)
+
+
+class ProposalProjectionError(RuntimeError):
+    """A bounded proposal/projection could not produce its declared certificate."""
+
+    def __init__(self, metadata):
+        self.metadata = _metadata_value(dict(metadata))
+        self.metadata.setdefault("feasible", False)
+        super().__init__(str(self.metadata.get("reason", "Proposal projection failed")))
+
+
+def _require(condition, reason, **metadata):
+    if not condition:
+        raise ProposalProjectionError(dict(reason=reason, **metadata))
+
+
+def _finite(tensor):
+    return bool(torch.isfinite(tensor).all())
+
+
+def _version(value):
+    try:
+        return value._version
+    except RuntimeError:
+        return None
+
+
+@dataclass
+class AdamProposal:
+    """A one-use Adam transition, with independent tensors for all new state.
+
+    ``commit`` changes the real parameters and moments exactly once, but never
+    calls optimizer.step or any registered hook. The caller owns its std hook.
+    Unchanged original deltas use the prospective torch.addcdiv target directly
+    to preserve the native Adam floating-point result, including for std.
+    """
+
+    parameters: tuple[torch.Tensor, ...]
+    deltas: tuple[torch.Tensor, ...]
+    new_states: tuple[dict, ...]
+    _optimizer: torch.optim.Optimizer = field(repr=False)
+    _targets: tuple[torch.Tensor, ...] = field(repr=False)
+    _parameter_versions: tuple = field(repr=False)
+    _state_versions: tuple = field(repr=False)
+    _delta_versions: tuple = field(repr=False)
+    _state_sources: tuple = field(repr=False)
+    _configuration: tuple = field(repr=False)
+    _committed: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def committed(self):
+        return self._committed
+
+    def commit(self, deltas):
+        _require(not self._committed, "Adam proposal was already committed")
+        ds = tuple(deltas)
+        _require(len(ds) == len(self.parameters), "Adam commit requires all45 deltas")
+        _require(_adam_configuration(self._optimizer) == self._configuration,
+                 "Adam configuration changed after proposal")
+        for i, (p, d, expected_version) in enumerate(zip(self.parameters, ds, self._parameter_versions)):
+            _require(isinstance(d, torch.Tensor) and d.shape == p.shape
+                     and d.dtype == p.dtype and d.device == p.device and _finite(d),
+                     "Invalid Adam commit delta", parameter=i)
+            _require(_version(p) == expected_version, "Real parameter changed after proposal", parameter=i)
+            _require(self._optimizer.state.get(p) is self._state_sources[i],
+                     "Real Adam state was replaced after proposal", parameter=i)
+            source = self._state_sources[i]
+            versions = tuple((key, _version(value)) for key, value in source.items()
+                             if isinstance(value, torch.Tensor)) if source is not None else ()
+            _require(versions == self._state_versions[i], "Real Adam state changed after proposal", parameter=i)
+            _require(_version(self.deltas[i]) == self._delta_versions[i],
+                     "Original proposal delta was mutated", parameter=i)
+        # All validation precedes the first mutation. No real optimizer hook is
+        # dispatched here: the original std projection is explicit at the caller.
+        with torch.no_grad():
+            for i, (p, d, state) in enumerate(zip(self.parameters, ds, self.new_states)):
+                if d is self.deltas[i]:
+                    p.copy_(self._targets[i])
+                else:
+                    p.add_(d)
+                if state:
+                    self._optimizer.state[p] = state
+        self._committed = True
+
+
+def _adam_configuration(optimizer):
+    _require(type(optimizer) is torch.optim.Adam, "Only the current torch.optim.Adam is supported")
+    _require(len(optimizer.param_groups) == 1, "Require one unchanged45-parameter Adam group")
+    group = optimizer.param_groups[0]
+    expected = {"lr": 1e-5, "betas": (.9, .999), "eps": 1e-8, "weight_decay": 0,
+                "amsgrad": False, "maximize": False, "capturable": False, "differentiable": False}
+    for key, value in expected.items():
+        _require(group.get(key, False if isinstance(value, bool) else None) == value,
+                 "Unsupported Adam configuration", field=key, actual=str(group.get(key)))
+    _require(group.get("fused") in (None, False) and group.get("foreach") is False,
+             "Prospective Adam requires explicit foreach=False (single-tensor path)")
+    _require("decoupled_weight_decay" not in group or not group["decoupled_weight_decay"],
+             "Decoupled weight decay is unsupported")
+    return tuple((key, group.get(key)) for key in
+                 ("lr", "betas", "eps", "weight_decay", "amsgrad", "maximize", "capturable",
+                  "differentiable", "fused", "foreach", "decoupled_weight_decay"))
+
+
+def adam_proposal(optimizer):
+    """Compute the fixed Adam transition without live parameter/state/RNG edits.
+
+    Gradients are the caller's already clipped gradients. State tensors are
+    cloned before the same single-tensor Adam moment operations. A missing
+    gradient behaves exactly like Adam: no moment/step update for that parameter.
+    """
+    configuration = _adam_configuration(optimizer)
+    group = optimizer.param_groups[0]
+    parameters = tuple(group["params"])
+    _require(len(parameters) == 45 and len({id(p) for p in parameters}) == 45,
+             "Require the original44 actor parameters followed by std")
+    _require(parameters[-1].shape == (12,), "The45th original Adam parameter must be std12")
+    targets, deltas, new_states, sources, source_versions = [], [], [], [], []
+    beta1, beta2 = group["betas"]
+    with torch.no_grad():
+        for index, p in enumerate(parameters):
+            _require(p.is_floating_point() and not p.is_complex() and p.dtype in (torch.float32, torch.float64),
+                     "Only the current real floating Adam parameters are supported", parameter=index)
+            source = optimizer.state.get(p)
+            sources.append(source)
+            source_versions.append(tuple((key, _version(value)) for key, value in source.items()
+                                         if isinstance(value, torch.Tensor)) if source is not None else ())
+            state = {key: value.detach().clone() if isinstance(value, torch.Tensor) else value
+                     for key, value in source.items()} if source else {}
+            grad = p.grad
+            if grad is None:
+                target = p.detach().clone()
+            else:
+                _require(not grad.is_sparse and grad.shape == p.shape and grad.dtype == p.dtype
+                         and grad.device == p.device and _finite(grad), "Invalid dense Adam gradient", parameter=index)
+                if not state:
+                    step_dtype = torch.float64 if torch.get_default_dtype() == torch.float64 else torch.float32
+                    state = {"step": torch.tensor(0., dtype=step_dtype),
+                             "exp_avg": torch.zeros_like(p, memory_format=torch.preserve_format),
+                             "exp_avg_sq": torch.zeros_like(p, memory_format=torch.preserve_format)}
+                _require(set(state) == {"step", "exp_avg", "exp_avg_sq"},
+                         "Unexpected original Adam state keys", parameter=index)
+                _require(isinstance(state["step"], torch.Tensor) and state["step"].numel() == 1
+                         and state["step"].device.type == "cpu" and _finite(state["step"]),
+                         "Require the original noncapturable CPU Adam step", parameter=index)
+                for key in ("exp_avg", "exp_avg_sq"):
+                    v = state[key]
+                    _require(v.shape == p.shape and v.dtype == p.dtype and v.device == p.device and _finite(v),
+                             "Invalid Adam moment", parameter=index, state_key=key)
+                _require(bool((state["exp_avg_sq"] >= 0).all()), "Negative Adam second moment", parameter=index)
+                state["step"].add_(1)
+                step = float(state["step"])
+                _require(step >= 1 and step.is_integer(), "Invalid prospective Adam step", parameter=index)
+                state["exp_avg"].lerp_(grad, 1 - beta1)
+                state["exp_avg_sq"].mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                denominator = state["exp_avg_sq"].sqrt().div_(math.sqrt(1 - beta2 ** step)).add_(group["eps"])
+                target = torch.addcdiv(p, state["exp_avg"], denominator,
+                                      value=-group["lr"] / (1 - beta1 ** step))
+            delta = target - p
+            _require(_finite(target) and _finite(delta), "Nonfinite prospective Adam target", parameter=index)
+            targets.append(target.detach())
+            deltas.append(delta.detach())
+            new_states.append(state)
+    return AdamProposal(parameters, tuple(deltas), tuple(new_states), optimizer, tuple(targets),
+                        tuple(_version(p) for p in parameters), tuple(source_versions),
+                        tuple(_version(d) for d in deltas), tuple(sources), configuration)
+
+
+def _hildreth(gram, rhs, sweeps, tolerance):
+    """Dual coordinate descent for min .5||d-dA||², A d <= c.
+
+    ``rhs`` is A dA-c and gram is A A.T, both small CPU float64 arrays.
+    Convergence includes complementarity, not merely primal feasibility.
+    """
+    count = len(rhs)
+    dual = np.zeros(count, dtype=np.float64)
+    diagonal = np.diag(gram)
+    residual = rhs.copy()
+    kkt = np.maximum(residual, 0.)
+    for sweep in range(1, sweeps + 1):
+        for i in range(count):
+            if diagonal[i] <= np.finfo(np.float64).tiny:
+                if residual[i] > tolerance:
+                    return None, dict(converged=False, reason="zero_gradient_infeasible_constraint",
+                                      solver_sweeps=sweep, max_residual_rad=float(residual.max()))
+                continue
+            value = max(0., dual[i] + residual[i] / diagonal[i])
+            change = value - dual[i]
+            if change:
+                dual[i] = value
+                residual -= change * gram[:, i]
+        # Recompute to prevent an accumulated coordinate-update roundoff drift.
+        residual = rhs - gram @ dual
+        kkt = np.where(dual > 0., np.abs(residual), np.maximum(residual, 0.))
+        if float(residual.max(initial=-math.inf)) <= tolerance and float(kkt.max(initial=0.)) <= tolerance:
+            return dual, dict(converged=True, solver_sweeps=sweep,
+                              max_residual_rad=float(residual.max()), max_KKT_residual_rad=float(kkt.max()),
+                              nonzero_dual_constraints=int(np.count_nonzero(dual)))
+    return None, dict(converged=False, reason="solver_sweep_cap", solver_sweeps=sweeps,
+                      max_residual_rad=float(residual.max()), max_KKT_residual_rad=float(kkt.max()))
+
+
+def _gram_and_direction(jacobian, proposed, upper, lower, sweeps, tolerance):
+    """Use one positive J per output; ± rows share its small double Gram."""
+    rows, width = jacobian.shape
+    positive_gram = np.zeros((rows, rows), dtype=np.float64)
+    jd = np.zeros(rows, dtype=np.float64)
+    for start in range(0, width, GRAM_COLUMN_CHUNK):
+        stop = min(start + GRAM_COLUMN_CHUNK, width)
+        block = jacobian[:, start:stop].astype(np.float64)
+        positive_gram += block @ block.T
+        jd += block @ proposed[start:stop]
+    gram = np.block([[positive_gram, -positive_gram], [-positive_gram, positive_gram]])
+    gram = (gram + gram.T) * .5
+    rhs = np.r_[jd - upper, -jd + lower]
+    if not np.isfinite(gram).all() or not np.isfinite(rhs).all():
+        return None, dict(converged=False, reason="nonfinite_Gram_or_dual_rhs", solver_sweeps=0)
+    dual, metadata = _hildreth(gram, rhs, sweeps, tolerance)
+    if dual is None:
+        return None, metadata
+    coefficients = dual[:rows] - dual[rows:]
+    result = proposed.copy()
+    for start in range(0, width, GRAM_COLUMN_CHUNK):
+        stop = min(start + GRAM_COLUMN_CHUNK, width)
+        result[start:stop] -= coefficients @ jacobian[:, start:stop].astype(np.float64)
+    metadata.update(objective_half_squared_change=float(.5 * np.dot(result - proposed, result - proposed)),
+                    constraints=2 * rows, gram_dtype="float64", jacobian_storage_dtype=str(jacobian.dtype))
+    return result, metadata
+
+
+def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
+                        interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048):
+    """Project44 Adam directions into simultaneous actual-output linear bounds.
+
+    The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
+    Every certification JVP covers the complete5120x12 actual bank. A failing
+    row contributes all12 output Jacobians and both signs to the convex QP.
+    The sweep cap is TOTAL over this call, not a hidden8x multiplier.
+
+    Numerical tolerances describe only this first-order certificate. They are
+    never applied to the caller's strict nonlinear post-commit hard budget.
+    """
+    metadata = dict(kind=KIND, feasible=False, interior_fraction=.5,
+                    max_active_rows=8, max_solver_sweeps=2048,
+                    tolerance_rad=LINEAR_TOLERANCE_RAD,
+                    row_value_tolerance_rad=ROW_VALUE_TOLERANCE_RAD,
+                    fullbank_jvp_calls=0, row_jacobian_calls=0, solver_sweeps=0,
+                    active_row_ids=[], active_rows=0, solver_records=[], direction_changed=False,
+                    nonlinear_hard_gate_unchanged=True, no_backtracking_or_retry=True,
+                    std_direction_not_in_mean_constraints=True,
+                    interpretation="First-order finite actual-bank certificate, not nonlinear/unseen-state/physical safety")
+
+    def fail(reason, **more):
+        metadata.update(more)
+        raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False))
+
+    if interior_fraction != .5 or max_active_rows != 8 or max_solver_sweeps != 2048:
+        fail("Fixed prospective projection protocol changed")
+    if not isinstance(bank, Mapping) or any(k not in bank for k in ("obs", "lower", "upper")):
+        fail("Incomplete actual bank")
+    if actor_normalizer.training:
+        fail("Actor normalizer must remain eval/frozen")
+    if tuple(actor_module.buffers()):
+        fail("The original row-local actor has no mutable buffers")
+    if any(isinstance(m, (nn.modules.batchnorm._BatchNorm, nn.Dropout, nn.RNNBase)) for m in actor_module.modules()):
+        fail("Batch-coupled or stochastic actor is unsupported")
+    named = tuple(actor_module.named_parameters())
+    parameters = tuple(p for _, p in named)
+    directions = tuple(mean_deltas)
+    if len(parameters) != NUM_MEAN_PARAMETERS or len(directions) != NUM_MEAN_PARAMETERS:
+        fail("Require all44 original actor parameter directions")
+    device, dtype = parameters[0].device, parameters[0].dtype
+    if dtype not in (torch.float32, torch.float64):
+        fail("Unsupported actor dtype")
+    for i, (p, d) in enumerate(zip(parameters, directions)):
+        if p.device != device or p.dtype != dtype or not isinstance(d, torch.Tensor) or d.shape != p.shape \
+                or d.device != device or d.dtype != dtype or not _finite(p) or not _finite(d):
+            fail("Invalid actor proposal tensor", parameter=i)
+    versions = tuple(_version(p) for p in parameters)
+    normalizer_versions = tuple((name, id(b), _version(b)) for name, b in actor_normalizer.named_buffers())
+    param_values = tuple(p.detach() for p in parameters)
+    sizes = [p.numel() for p in parameters]
+    offsets = np.cumsum([0] + sizes)
+    proposed = np.concatenate([d.detach().cpu().reshape(-1).double().numpy() for d in directions])
+    metadata.update(mean_parameter_tensors=len(parameters), mean_parameter_elements=len(proposed),
+                    original_direction_norm=float(np.linalg.norm(proposed)),
+                    bank_rows=MAX_BANK_ROWS, output_coordinates=NUM_OUTPUTS)
+
+    def tensor(value):
+        return torch.as_tensor(value, device=device, dtype=dtype).detach()
+
+    raw = tensor(bank["obs"])
+    lo, hi = tensor(bank["lower"]), tensor(bank["upper"])
+    reference = tensor(baseline_q)
+    limits = tensor(budget)
+    if raw.shape != (MAX_BANK_ROWS, 1029) or lo.shape != hi.shape or lo.shape != (MAX_BANK_ROWS, NUM_OUTPUTS) \
+            or reference.shape != limits.shape or reference.shape != lo.shape:
+        fail("Actual bank dimensions changed")
+    if not all(_finite(x) for x in (raw, lo, hi, reference, limits)) or not bool((lo < hi).all()) \
+            or not bool((limits > 0).all()):
+        fail("Invalid finite actual bank/limits")
+    with torch.no_grad():
+        normalized = actor_normalizer(raw)
+    if normalized.shape != raw.shape or not _finite(normalized):
+        fail("Invalid frozen normalized actual bank")
+    reference_array = reference.cpu().numpy()
+    limit_array = limits.cpu().numpy()
+
+    def decoder(values, inputs, low, high):
+        replacements = {name: value for (name, _), value in zip(named, values)}
+        action = functional_call(actor_module, replacements, (inputs,), strict=True).clamp(-100, 100)
+        return (low + high) * .5 + (high - low) * .5 * torch.tanh(action)
+
+    def unpack(flat):
+        return tuple(torch.from_numpy(flat[offsets[i]:offsets[i+1]].reshape(p.shape)).to(device=device, dtype=dtype)
+                     for i, p in enumerate(parameters))
+
+    def scan(ds):
+        values, tangents = [], []
+        with torch.no_grad():
+            for start in range(0, MAX_BANK_ROWS, 1024):
+                stop = start + 1024
+                fn = lambda ps: decoder(ps, normalized[start:stop], lo[start:stop], hi[start:stop])
+                value, tangent = jvp(fn, (param_values,), (ds,))
+                if value.shape != (1024, NUM_OUTPUTS) or tangent.shape != value.shape \
+                        or not _finite(value) or not _finite(tangent):
+                    fail("Nonfinite or malformed actual full-bank JVP")
+                values.append(value.detach().cpu().numpy())
+                tangents.append(tangent.detach().cpu().numpy())
+        metadata["fullbank_jvp_calls"] += 1
+        return np.concatenate(values), np.concatenate(tangents).astype(np.float64)
+
+    qcur, tangent = scan(directions)
+    error = (qcur - reference_array).astype(np.float64)
+    if np.any(np.abs(qcur - reference_array) > limit_array):
+        fail("Current actor already violates the original nonlinear budget",
+             max_current_nonlinear_ratio=float(np.max(np.abs(qcur-reference_array)/limit_array)))
+    upper = .5 * (limit_array.astype(np.float64) - error)
+    lower = -.5 * (limit_array.astype(np.float64) + error)
+    metadata.update(initial_max_linear_violation_rad=float(np.maximum(tangent-upper,lower-tangent).max()),
+                    initial_linearized_total_max_ratio=float(np.max(np.abs(error+tangent)/limit_array)))
+    jacobians = []
+    direction = directions
+    active_matrix = None
+    row_value_max, row_jvp_max = 0., 0.
+
+    for iteration in range(max_active_rows + 1):
+        violation = np.maximum(tangent - upper, lower - tangent)
+        worst = np.unravel_index(int(np.argmax(violation)), violation.shape)
+        maximum = float(violation[worst])
+        metadata.update(max_linear_violation_rad=maximum, worst_row=int(worst[0]), worst_joint=int(worst[1]),
+                        active_rows=len(jacobians), row_value_max_disagreement_rad=row_value_max,
+                        row_JVP_max_disagreement_rad=row_jvp_max)
+        # The direct-return path preserves the original tensor identities and
+        # exact prospective Adam commit, without invoking a solver at all.
+        if maximum <= (0. if not jacobians else LINEAR_TOLERANCE_RAD):
+            metadata.update(feasible=True, reason="unmodified_proposal_feasible" if not jacobians else "projected_proposal_feasible",
+                            direction_changed=bool(jacobians), projected_direction_norm=float(math.sqrt(sum(float(d.double().square().sum()) for d in direction))),
+                            parameter_delta_change_norm=float(math.sqrt(sum(float((d.double()-o.double()).square().sum()) for d,o in zip(direction,directions)))),
+                            linearized_total_max_ratio=float(np.max(np.abs(error+tangent)/limit_array)),
+                            max_absolute_Jd_rad=float(np.max(np.abs(tangent))),
+                            signed_midpoint_bounds_verified_rows=MAX_BANK_ROWS,
+                            signed_midpoint_bounds_verified_coordinates=MAX_BANK_ROWS*NUM_OUTPUTS)
+            if tuple(_version(p) for p in parameters) != versions \
+                    or tuple((name,id(b),_version(b)) for name,b in actor_normalizer.named_buffers()) != normalizer_versions:
+                fail("Projection mutated real actor/normalizer")
+            return direction, _metadata_value(metadata)
+        if iteration == max_active_rows:
+            fail("active_row_cap", attempted_new_row=int(worst[0]))
+        row = int(worst[0])
+        if row in metadata["active_row_ids"]:
+            fail("Active-row full-bank JVP certificate failed after QP")
+        one = lambda ps: decoder(ps, normalized[row:row+1], lo[row:row+1], hi[row:row+1])[0]
+        with torch.no_grad():
+            one_value = one(param_values).detach().cpu().numpy()
+        row_value_max = max(row_value_max, float(np.max(np.abs(one_value-qcur[row]))))
+        if row_value_max > ROW_VALUE_TOLERANCE_RAD:
+            fail("Single-row/full-bank primal disagreement", row=row,
+                 row_value_max_disagreement_rad=row_value_max)
+        row_derivatives = jacrev(one)(param_values)
+        metadata["row_jacobian_calls"] += 1
+        matrix = np.concatenate([d.detach().reshape(NUM_OUTPUTS,-1).cpu().numpy() for d in row_derivatives], axis=1)
+        if matrix.shape != (NUM_OUTPUTS,len(proposed)) or not np.isfinite(matrix).all():
+            fail("Invalid actual-row full Jacobian", row=row)
+        current_flat = np.concatenate([d.detach().cpu().reshape(-1).double().numpy() for d in direction])
+        row_jvp = np.zeros(NUM_OUTPUTS, dtype=np.float64)
+        for start in range(0, len(proposed), GRAM_COLUMN_CHUNK):
+            stop = min(start+GRAM_COLUMN_CHUNK,len(proposed))
+            row_jvp += matrix[:,start:stop].astype(np.float64) @ current_flat[start:stop]
+        row_jvp_max = max(row_jvp_max, float(np.max(np.abs(row_jvp-tangent[row]))))
+        if row_jvp_max > LINEAR_TOLERANCE_RAD:
+            fail("Single-row Jacobian/full-bank JVP disagreement", row=row,
+                 row_JVP_max_disagreement_rad=row_jvp_max)
+        jacobians.append(matrix)
+        metadata["active_row_ids"].append(row)
+        del row_derivatives
+        active_matrix = np.concatenate(jacobians, axis=0)
+        remaining = max_solver_sweeps - metadata["solver_sweeps"]
+        if remaining <= 0:
+            fail("solver_sweep_cap")
+        active_ids = metadata["active_row_ids"]
+        projected, solve = _gram_and_direction(active_matrix, proposed,
+            upper[active_ids].reshape(-1), lower[active_ids].reshape(-1), remaining, LINEAR_TOLERANCE_RAD)
+        metadata["solver_sweeps"] += solve["solver_sweeps"]
+        metadata["solver_records"].append(solve)
+        metadata["jacobian_storage_bytes"] = sum(j.nbytes for j in jacobians)
+        if projected is None or not np.isfinite(projected).all():
+            fail(solve.get("reason", "nonfinite_QP_solution"))
+        direction = unpack(projected)
+        check_qcur, tangent = scan(direction)
+        if not np.array_equal(check_qcur,qcur):
+            fail("Actor primal changed between direction-only bank scans")
+    fail("Unreachable bounded projection exit")

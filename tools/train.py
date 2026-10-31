@@ -92,12 +92,15 @@ def main():
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
         trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
-        typed_flat_transfer = trial_protocol == "overspeed_credit_action_margin_v1"
-        expected_initial_sha = ("01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
-                                if typed_flat_transfer else "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688")
+        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1")
+        expected_initial_sha = {
+            "guarded_flat_balance_v1":"ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688",
+            "overspeed_credit_action_margin_v1":"01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68",
+            "simultaneous_output_proposal_v1":"319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5",
+        }.get(trial_protocol)
         if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != [1029,866,73,12]
                 or guarded_plan["initial_policy_sha256"] != expected_initial_sha
-                or trial_protocol not in ("guarded_flat_balance_v1", "overspeed_credit_action_margin_v1")
+                or expected_initial_sha is None
                 or args.num_envs != 1024 or args.seed != 42):
             raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
     spec = gym.spec(args.task)
@@ -151,6 +154,8 @@ def main():
         training_tool_names.append("stair_exploration.py")
     if guarded_flat:
         training_tool_names.append("guarded_flat_ppo.py")
+        if trial_protocol == "simultaneous_output_proposal_v1":
+            training_tool_names.append("functional_proposal.py")
     for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)
     shutil.copy2(args.stop_policy, source_dir / "stop_policy.json")
@@ -218,7 +223,7 @@ def main():
                                   if agent_cfg.algorithm.rnd_cfg is not None else None),
             "desired_kl": agent_cfg.algorithm.desired_kl,
         },
-        "initialization_mode": ("transfer_pre_guard_policy_and_dualnorm_fresh_optimization" if typed_flat_transfer
+        "initialization_mode": (guarded_plan["initialization_mode"] if typed_flat_transfer
                                 else "checkpoint_resume" if checkpoint else "behavior_cloned_direct_policy" if initial_policy else "from_scratch"),
         "initial_policy": str(initial_policy) if initial_policy else None,
         "external_dependency_sha256": {
@@ -407,6 +412,7 @@ def main():
                 "optimizer_format":runner.alg.checkpoint_format,"trial_protocol":runner.alg.trial_protocol,
                 "state":runner.alg.learning_state(),
                 "action_margin":runner.alg.learning_state()["action_margin"],
+                "proposal_projection":runner.alg.learning_state().get("proposal_projection"),
                 "snapshot_policy":"RAM before every whole actor update; first persisted once; veto permanently preserves baseline/candidate/restored",
                 "physical_acceptance_claimed":False,
             }
@@ -426,7 +432,7 @@ def main():
             } if runner.empirical_normalization else {},
         }
         if guarded_flat:
-            metadata["initialization_mode"] = ("transfer_pre_guard_policy_and_dualnorm_fresh_optimization"
+            metadata["initialization_mode"] = (guarded_plan["initialization_mode"]
                 if typed_flat_transfer else "guarded_flat_reward_repair_fresh_split_PPO")
             metadata["initial_learning_state"].update(
                 actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),

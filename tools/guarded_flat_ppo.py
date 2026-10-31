@@ -18,7 +18,11 @@ from rsl_rl.algorithms.ppo import PPO
 FORMAT = "h2_guarded_flat_ppo_v1"
 MARGIN_FORMAT = "h2_guarded_flat_ppo_v2"
 MARGIN_TRIAL = "overspeed_credit_action_margin_v1"
+PROJECTION_FORMAT = "h2_guarded_flat_ppo_v3"
+PROJECTION_TRIAL = "simultaneous_output_proposal_v1"
+PROJECTION_KIND = "simultaneous_actual_bank_linear_v1"
 TRANSFER_PARENT_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
+RESTORED_PARENT_SHA = "319ff350be8c8e6359be978313f484262e2e1f9ddef03d675b7bf0a6ac7968c5"
 MAX_ANGLE = [0.02, 0.015, 0.015, 0.02, 0.01, 0.0075] * 2
 FIXED_BANK_ROWS, CURRENT_BANK_ROWS, ROLLOUT_STEPS = 4096, 1024, 24
 
@@ -49,6 +53,17 @@ def cpu_state(value):
     if isinstance(value, list): return [cpu_state(item) for item in value]
     if isinstance(value, tuple): return tuple(cpu_state(item) for item in value)
     return copy.deepcopy(value)
+
+
+def evidence_json(value):
+    """Keep failed-solver diagnostics serializable without repairing its data."""
+    if isinstance(value, torch.Tensor): return evidence_json(value.detach().cpu().tolist())
+    if isinstance(value, np.ndarray): return evidence_json(value.tolist())
+    if isinstance(value, np.generic): return evidence_json(value.item())
+    if isinstance(value, dict): return {str(key):evidence_json(item) for key,item in value.items()}
+    if isinstance(value, (list,tuple)): return [evidence_json(item) for item in value]
+    if isinstance(value, float) and not np.isfinite(value): return repr(value)
+    return value
 
 
 def state_digest(value):
@@ -118,28 +133,59 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    require(plan.get("trial_protocol")==MARGIN_TRIAL and plan.get("initial_parent_kind")=="saved_pre_guard_PPO_v1_policy_transfer",
-            "Typed policy transfer is only declared for the reviewed margin trial")
+    projection=plan.get("trial_protocol")==PROJECTION_TRIAL
+    if projection:
+        kind,mode="saved_restored_PPO_v2_policy_transfer","transfer_restored_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=RESTORED_PARENT_SHA,MARGIN_FORMAT,100,101
+        require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
+                and plan.get("parent_accepted_updates")==101 and plan.get("parent_last_complete_iteration")==100
+                and plan.get("parent_runtime_rollback_completed") is True,
+                "Typed restored101 transfer is not the reviewed projection initialization")
+    else:
+        kind,mode="saved_pre_guard_PPO_v1_policy_transfer","transfer_pre_guard_policy_and_dualnorm_fresh_optimization"
+        parent_sha,parent_format,parent_iteration,parent_updates=TRANSFER_PARENT_SHA,FORMAT,164,165
+        require(plan.get("trial_protocol")==MARGIN_TRIAL and plan.get("initial_parent_kind")==kind,
+                "Typed policy transfer is only declared for a reviewed trial")
     require(str(checkpoint)==str(Path(plan["initial_policy"]).resolve(strict=True))
-            and sha(checkpoint)==plan["initial_policy_sha256"]==TRANSFER_PARENT_SHA,
+            and sha(checkpoint)==plan["initial_policy_sha256"]==parent_sha,
             "Typed parent checkpoint identity differs")
-    require(saved.get("format")==FORMAT and saved.get("iter")==164
-            and saved["guarded_ppo_state"]["completed_updates"]==165
+    require(saved.get("format")==parent_format and saved.get("iter")==parent_iteration
+            and saved["guarded_ppo_state"]["completed_updates"]==parent_updates
             and saved["guarded_ppo_state"]["uncommitted_rollout"] is True,
-            "Typed parent is not the preserved165-committed pre-guard policy")
+            "Typed parent is not the exact preserved committed policy")
+    if projection:
+        require(saved.get("trial_protocol")==MARGIN_TRIAL
+                and saved["guarded_ppo_state"].get("trial_protocol")==MARGIN_TRIAL,
+                "Restored101 parent does not carry the original v2 protocol")
     receipt_path=Path(plan["initial_policy_CPU_receipt"]).resolve(strict=True)
     require(receipt_path==checkpoint.with_suffix(".validation.json")
             and sha(receipt_path)==plan["initial_policy_CPU_receipt_sha256"],"Typed parent CPU receipt changed")
     receipt=json.loads(receipt_path.read_text())
     require(receipt.get("status")=="passed" and receipt.get("cpu_only") is True
-            and receipt["sha256"]==TRANSFER_PARENT_SHA and receipt["checkpoint_format"]==FORMAT
-            and receipt["committed_updates"]==165,"Typed parent lacks its exact strict CPU receipt")
+            and receipt["sha256"]==parent_sha and receipt["checkpoint_format"]==parent_format
+            and receipt["committed_updates"]==parent_updates,"Typed parent lacks its exact strict CPU receipt")
     parent_run_path=Path(plan["initial_parent_run"]).resolve(strict=True)
     require(sha(parent_run_path)==plan["initial_parent_run_sha256"]==receipt["producer_run_sha256"]
             and Path(receipt["producer_run"]).resolve(strict=True)==parent_run_path,"Typed producer run receipt changed")
     parent_run=json.loads(parent_run_path.read_text())
-    require(parent_run["status"]=="failed" and parent_run["completed_iterations"]==165,
-            "The typed transfer must preserve the failed parent status and actual accepted budget")
+    expected_status="stopped_functional_guard" if projection else "failed"
+    require(parent_run["status"]==expected_status and parent_run["completed_iterations"]==parent_updates,
+            "The typed transfer must preserve parent stop status and actual accepted budget")
+    rollback_evidence=None
+    if projection:
+        require(receipt.get("uncommitted_rollout") is True
+                and Path(parent_run["final_checkpoint"]).resolve(strict=True)==checkpoint,
+                "Restored101 parent receipt/run do not bind the restored checkpoint")
+        rollback_path=Path(parent_run["functional_guard_evidence"]).resolve(strict=True)
+        rollback=json.loads(rollback_path.read_text())
+        require(rollback.get("complete_update_restored") is True
+                and rollback["rollback_state_digest_before"]==rollback["rollback_state_digest_after"]
+                and rollback.get("completed_updates")==101
+                and rollback.get("restored_checkpoint_sha256")==parent_sha
+                and Path(rollback["restored_checkpoint"]).resolve(strict=True)==checkpoint,
+                "Restored101 parent lacks exact complete-state rollback evidence")
+        rollback_evidence=dict(path=str(rollback_path),sha256=sha(rollback_path),
+                               persistent_state_digest=rollback["rollback_state_digest_before"])
     parent_source=Path(plan["initial_parent_source_root"]).resolve(strict=True)
     require(parent_source==Path(receipt["source_root"]).resolve(strict=True),"Typed parent source binding differs")
     actual={"source/"+str(p.relative_to(parent_source)):sha(p) for p in parent_source.rglob("*")
@@ -154,24 +200,29 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
         require(sha(Path(path).resolve(strict=True))==digest,"Typed parent's physical external dependency changed")
     for key in ("obs_norm_state_dict","privileged_obs_norm_state_dict"):
         require(int(saved[key]["count"])==24576000,"Typed inherited own-normalizer count changed")
-    return dict(kind="saved_pre_guard_PPO_v1_policy_transfer",mode="transfer_pre_guard_policy_and_dualnorm_fresh_optimization",
-        parent_checkpoint=str(checkpoint),parent_checkpoint_sha256=TRANSFER_PARENT_SHA,
+    result=dict(kind=kind,mode=mode,
+        parent_checkpoint=str(checkpoint),parent_checkpoint_sha256=parent_sha,
         parent_CPU_receipt=str(receipt_path),parent_CPU_receipt_sha256=sha(receipt_path),
         parent_run=str(parent_run_path),parent_run_sha256=sha(parent_run_path),parent_source_root=str(parent_source),
         parent_source_sha256=actual,parent_source_commit=parent_run["git_commit"],
-        parent_external_dependency_sha256=receipt["external_dependency_sha256"],parent_accepted_updates=165,
-        parent_last_complete_iteration=164,parent_uncommitted_rollout=True,parent_runtime_rollback_completed=False,
+        parent_external_dependency_sha256=receipt["external_dependency_sha256"],parent_accepted_updates=parent_updates,
+        parent_last_complete_iteration=parent_iteration,parent_uncommitted_rollout=True,parent_runtime_rollback_completed=projection,
         protected_network_input_native_source_sha256=protected,model_and_dualnorm_only=True,
         fresh_actor_optimizer=True,fresh_critic_optimizer=True,fresh_RND=True,fresh_RND_optimizer=True,
         parent_RNG_loaded=False,new_starting_iteration=0,new_checkpoint=None,
         norm_counts={"actor":24576000,"critic":24576000})
+    if rollback_evidence is not None:result["parent_rollback_evidence"]=rollback_evidence
+    return result
 
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    require(algorithm.trial_protocol==MARGIN_TRIAL and algorithm.completed_updates==0
+    require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
+    expected_kind=("saved_restored_PPO_v2_policy_transfer" if algorithm.trial_protocol==PROJECTION_TRIAL
+                   else "saved_pre_guard_PPO_v1_policy_transfer")
+    require(provenance.get("kind")==expected_kind,"Typed transfer provenance does not match this trial")
     require(not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
             and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
             "Typed transfer requires fresh independent Adam and RND")
@@ -196,10 +247,11 @@ def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
 
 
 class FunctionalUpdateRejected(RuntimeError):
-    def __init__(self, evidence, restored_checkpoint, discarded_environment_steps):
-        super().__init__("Whole PPO update rejected by finite-real-input deterministic-target budget; all update state restored")
+    def __init__(self, evidence, restored_checkpoint, discarded_environment_steps, *, reason_kind="nonlinear_target_budget"):
+        super().__init__("Whole PPO update rejected by finite-real-input "+reason_kind+"; all update state restored")
         self.evidence, self.restored_checkpoint = str(evidence), str(restored_checkpoint)
         self.discarded_environment_steps = int(discarded_environment_steps)
+        self.reason_kind=reason_kind
 
 
 class RealInputFunctionalGuard:
@@ -341,7 +393,9 @@ class H2GuardedPPO(PPO):
     def __init__(self, policy, *, actor_learning_rate=1e-5, critic_learning_rate=.001,
                  critic_only_iterations=40, actor_max_grad_norm=1., critic_max_grad_norm=1.,
                  trial_protocol="guarded_flat_balance_v1",actor_action_budget_penalty_weight=0.,
-                 actor_action_budget_penalty_epsilon=1e-6, **kwargs):
+                 actor_action_budget_penalty_epsilon=1e-6, actor_proposal_projection=None,
+                 actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
+                 actor_proposal_max_solver_sweeps=2048, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -352,12 +406,26 @@ class H2GuardedPPO(PPO):
         super().__init__(policy,**kwargs)
         require((trial_protocol=="guarded_flat_balance_v1" and actor_action_budget_penalty_weight==0.)
                 or (trial_protocol==MARGIN_TRIAL and actor_action_budget_penalty_weight==.01
-                    and self.gamma==.99 and self.lam==.95),"Undeclared actor-margin profile or discount change")
+                    and self.gamma==.99 and self.lam==.95)
+                or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
+                    and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
+        self.projection_enabled=trial_protocol==PROJECTION_TRIAL
+        require((self.projection_enabled and actor_proposal_projection==PROJECTION_KIND
+                 and actor_proposal_interior_fraction==.5 and actor_proposal_max_active_rows==8
+                 and actor_proposal_max_solver_sweeps==2048)
+                or (not self.projection_enabled and actor_proposal_projection is None),
+                "Undeclared simultaneous-proposal protocol")
+        self.projection_interior_fraction=float(actor_proposal_interior_fraction)
+        self.projection_max_active_rows=int(actor_proposal_max_active_rows)
+        self.projection_max_solver_sweeps=int(actor_proposal_max_solver_sweeps)
+        self.projection_calls=self.projection_committed_minibatches=self.projection_std_hook_calls=0
+        self.projection_fullbank_jvp_calls=self.projection_row_jacobian_calls=self.projection_solver_sweeps=0
+        self.last_projection_summary={}
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT
+        self.checkpoint_format=PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
                 "Guarded-flat PPO epochs/batches/entropy changed")
@@ -369,7 +437,10 @@ class H2GuardedPPO(PPO):
         named=dict(policy.named_parameters())
         self.actor_parameters=[named[name] for name in self.actor_names]
         self.critic_parameters=[named[name] for name in self.critic_names]
-        self.actor_optimizer=torch.optim.Adam(self.actor_parameters,lr=actor_learning_rate)
+        # The new prospective formula is the single-tensor Adam path. Leave
+        # legacy v1/v2 foreach=None unchanged instead of asserting GPU equivalence.
+        actor_options={"foreach":False} if self.projection_enabled else {}
+        self.actor_optimizer=torch.optim.Adam(self.actor_parameters,lr=actor_learning_rate,**actor_options)
         self.critic_optimizer=torch.optim.Adam(self.critic_parameters,lr=critic_learning_rate)
         # Compatibility alias for the unchanged std projection hook; no shared
         # optimizer is used or serialized in this task.
@@ -394,7 +465,7 @@ class H2GuardedPPO(PPO):
         return super().act(obs,critic_obs)
 
     def learning_state(self):
-        return dict(completed_updates=self.completed_updates,actor_optimizer_steps=self.actor_optimizer_steps,
+        state=dict(completed_updates=self.completed_updates,actor_optimizer_steps=self.actor_optimizer_steps,
             critic_optimizer_steps=self.critic_optimizer_steps,rnd_optimizer_steps=self.rnd_optimizer_steps,
             actor_updates_accepted=self.actor_updates_accepted,critic_only_iterations=self.critic_only_iterations,
             actor_optimizer_parameter_count=len(self.actor_parameters),critic_optimizer_parameter_count=len(self.critic_parameters),
@@ -413,6 +484,18 @@ class H2GuardedPPO(PPO):
                 latest_summary=self.last_margin_summary),
             finite_guard_limitation="5120 actual inputs; update-change bound is not unseen-state or physical-stability proof",
             last_guard=self.last_guard_summary)
+        if self.projection_enabled:
+            state["proposal_projection"]=dict(kind=PROJECTION_KIND,protocol=PROJECTION_TRIAL,
+                interior_fraction=self.projection_interior_fraction,max_active_rows=self.projection_max_active_rows,
+                max_solver_sweeps=self.projection_max_solver_sweeps,whole_update_reference=True,linear_full_bank=True,
+                hard_gate_unchanged=True,no_retry=True,adam_implementation="single_tensor_foreach_false",
+                actor_optimizer_foreach=self.actor_optimizer.param_groups[0]["foreach"],
+                committed_minibatches=self.projection_committed_minibatches,proposal_calls=self.projection_calls,
+                std_hook_calls=self.projection_std_hook_calls,fullbank_jvp_calls=self.projection_fullbank_jvp_calls,
+                row_jacobian_calls=self.projection_row_jacobian_calls,solver_sweeps=self.projection_solver_sweeps,
+                latest_summary=copy.deepcopy(self.last_projection_summary),
+                limitation="First-order finite5120-bank direction only; original strict nonlinear check remains authoritative")
+        return state
 
     def _exploration_state(self):
         return dict(optimizer_steps=self.exploration.optimizer_steps,projected_entries=cpu_state(self.exploration.projected_entries),
@@ -472,6 +555,13 @@ class H2GuardedPPO(PPO):
         self.critic_learning_rate=state["critic_learning_rate"]
         if "action_margin" in state:
             self.last_margin_summary=copy.deepcopy(state["action_margin"]["latest_summary"])
+        if self.projection_enabled:
+            projection=state["proposal_projection"]
+            for attribute,key in (("projection_calls","proposal_calls"),("projection_committed_minibatches","committed_minibatches"),
+                    ("projection_std_hook_calls","std_hook_calls"),("projection_fullbank_jvp_calls","fullbank_jvp_calls"),
+                    ("projection_row_jacobian_calls","row_jacobian_calls"),("projection_solver_sweeps","solver_sweeps")):
+                setattr(self,attribute,projection[key])
+            self.last_projection_summary=copy.deepcopy(projection["latest_summary"])
         for name,value in packet["rnd_runtime"].items():setattr(self.rnd,name,value)
         ex=packet["exploration_state"]
         self.exploration.optimizer_steps=ex["optimizer_steps"]
@@ -485,6 +575,11 @@ class H2GuardedPPO(PPO):
 
     def _veto(self,snapshot,violation,minibatch):
         candidate,delta,ratio=violation;directory=self.guard.directory
+        projection_summary=copy.deepcopy(self.last_projection_summary) if self.projection_enabled else None
+        if projection_summary is not None:
+            projection_summary.update(nonlinear_hard_check_passed=False,
+                                      nonlinear_maximum_ratio=float(ratio.max()))
+            self._write_projection_record(projection_summary)
         update=self.completed_updates
         prefix=directory/f"rejected_update_{update:04d}"
         pre=Path(str(prefix)+"_baseline.pt");proposal=Path(str(prefix)+"_candidate.pt")
@@ -505,6 +600,7 @@ class H2GuardedPPO(PPO):
         evidence=Path(str(prefix)+".json")
         sampled_environment_steps=int(self.storage.step)*int(self.storage.observations.shape[1])
         write(evidence,dict(status="stopped_functional_guard",update_index=update,minibatch=minibatch,
+            reason_kind="nonlinear_target_budget",proposal_projection=projection_summary,
             completed_updates=self.completed_updates,actor_optimizer_steps=self.actor_optimizer_steps,
             critic_optimizer_steps=self.critic_optimizer_steps,rnd_optimizer_steps=self.rnd_optimizer_steps,
             maximum_ratio=float(ratio.max()),violating_row_joints=int((delta>self.guard.budget).sum()),
@@ -517,6 +613,95 @@ class H2GuardedPPO(PPO):
             discarded_uncommitted_rollout_steps=sampled_environment_steps,
             interpretation="Finite recorded-input functional veto, no physical state rewind or unseen-state guarantee"))
         raise FunctionalUpdateRejected(evidence,restored,sampled_environment_steps)
+
+    def _write_projection_record(self,record):
+        with (self.guard.directory/"proposal_projection_minibatches.jsonl").open("a") as stream:
+            stream.write(json.dumps(evidence_json(record),allow_nan=False)+"\n")
+
+    def _projection_veto(self,snapshot,metadata,minibatch,proposal):
+        """A failed prospective solve has no fabricated nonlinear violation."""
+        directory=self.guard.directory;update=self.completed_updates
+        self.projection_fullbank_jvp_calls+=int(metadata.get("fullbank_jvp_calls",0))
+        self.projection_row_jacobian_calls+=int(metadata.get("row_jacobian_calls",0))
+        self.projection_solver_sweeps+=int(metadata.get("solver_sweeps",0))
+        prefix=directory/f"rejected_update_{update:04d}"
+        pre=Path(str(prefix)+"_baseline.pt");candidate=Path(str(prefix)+"_candidate.pt")
+        restored=directory.parent/f"model_{self.completed_updates-1}_guard_restored.pt"
+        detail=evidence_json(dict(metadata,kind=PROJECTION_KIND,update_index=update,minibatch=minibatch,
+            committed=False,nonlinear_hard_check_passed=None,bank_rows=5120,linear_output_coordinates=61440,
+            actor_mean_parameter_tensors=44,adam_parameter_tensors=45,hard_gate_unchanged=True,no_retry=True))
+        self.last_projection_summary=copy.deepcopy(detail)
+        self._write_projection_record(detail)
+        save_packet(pre,snapshot["packet"])
+        save_packet(candidate,self.packet(self.completed_updates-1,
+            {"kind":"rejected_uncommitted_projection_failure_state","minibatch":minibatch,
+             "proposal_committed":False,"projection_failure":detail}))
+        proposal_path=Path(str(prefix)+"_prospective_adam_audit.pt")
+        save_packet(proposal_path,dict(format="h2_prospective_adam_failure_audit_v1",deployable_checkpoint=False,
+            parameter_names=self.actor_names,deltas=None if proposal is None else cpu_state(proposal.deltas),
+            new_states=None if proposal is None else cpu_state(proposal.new_states),
+            proposal_committed=False,projection_failure=detail))
+        actual=Path(str(prefix)+"_actual_inputs.npz")
+        self.guard.persist_bank(actual)
+        # Restore every whole-update state even if earlier minibatches committed.
+        # The failed prospective proposal itself never changes live Adam state.
+        self._restore(snapshot)
+        restored_packet=self.packet(self.completed_updates-1,
+            {"kind":"restored_pre_update_projection_failure_no_retry","discard_current_rollout":True})
+        before={key:value for key,value in snapshot["packet"].items() if key!="infos"}
+        after={key:value for key,value in restored_packet.items() if key!="infos"}
+        require(state_digest(before)==state_digest(after),"Projection-failure rollback did not exactly restore persistent learning state")
+        save_packet(restored,restored_packet)
+        evidence=Path(str(prefix)+".json")
+        sampled_environment_steps=int(self.storage.step)*int(self.storage.observations.shape[1])
+        write(evidence,dict(status="stopped_functional_guard",reason_kind="proposal_projection_failed",
+            update_index=update,minibatch=minibatch,completed_updates=self.completed_updates,
+            actor_optimizer_steps=self.actor_optimizer_steps,critic_optimizer_steps=self.critic_optimizer_steps,
+            rnd_optimizer_steps=self.rnd_optimizer_steps,projection_failure=detail,
+            bank_digest=self.guard.bank_digest,actual_input_evidence=str(actual),actual_input_evidence_sha256=sha(actual),
+            baseline=str(pre),baseline_sha256=sha(pre),candidate=str(candidate),candidate_sha256=sha(candidate),
+            prospective_adam_audit=str(proposal_path),prospective_adam_audit_sha256=sha(proposal_path),
+            restored_checkpoint=str(restored),restored_checkpoint_sha256=sha(restored),
+            rollback_state_digest_before=state_digest(before),rollback_state_digest_after=state_digest(after),
+            complete_update_restored=True,normalizers_frozen=True,retry_allowed=False,
+            discarded_uncommitted_rollout_steps=sampled_environment_steps,
+            interpretation="Prospective first-order finite-bank certificate failed; no physical-fault claim or nonlinear violating row is invented"))
+        raise FunctionalUpdateRejected(evidence,restored,sampled_environment_steps,reason_kind="proposal_projection_failed")
+
+    def _projected_actor_step(self,snapshot,minibatch):
+        from functional_proposal import adam_proposal,project_actual_bank,ProposalProjectionError
+        proposal=None;self.projection_calls+=1
+        try:
+            proposal=adam_proposal(self.actor_optimizer)
+            if len(proposal.parameters)!=45 or any(p is not q for p,q in zip(proposal.parameters,self.actor_parameters)):
+                raise ProposalProjectionError(dict(reason="Prospective Adam parameter identities/order changed"))
+            if len(tuple(self.policy.actor.parameters()))!=44:
+                raise ProposalProjectionError(dict(reason="Original44 actor mean parameters changed"))
+            projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
+                self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
+                interior_fraction=self.projection_interior_fraction,max_active_rows=self.projection_max_active_rows,
+                max_solver_sweeps=self.projection_max_solver_sweeps)
+            if metadata.get("kind")!=PROJECTION_KIND or metadata.get("feasible") is not True or len(projected)!=44:
+                raise ProposalProjectionError(dict(metadata,reason="Malformed prospective projection certificate"))
+            # Std keeps its actual Adam proposal. commit dispatches no optimizer
+            # hook; run the unchanged exploration post-hook exactly once here.
+            proposal.commit(tuple(projected)+(proposal.deltas[44],))
+        except ProposalProjectionError as error:
+            self._projection_veto(snapshot,error.metadata,minibatch,proposal)
+        hook_before=self.exploration.optimizer_steps
+        self.exploration._after_step(self.actor_optimizer,(),{})
+        require(self.exploration.optimizer_steps==hook_before+1,"Prospective Adam requires exactly one explicit std hook")
+        self.projection_std_hook_calls+=1;self.projection_committed_minibatches+=1
+        self.projection_fullbank_jvp_calls+=int(metadata.get("fullbank_jvp_calls",0))
+        self.projection_row_jacobian_calls+=int(metadata.get("row_jacobian_calls",0))
+        self.projection_solver_sweeps+=int(metadata.get("solver_sweeps",0))
+        record=evidence_json(dict(metadata,update_index=self.completed_updates,minibatch=minibatch,
+            committed=True,nonlinear_hard_check_passed=None,bank_rows=5120,linear_output_coordinates=61440,
+            actor_mean_parameter_tensors=44,adam_parameter_tensors=45,adam_implementation="single_tensor_foreach_false",
+            std_proposal_unchanged=True,std_hook_calls_this_minibatch=1,whole_update_reference=True,
+            hard_gate_unchanged=True,no_retry=True))
+        self.last_projection_summary=copy.deepcopy(record)
+        return record
 
     def update(self):
         require(self.guard is not None,"Guarded-flat PPO runtime was not bound")
@@ -579,21 +764,35 @@ class H2GuardedPPO(PPO):
             require(bool(torch.isfinite(critic_grad)),"Nonfinite separate critic gradient")
             self.critic_optimizer.step();self.critic_optimizer_steps+=1
             actor_grad=torch.zeros((),device=self.device)
+            projection_record=None
             if actor_enabled:
                 self.actor_optimizer.zero_grad(set_to_none=True);actor_loss.backward()
                 actor_grad=torch.nn.utils.clip_grad_norm_(self.actor_parameters,self.actor_max_grad_norm)
                 require(bool(torch.isfinite(actor_grad)),"Nonfinite separate actor gradient")
-                self.actor_optimizer.step();self.actor_optimizer_steps+=1
+                if self.projection_enabled:
+                    projection_record=self._projected_actor_step(snapshot,batches+1)
+                else:self.actor_optimizer.step()
+                self.actor_optimizer_steps+=1
             self.rnd_optimizer.zero_grad(set_to_none=True);rnd_loss.backward();self.rnd_optimizer.step();self.rnd_optimizer_steps+=1
             batches+=1
             if actor_enabled:
                 violation=self.guard.check()
                 if violation is not None:self._veto(snapshot,violation,batches)
+                if projection_record is not None:
+                    projection_record.update(nonlinear_hard_check_passed=True,
+                        nonlinear_whole_update_maximum_ratio=float(self.guard.last_summary["maximum_ratio"]))
+                    self.last_projection_summary=copy.deepcopy(projection_record)
+                    self._write_projection_record(projection_record)
             for key,value in dict(value_function=value_loss,surrogate=surrogate,entropy=entropy.mean(),rnd=rnd_loss,
                                    actor_gradient_norm=actor_grad,critic_gradient_norm=critic_grad,KL=kl,
                                    action_budget_margin=margin_loss,action_budget_margin_gradient_norm=margin_gradient_norm).items():losses[key]+=float(value.detach())
         require(batches==20,"Original PPO minibatch/epoch count changed")
         self.completed_updates+=1;self.actor_updates_accepted+=int(actor_enabled);self.uncommitted_rollout=False
+        if self.projection_enabled:
+            require(self.projection_committed_minibatches==self.actor_optimizer_steps==self.actor_updates_accepted*20
+                    and self.projection_calls==self.projection_committed_minibatches==self.projection_std_hook_calls
+                    ==self.exploration.optimizer_steps,
+                    "Committed prospective Adam/std-hook/minibatch counters diverged")
         self.last_guard_summary=dict(self.guard.last_summary) if actor_enabled else dict(critic_only=True,actor_steps=0)
         if margin_records:
             self.last_margin_summary=dict(minibatches=len(margin_records),weight=self.action_margin_weight,epsilon=self.action_margin_epsilon,
