@@ -465,7 +465,7 @@ def validate_cpu(args):
         parent_expected=reviewed_parent(profile['trial_protocol'])
         require(initial_saved['format']==parent_expected['format'] and initial_saved['iter']==parent_expected['iteration']
                 and initial_saved['guarded_ppo_state']['completed_updates']==parent_expected['updates']
-                and initial_saved['guarded_ppo_state']['uncommitted_rollout'] is True,
+                and initial_saved['guarded_ppo_state']['uncommitted_rollout'] is (profile['trial_protocol'] != VELOCITY_COST_PROTOCOL),
                 'Actual parent packet differs from the exact reviewed accepted/restored budget')
         start=run['initial_learning_state']
         require(start['checkpoint_loaded'] is False and run['checkpoint'] is None
