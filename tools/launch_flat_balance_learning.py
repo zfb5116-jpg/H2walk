@@ -27,7 +27,8 @@ from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, s
 from evaluate_flat_balance_policy import (validate_outward_reward_plan, validate_outward_reward_metadata,
                                          validate_episode_force_reward_plan, validate_episode_force_reward_metadata)
 from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT,
-    CONTEXT_PROTOCOLS, validate_task_context_plan,
+    CONTEXT_PROTOCOLS, ACTIVE_CONTEXT_PROTOCOLS, FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT,
+    FULL_OUTWARD_REWARD_PROFILE, validate_task_context_plan,
     validate_task_context_metadata, validate_normalization_metadata)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,7 +167,8 @@ def preflight(args):
     require(declared.get("status") == "reviewed_ready", "Flat repair implementation has not been reviewed")
     require([declared[k] for k in ("task", "num_envs", "num_steps_per_env", "max_iterations", "save_interval")]
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
-    active=declared.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL
+    full_outward=declared.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL
+    active=declared.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     context=declared.get("trial_protocol") in CONTEXT_PROTOCOLS
     if context:
         validate_task_context_plan(declared)
@@ -748,7 +750,8 @@ def startup_contract(metadata, request):
     expect(metadata.get("initial_policy_sha256") == request["initial_policy_sha256"], "Wrong actual initializer")
     expect([metadata.get(k) for k in ("num_envs", "num_steps_per_env", "max_iterations", "save_interval", "num_actions")]
            == [1024, 24, 1000, 500, 12], "Wrong sampling/action/iteration budget")
-    active=request.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL
+    full_outward=request.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL
+    active=request.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     context=request.get("trial_protocol") in CONTEXT_PROTOCOLS
     expect(metadata.get("policy_shape") == [1024, 1034 if context else 1029], "Actor layout changed")
     shapes = metadata.get("observation_shapes", {})
@@ -793,7 +796,7 @@ def startup_contract(metadata, request):
     if transfer:
         expect(metadata.get("initial_critic_prefix_and_zero_columns_verified" if context and not active else "initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == (ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
+        expect(guarded.get("optimizer_format") == (FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
         expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
@@ -854,7 +857,7 @@ def startup_contract(metadata, request):
                "Explicit context producer omitted normalization/metadata source dependencies")
     if active:
         transfer_record=metadata.get("initial_policy_transfer",{})
-        expect(guarded.get("trial_protocol")==learning.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL,
+        expect(guarded.get("trial_protocol")==learning.get("trial_protocol")==request.get("trial_protocol") and request.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS,
                "v11 runtime state protocol differs")
         expect(transfer_record.get("kind")=="saved_guard_restored_v10_context_policy_transfer"
                and transfer_record.get("mode")=="transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization"
@@ -896,7 +899,7 @@ def startup_contract(metadata, request):
     expect(bool(runtime.get("episode_evidence_directory")), "Pre-reset physical episode recorder is absent")
     if transfer:
         expect(runtime.get("trial_protocol") == request.get("trial_protocol")
-               and runtime.get("reward_profile") == ("overspeed_outward_tilt_growth_clean_force_v1" if clean_force else "overspeed_outward_tilt_growth_v1" if outward_tilt else "overspeed_positive_credit_v1"),
+               and runtime.get("reward_profile") == (FULL_OUTWARD_REWARD_PROFILE if full_outward else "overspeed_outward_tilt_growth_clean_force_v1" if clean_force else "overspeed_outward_tilt_growth_v1" if outward_tilt else "overspeed_positive_credit_v1"),
                "Actual declared flat reward profile is missing")
         speed = runtime.get("positive_credit_speed_weight", {})
         expect(speed.get("command_m_s") == speed.get("full_at_or_below_m_s") == .3

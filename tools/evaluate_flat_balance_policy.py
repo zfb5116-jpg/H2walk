@@ -35,7 +35,8 @@ VELOCITY_COST_INITIAL_SHA='fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c
 OUTWARD_TILT_PROTOCOL='outward_tilt_growth_v1'
 CLEAN_FORCE_PROTOCOL='episode_clean_force_eligibility_v1'
 from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, CONTEXT_DIMS,
-    ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT, CONTEXT_PROTOCOLS, CONTEXT_FORMATS,
+    ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT, ACTIVE_CONTEXT_PROTOCOLS, ACTIVE_CONTEXT_FORMATS,
+    FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT, FULL_OUTWARD_REWARD_PROFILE, CONTEXT_PROTOCOLS, CONTEXT_FORMATS,
     validate_task_context_plan, validate_task_context_metadata, validate_normalization_metadata)
 OUTWARD_REWARD_PROTOCOLS=(OUTWARD_TILT_PROTOCOL,CLEAN_FORCE_PROTOCOL,*CONTEXT_PROTOCOLS)
 NATURAL_PARENT_PROTOCOLS=(VELOCITY_COST_PROTOCOL,OUTWARD_TILT_PROTOCOL,CLEAN_FORCE_PROTOCOL,CONTEXT_PROTOCOL)
@@ -60,10 +61,12 @@ require,sha,write,source_hashes=physical.require,physical.sha,physical.write,phy
 def validate_outward_reward_plan(plan):
     """Pure metadata admission for the reported fixed outward-growth cost."""
     cost=plan.get('outward_tilt_growth_cost',{})
-    interval=math.cos(.35)-math.cos(.75)
+    full=plan.get('trial_protocol')==FULL_OUTWARD_CONTEXT_PROTOCOL
+    margin=0. if full else .35
+    interval=math.cos(margin)-math.cos(.75)
     require(plan.get('trial_protocol') in OUTWARD_REWARD_PROTOCOLS
             and cost.get('kind')=='existing_body_gravity_gyro_outward_potential_rate_v1'
-            and cost.get('margin_rad')==.35 and cost.get('original_native_termination_rad')==.75
+            and cost.get('margin_rad')==margin and cost.get('original_native_termination_rad')==.75
             and cost.get('failure_charge')==20.
             and math.isclose(cost.get('weight',0.),-20./interval,rel_tol=0.,abs_tol=1e-10)
             and math.isclose(cost.get('potential_interval',0.),interval,rel_tol=0.,abs_tol=1e-12)
@@ -83,16 +86,18 @@ def validate_outward_reward_metadata(runtime,plan=None):
         validate_outward_reward_plan(plan)
     cost=runtime.get('outward_tilt_growth_cost',{})
     speed=runtime.get('velocity_cost_scaling',{})
-    interval=math.cos(.35)-math.cos(.75)
-    expected_profile=(CLEAN_FORCE_REWARD_PROFILE if runtime.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,*CONTEXT_PROTOCOLS)
+    full=runtime.get('trial_protocol')==FULL_OUTWARD_CONTEXT_PROTOCOL
+    margin=0. if full else .35
+    interval=math.cos(margin)-math.cos(.75)
+    expected_profile=(FULL_OUTWARD_REWARD_PROFILE if full else CLEAN_FORCE_REWARD_PROFILE if runtime.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,*CONTEXT_PROTOCOLS)
                       else OUTWARD_REWARD_PROFILE)
     require(runtime.get('reward_profile')==expected_profile
             and cost.get('kind')=='existing_body_gravity_gyro_outward_potential_rate_v1'
             and cost.get('actual_function_name')=='flat_outward_tilt_growth'
             and cost.get('actual_failure_weight')==-20. and cost.get('failure_charge')==20.
-            and cost.get('margin_rad')==.35 and cost.get('original_native_termination_rad')==.75
+            and cost.get('margin_rad')==margin and cost.get('original_native_termination_rad')==.75
             and math.isclose(cost.get('actual_weight',0.),-20./interval,rel_tol=0.,abs_tol=1e-10)
-            and math.isclose(cost.get('margin_potential',0.),1.-math.cos(.35),rel_tol=0.,abs_tol=1e-12)
+            and math.isclose(cost.get('margin_potential',0.),1.-math.cos(margin),rel_tol=0.,abs_tol=1e-12)
             and math.isclose(cost.get('termination_potential',0.),1.-math.cos(.75),rel_tol=0.,abs_tol=1e-12)
             and math.isclose(cost.get('potential_interval',0.),interval,rel_tol=0.,abs_tol=1e-12)
             and math.isclose(cost.get('continuous_monotone_margin_to_termination_cost',0.),-20.,rel_tol=0.,abs_tol=1e-10)
@@ -112,6 +117,19 @@ def validate_outward_reward_metadata(runtime,plan=None):
             and math.isclose(speed.get('one_command_speed_error_cost_per_s',0.),-.045,rel_tol=0.,abs_tol=1e-12)
             and speed.get('function_unchanged') is True and speed.get('no_new_reward_information') is True,
             'Outward-growth trial must restore the original unchanged-kernel XY cost')
+    if full:
+        expected_names=['signed_forward','valid_alternating_landing','failure','world_xy_velocity_error',
+            'world_heading_error','tilt_margin','body_angular_rate','outward_tilt_growth','supported_slip',
+            'normalized_drive_request','bounded_target_change','native_overspeed','actual_soft_excess']
+        expected_weights=dict(zip(expected_names,[10.,.2,-20.,-.5,-.1,-1.,-.025,-20./interval,-1.,-.02,-.02,-.1,-5.]))
+        require(cost.get('activation_profile')=='full_upright_to_native_limit_outward_growth_v1'
+                and cost.get('actual_reward_term_names')==expected_names
+                and cost.get('actual_reward_weights')==expected_weights
+                and cost.get('actual_state_tilt_function_name')=='flat_tilt_margin'
+                and cost.get('state_tilt_margin_source_constant_rad')==.35
+                and cost.get('upright_potential_zero_is_geometry') is True
+                and cost.get('only_existing_outward_activation_and_calibration_changed') is True,
+                'v12 must change exactly the existing outward activation/calibration, retaining all13 terms')
     return cost
 
 
@@ -148,7 +166,7 @@ def validate_episode_force_reward_plan(plan):
     if context:
         validate_task_context_plan(plan)
     require(plan.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,*CONTEXT_PROTOCOLS)
-            and plan.get('network_or_input_structure_change') is (context and plan.get('trial_protocol')!=ACTIVE_CONTEXT_PROTOCOL),
+            and plan.get('network_or_input_structure_change') is (context and plan.get('trial_protocol') not in ACTIVE_CONTEXT_PROTOCOLS),
             'Episode force-credit plan must declare its unchanged input layout and exact protocol')
     for key,expected in episode_force_policy_expectations(context).items():
         actual=policy.get(key)
@@ -168,7 +186,7 @@ def validate_episode_force_reward_metadata(runtime,plan=None):
     policy=runtime.get('episode_force_credit_policy',{})
     require(isinstance(policy,dict),'Episode force-credit runtime metadata must be a mapping')
     require(runtime.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,*CONTEXT_PROTOCOLS)
-            and runtime.get('reward_profile')==CLEAN_FORCE_REWARD_PROFILE,
+            and runtime.get('reward_profile')==(FULL_OUTWARD_REWARD_PROFILE if runtime.get('trial_protocol')==FULL_OUTWARD_CONTEXT_PROTOCOL else CLEAN_FORCE_REWARD_PROFILE),
             'Episode force-credit runtime profile differs')
     for key,expected in episode_force_policy_expectations(context).items():
         actual=policy.get(key)
@@ -181,7 +199,7 @@ def validate_episode_force_reward_metadata(runtime,plan=None):
 
 
 def reviewed_parent(protocol):
-    if protocol==ACTIVE_CONTEXT_PROTOCOL:
+    if protocol in ACTIVE_CONTEXT_PROTOCOLS:
         from v11_parent_custody import reviewed_parent as active_parent
         return active_parent()
     if protocol==CONTEXT_PROTOCOL:
@@ -247,7 +265,8 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
         return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
                     checkpoint_format=fmt,typed_policy_transfer=False)
-    active=fmt==ACTIVE_CONTEXT_FORMAT
+    full=fmt==FULL_OUTWARD_CONTEXT_FORMAT
+    active=fmt in ACTIVE_CONTEXT_FORMATS
     context=fmt in CONTEXT_FORMATS
     clean_force=context or fmt=='h2_guarded_flat_ppo_v9'
     outward_tilt=clean_force or fmt=='h2_guarded_flat_ppo_v8'
@@ -258,7 +277,7 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
     reserved=resource or fmt=='h2_guarded_flat_ppo_v4'
     projected=reserved or fmt=='h2_guarded_flat_ppo_v3'
     require(projected or fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
-    protocol=ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL if context else CLEAN_FORCE_PROTOCOL if clean_force else OUTWARD_TILT_PROTOCOL if outward_tilt else VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
+    protocol=FULL_OUTWARD_CONTEXT_PROTOCOL if full else ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL if context else CLEAN_FORCE_PROTOCOL if clean_force else OUTWARD_TILT_PROTOCOL if outward_tilt else VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
     parent=reviewed_parent(protocol)
     require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
             ==plan.get('trial_protocol')==protocol,'Declared typed profiles disagree')
@@ -343,7 +362,7 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         else:
             require(transfer.get('new_context_columns_zero') is True, 'Context extension columns were not initialized to zero')
     runtime=run['runtime_flat_geometry']
-    require(runtime['trial_protocol']==protocol and runtime['reward_profile']==(CLEAN_FORCE_REWARD_PROFILE if clean_force else OUTWARD_REWARD_PROFILE if outward_tilt else NEW_REWARD_PROFILE),
+    require(runtime['trial_protocol']==protocol and runtime['reward_profile']==(FULL_OUTWARD_REWARD_PROFILE if full else CLEAN_FORCE_REWARD_PROFILE if clean_force else OUTWARD_REWARD_PROFILE if outward_tilt else NEW_REWARD_PROFILE),
             'Actual environment reward profile differs from the declared optimization')
     speed=runtime['positive_credit_speed_weight']
     require(speed['command_m_s']==speed['full_at_or_below_m_s']==.3
@@ -374,7 +393,7 @@ def verify_transfer_files(plan, transfer, child_source):
     A new reward implementation must have its own full source manifest. It is
     not required to be byte-identical to all old reward/task files.
     """
-    if plan['trial_protocol']==ACTIVE_CONTEXT_PROTOCOL:
+    if plan['trial_protocol'] in ACTIVE_CONTEXT_PROTOCOLS:
         return verify_active_transfer_files(plan,transfer,child_source)
     expected=reviewed_parent(plan['trial_protocol'])
     require(plan['initial_policy_CPU_receipt_sha256']==expected['receipt']
@@ -486,16 +505,23 @@ def verify_active_transfer_files(plan, transfer, child_source):
             'v11 external dependency provenance differs')
     require(sha(Path(child_source).parent/'task_context_normalization.py')            ==parent_receipt['producer_training_tool_sha256']['task_context_normalization.py'],
             'v11 must retain the exact parent block-normalization implementation')
+    if plan["trial_protocol"]==FULL_OUTWARD_CONTEXT_PROTOCOL:
+        require(transfer.get("retained_v11_archive")==actual["retained_v11_archive"],
+                "Closedv11 evidence must remain frozen comparison provenance, not an initializer")
     return {key:transfer[key] for key in ('parent_checkpoint','parent_checkpoint_sha256','parent_CPU_receipt',
         'parent_CPU_receipt_sha256','parent_run','parent_run_sha256','parent_source_root','parent_source_sha256',
         'parent_rollback_evidence','parent_external_dependency_sha256','parent_accepted_updates','parent_last_complete_iteration',
         'parent_persistent_state_digest','parent_formal_review','parent_formal_review_sha256','parent_formal_result',
         'parent_formal_result_sha256')} | dict(protected_file_count=14,model_and_dualnorm_only=True,
-        same_width_context_transfer=True,parent_optimization_and_RND_and_RNG_not_resumed=True)
+        same_width_context_transfer=True,parent_optimization_and_RND_and_RNG_not_resumed=True,
+        **({"retained_v11_archive":actual["retained_v11_archive"]} if plan["trial_protocol"]==FULL_OUTWARD_CONTEXT_PROTOCOL else {}))
 
 
 def transfer_provenance_unchanged(receipt):
     transfer=receipt.get('typed_initialization_transfer')
+    if transfer and transfer.get('retained_v11_archive'):
+        if not all(sha(Path(path))==value for path,value in transfer['retained_v11_archive']['frozen_files'].items()):
+            return False
     if transfer and transfer.get('same_width_context_transfer'):
         if not all(sha(Path(transfer[k]))==transfer[k+'_sha256'] for k in ('parent_formal_review','parent_formal_result')):
             return False
@@ -583,9 +609,9 @@ def validate_cpu(args, *, restored_state_inspector=None):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'),'Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
-    active=saved['format']==ACTIVE_CONTEXT_FORMAT
+    active=saved['format'] in ACTIVE_CONTEXT_FORMATS
     context=saved['format'] in CONTEXT_FORMATS
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
@@ -615,7 +641,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
                 'Episode force-credit admission source dependencies are not frozen in the producer snapshot')
     for name,digest in training_tools.items():
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'):
         require('functional_proposal.py' in training_tools,'Producer omitted simultaneous projection implementation')
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
@@ -660,7 +686,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
             require(gs['action_margin']['committed_minibatches']==expected['actor'],
                     'Action-margin committed-minibatch counter differs from actorAdam')
         require(plan.get('status')=='reviewed_ready','New profile plan has not completed its prelaunch review')
-    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'):
         projection=gs['proposal_projection']
         width=sum(p.numel() for _,p in actor_named[:-1]);row_bytes=12*width*4
         require(projection['jacobian_mean_parameter_elements']==width==(782988 if context else 780428)
@@ -678,7 +704,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
                     and summary['signed_midpoint_bounds_verified_coordinates']==61440
                     and summary['nonlinear_hard_check_passed'] is True,
                     'Actual last committed actor update lacks its full-bank resource and nonlinear certificate')
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'):
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'):
                 precision=summary.get('primal_precision_summary',{})
                 require(summary.get('primal_precision_policy')=='direct_fp64_primal_envelope_v1'
                         and precision.get('direct_primal_certified') is True
@@ -713,7 +739,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
     for name,parameters,lr in (('actor',actor_named,1e-5),('critic',critic_named,.001)):
         optimizers[name]=check_adam(torch,saved[name+'_optimizer_state_dict'],[n for n,_ in parameters],
             [p for _,p in parameters],expected[name],lr,name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'):
         require(all(g.get('foreach') is False and g.get('fused') in (None,False)
                     for g in saved['actor_optimizer_state_dict']['param_groups']),
                 'Prospective Adam must declare its single-tensor execution path')
@@ -755,7 +781,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
                 'New trial did not explicitly reset std to the same half exploration budget')
         require(run['external_dependency_sha256']==saved['initialization_transfer']['parent_external_dependency_sha256'],
                 'New typed transfer changed native USD or frozen LiDAR dependencies')
-        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') and count<=40:
+        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') and count<=40:
             for name,_ in actor_named[:-1]:
                 actual,parent_value=saved['model_state_dict'][name],initial_saved['model_state_dict'][name]
                 if context and not active and name in ('actor.fusion.net.0.weight','actor.actor.net.0.weight'):
@@ -847,21 +873,21 @@ def validate_cpu(args, *, restored_state_inspector=None):
             if profile.get('proposal_projection') is not None else None),
         actor_whole_update_working_reserve=({key:gs['proposal_projection'][key] for key in
             ('working_budget_fraction','whole_update_fixed_working_bound','solver_tolerance_reserved_inward')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') else None),
         actor_compute_resource_coverage=({key:gs['proposal_projection'][key] for key in
             ('resource_kind','configured_max_active_rows','max_active_rows','jacobian_arena_budget_bytes',
              'jacobian_mean_parameter_elements','jacobian_bytes_per_row','jacobian_arena_capacity_bytes')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') else None),
         actor_primal_precision=({key:gs['proposal_projection'][key] for key in
             ('primal_precision_policy','max_polish_per_QP','max_support_pivots','max_polish_per_projection',
              'solver_optimality_and_direct_primal_separate','primal_envelope_is_machine_derived',
              'final_same_direction_cast_JVP_required','primal_precision_summary')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') else None),
         actor_support_polish=(gs['proposal_projection'].get('support_polish_policy') if active else None),
         world_xy_velocity_cost_scaling=(run['runtime_flat_geometry'].get('velocity_cost_scaling')
-            if saved['format'] in ('h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') else None),
         outward_tilt_growth_cost=(run['runtime_flat_geometry'].get('outward_tilt_growth_cost')
-            if saved['format'] in ('h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12') else None),
         episode_force_credit_policy=(run['runtime_flat_geometry'].get('episode_force_credit_policy')
             if saved['format'] in ('h2_guarded_flat_ppo_v9',*CONTEXT_FORMATS) else None),
         actual_warm_actor44_and_reset_std_checked=warm_actor_transfer_checked,
@@ -896,7 +922,7 @@ def validate_cpu(args, *, restored_state_inspector=None):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11'),'Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10','h2_guarded_flat_ppo_v11','h2_guarded_flat_ppo_v12'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and
@@ -920,7 +946,7 @@ def prepare_physical(args):
     for name in ('evaluate_flat_balance_policy.py','evaluate_flat_balance_policy.sh',
                  'evaluate_direct_initialization.py','evaluate_direct_initialization.sh',
                  *(['task_context_metadata.py','task_context_normalization.py'] if receipt['checkpoint_format'] in CONTEXT_FORMATS else []),
-                 *(['v11_parent_custody.py'] if receipt['checkpoint_format']==ACTIVE_CONTEXT_FORMAT else [])):
+                 *(['v11_parent_custody.py'] if receipt['checkpoint_format'] in ACTIVE_CONTEXT_FORMATS else [])):
         shutil.copy2(Path(__file__).parent/name,args.output/'tools_snapshot'/name)
     deps=receipt['external_dependency_sha256']
     usd=[p for p in deps if Path(p).suffix=='.usd']

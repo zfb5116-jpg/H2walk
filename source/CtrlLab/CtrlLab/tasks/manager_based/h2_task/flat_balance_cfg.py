@@ -19,7 +19,7 @@ class FlatBalanceRewardsCfg:
     tilt_margin = RewTerm(func=rewards.flat_tilt_margin,weight=-1.)
     body_angular_rate = RewTerm(func=rewards.flat_body_angular_rate,weight=-.025)
     outward_tilt_growth = RewTerm(func=rewards.flat_outward_tilt_growth,
-        weight=-20.0/(cos(.35)-cos(.75)),params={'margin_angle':.35})
+        weight=-20.0/(cos(0.0)-cos(.75)),params={'margin_angle':0.0})
     supported_slip = RewTerm(func=rewards.flat_support_slip,weight=-1.)
     normalized_drive_request = RewTerm(func=rewards.flat_drive_request,weight=-.02)
     bounded_target_change = RewTerm(func=rewards.flat_target_change,weight=-.02)

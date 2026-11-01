@@ -17,8 +17,8 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='explicit_task_context_active_support_v1'
-POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_clean_force_v1'
+TRIAL_PROTOCOL='explicit_task_context_full_outward_growth_v1'
+POSITIVE_CREDIT_PROFILE='overspeed_full_outward_tilt_growth_clean_force_v1'
 EPISODE_FORCE_CREDIT_POLICY={
     'kind':'whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
     'agreement_absolute_tolerance_N':1.0,
@@ -364,7 +364,16 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 'no_new_policy_input':True,
                 'no_new_policy_input_scope':'Only this auxiliary reward still uses existing body gravity/gyro; the explicit task context changes the global policy input.',
                 'reward_dt_multiplications':1,
-                'discrete_total_not_exact_failure_charge':True},
+                'discrete_total_not_exact_failure_charge':True,
+                'activation_profile':'full_upright_to_native_limit_outward_growth_v1',
+                'actual_reward_term_names':list(self.reward_manager.active_terms),
+                'actual_reward_weights':{name:float(self.reward_manager.get_term_cfg(name).weight)
+                                        for name in self.reward_manager.active_terms},
+                'actual_state_tilt_function_name':self.reward_manager.get_term_cfg('tilt_margin').func.__name__,
+                'state_tilt_margin_source_constant_rad':.35,
+                'state_tilt_margin_source_scope':'Unchanged kernel source constant; AST-bound, not a runtimecfg parameter getter.',
+                'upright_potential_zero_is_geometry':True,
+                'only_existing_outward_activation_and_calibration_changed':True},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),
             'terrain_subtypes':{name:type(term).__name__ for name,term in generator.sub_terrains.items()},

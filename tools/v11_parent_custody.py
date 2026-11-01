@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 from task_context_metadata import (ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT,
+    ACTIVE_CONTEXT_PROTOCOLS, FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT,
     CONTEXT_PROTOCOL, CONTEXT_FORMAT, validate_task_context_plan,
     validate_task_context_metadata, validate_normalization_metadata)
 
@@ -57,8 +58,8 @@ def reviewed_parent():
 def validate_parent_records(plan, receipt, producer, guard, claim, formal, formal_review):
     """Metadata-only predicate, also usable with explicit synthetic fixtures."""
     validate_task_context_plan(plan)
-    require(plan['trial_protocol']==ACTIVE_CONTEXT_PROTOCOL
-            and plan['checkpoint_format']==ACTIVE_CONTEXT_FORMAT
+    require(plan['trial_protocol'] in ACTIVE_CONTEXT_PROTOCOLS
+            and plan['checkpoint_format']==(FULL_OUTWARD_CONTEXT_FORMAT if plan['trial_protocol']==FULL_OUTWARD_CONTEXT_PROTOCOL else ACTIVE_CONTEXT_FORMAT)
             and plan['parent_uncommitted_rollout'] is True
             and plan['initial_policy_CPU_receipt_sha256']==PARENT_RECEIPT_SHA
             and plan['initial_parent_run_sha256']==PARENT_RUN_SHA
@@ -229,6 +230,10 @@ def verify_parent_files(plan, root):
         parent_rollback_evidence=dict(path=str(guard_path),sha256=sha(guard_path),persistent_state_digest=PARENT_STATE_DIGEST),
         parent_formal_review=str(formal_case/'formal_result_review.json'),parent_formal_review_sha256=PARENT_FORMAL_REVIEW_SHA,
         parent_formal_result=str(formal_case/'evaluation/result.json'),parent_formal_result_sha256=PARENT_FORMAL_RESULT_SHA)
+    if plan['trial_protocol']==FULL_OUTWARD_CONTEXT_PROTOCOL:
+        archived=freeze_closed_v11_evidence(plan,root)
+        result['frozen_files'].update(archived['frozen_files'])
+        result['retained_v11_archive']=archived
     return result
 
 
@@ -278,3 +283,112 @@ def validate_support_projection_metadata(algorithm, projection, summary=None):
     require(p['polish_calls']<=37660, 'v11 exceeded the full-projection SVD work cap')
     return dict(support_polish_policy=SUPPORT_POLISH_POLICY,QP_subproblems=len(records),
                 polish_calls=p['polish_calls'],support_pivots=p['support_pivots'])
+
+
+def freeze_closed_v11_evidence(plan, root):
+    """Keep the completed813 comparison evidence; never use it as initializer."""
+    root=Path(root).resolve(strict=True);spec=plan['retained_v11_evidence']
+    case=root/'logs/stair_learning/flat_balance_20261101_162132_40277873'
+    run=root/'logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_13-19-17_guarded_flat_balance_e82cfb2b'
+    bindings=(('checkpoint',run/'model_999.pt','71757b6b58257422b2a58c3dce74e6f551711430fb6c5ba38a6db8c95de5b15f'),
+        ('CPU_receipt',run/'model_999.validation.json','d8cc754315586505a464e2240a8dc8462f03335a6ebb042b7843023bcf5dc073'),
+        ('producer_run',run/'run.json','fe8588b9383170fb32e5bcbc284382bac5449c07a23dc164a2c400b48c1d5d92'),
+        ('formal_result_review',case/'formal_result_review.json','35adc4d3ff4806c60ea88fbbbc6e6d9d25167f1d2c8e938b0225a17ed673aa0b'),
+        ('formal_artifact_manifest',case/'formal_artifacts.sha256.json','2b5f4c347f8971db63be623d7e332125b16d0ab4fc9a62e29d6414b80e93077b'))
+    require(spec.get('kind')=='closed_v11_comparison_evidence_not_initializer_v1'
+            and spec.get('initialization_parent') is False
+            and plan['initial_policy_sha256']==PARENT_SHA,'Closed813 comparison cannot replace the842 parent')
+    frozen={}
+    for key,path,value in bindings:
+        require(Path(spec[key]).resolve(strict=True)==path and spec[key+'_sha256']==value and sha(path)==value,
+                'Retained completedv11 identity changed: '+key)
+        frozen[str(path)]=value
+    receipt=read(run/'model_999.validation.json');producer=read(run/'run.json')
+    formal=read(case/'evaluation/result.json');review=read(case/'formal_result_review.json')
+    validate_closed_v11_records(spec,receipt,producer,formal)
+    source=Path(spec['source_root']).resolve(strict=True)
+    require(source==run/'training_source/source','Retainedv11 must use its original ownsource')
+    actual={'source/'+str(p.relative_to(source)):sha(p) for p in source.rglob('*')
+            if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
+    require(actual==receipt['source_sha256'],'Retainedv11 ownsource changed')
+    frozen.update({str(source/key.removeprefix('source/')):value for key,value in actual.items()})
+    for name,value in receipt['producer_training_tool_sha256'].items():
+        path=source.parent/name;require(sha(path)==value,'Retainedv11 own tool changed: '+name);frozen[str(path)]=value
+    for key,sha_key in (('bank_path','bank_sha256'),('receipt_path','receipt_sha256'),('seal_path','seal_sha256'),('acquisition_log_path','acquisition_log_sha256')):
+        bank=receipt['fixed_context_bank_custody'];require(sha(bank[key])==bank[sha_key],'Retainedv11 bank changed');frozen[bank[key]]=bank[sha_key]
+    excluded={};request=read(case/'request.json')
+    for name,value in request['frozen_files'].items():
+        path=Path(name).resolve(strict=True)
+        if path.is_relative_to(root/'source') or path.is_relative_to(root/'tools'):
+            rel=path.relative_to(root);copies=([source/path.relative_to(root/'source')] if path.is_relative_to(root/'source') else
+                [source.parent/path.name,case/'snapshot/tools'/path.name,case/'evaluation/tools_snapshot'/path.name])
+            origin=next((p for p in copies if p.is_file() and sha(p)==value),None)
+            if origin is not None:
+                frozen[str(origin)]=value;excluded[name]=dict(sha256=value,origin=str(origin),kind='own_snapshot')
+            else:
+                commit=request.get('launcher_commit',request['source_commit'])
+                blob=subprocess.check_output(['git','show',commit+':'+str(rel)],cwd=root)
+                require(hashlib.sha256(blob).hexdigest()==value,'Retainedv11 oldROOT origin changed')
+                excluded[name]=dict(sha256=value,origin=commit+':'+str(rel),kind='git_blob')
+            continue
+        require(sha(path)==value,'Retainedv11 old frozen input changed: '+name);frozen[str(path)]=value
+    manifest_path=case/'formal_artifacts.sha256.json'
+    require(Path(review['artifact_manifest']).resolve(strict=True)==manifest_path
+            and review['artifact_manifest_sha256']==spec['formal_artifact_manifest_sha256'],
+            'Retainedv11 review must bind its actual13-entry artifact manifest')
+    entries=validate_closed_formal_artifact_manifest(read(manifest_path),case/'evaluation')
+    for name,item in entries.items():
+        path=Path(name).resolve(strict=True)
+        require(path.stat().st_size==item['bytes'] and sha(path)==item['sha256'],
+                'Retainedv11 formal artifact changed: '+name)
+        frozen[str(path)]=item['sha256']
+    result_path=case/'evaluation/result.json'
+    require(Path(spec['formal_result']).resolve(strict=True)==result_path and sha(result_path)==spec['formal_result_sha256'],
+            'Retainedv11 formal result changed')
+    for path in (case/'request.json',case/'launch.json',case/'launch.lock',run/'params/agent.yaml',Path(receipt['plan_path'])):
+        frozen[str(path)]=sha(path)
+    return dict(kind=spec['kind'],initialization_parent=False,frozen_files=frozen,
+                excluded_prior_active_ROOT_hashes=excluded,checkpoint_sha256=spec['checkpoint_sha256'],formal_joint=813)
+
+
+def validate_closed_v11_records(spec, receipt, producer, formal):
+    """Archive metadata only; this record is explicitly not a policy initializer."""
+    require(spec.get('kind')=='closed_v11_comparison_evidence_not_initializer_v1'
+            and spec.get('initialization_parent') is False and spec['formal_joint']==813,
+            'Closed813 record may not be relabeled an initialization parent')
+    require(receipt['status']=='passed' and receipt['cpu_only'] is True
+            and receipt['checkpoint_format']==ACTIVE_CONTEXT_FORMAT and receipt['committed_updates']==1000
+            and receipt['checkpoint_iteration']==999 and receipt['uncommitted_rollout'] is False
+            and receipt['sha256']==spec['checkpoint_sha256']=='71757b6b58257422b2a58c3dce74e6f551711430fb6c5ba38a6db8c95de5b15f'
+            and producer['status']=='completed' and producer['completed_iterations']==1000
+            and producer['total_timesteps']==24576000 and producer['git_commit']=='985ca33a82c132be7d61710006f06a3747871c77',
+            'Retainedv11 must remain its completed1000 own record, not a restored or new initializer')
+    require(formal['status']=='completed' and formal['successful_envs']==813
+            and formal['checkpoint_sha256']==spec['checkpoint_sha256']
+            and formal['formal_acceptance_passed'] is False,
+            'Retainedv11 original813 formal identity changed')
+    return dict(initialization_parent=False,formal_joint=813,checkpoint_sha256=spec['checkpoint_sha256'])
+
+
+def validate_closed_formal_artifact_manifest(manifest, evaluation_directory):
+    """Validate the pinned list schema and13 paths; do not open artifact bytes."""
+    directory=Path(evaluation_directory).resolve()
+    expected={'agent.yaml','checkpoint.validation.json','checkpoint_run.json','env0.mp4','environment.yaml',
+        'episodes.csv','first_episode_terminal.npz','footfall_events.json','result.json','run.json',
+        'runtime_physical_parameters.npz','saved_observation_normalizers.pt','trajectories.npz'}
+    rows=manifest.get('artifacts')
+    require(Path(manifest['case']).resolve()==directory.parent
+            and isinstance(rows,list) and len(rows)==13,
+            'Retainedv11 manifest must be its actual13-entry list')
+    result={}
+    for row in rows:
+        raw=Path(row['path']);path=raw.resolve()
+        require(raw.is_absolute() and path.parent==directory and path.name in expected
+                and str(path) not in result, 'Retainedv11 manifest path is duplicate/outside the one evaluation directory')
+        value=row['sha256']
+        require(type(row.get('bytes')) is int and row['bytes']>0
+                and isinstance(value,str) and len(value)==64
+                and all(c in '0123456789abcdef' for c in value), 'Retainedv11 artifact size/SHA is malformed')
+        result[str(path)]={'bytes':row['bytes'],'sha256':value}
+    require({Path(name).name for name in result}==expected,'Retainedv11 manifest unique artifact set differs')
+    return result

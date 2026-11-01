@@ -43,7 +43,10 @@ CONTEXT_FORMAT = "h2_guarded_flat_ppo_v10"
 CONTEXT_TRIAL = "explicit_task_context_v1"
 ACTIVE_CONTEXT_TRIAL = "explicit_task_context_active_support_v1"
 ACTIVE_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v11"
-CONTEXT_TRIALS = (CONTEXT_TRIAL, ACTIVE_CONTEXT_TRIAL)
+FULL_OUTWARD_CONTEXT_TRIAL = "explicit_task_context_full_outward_growth_v1"
+FULL_OUTWARD_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v12"
+ACTIVE_CONTEXT_TRIALS = (ACTIVE_CONTEXT_TRIAL, FULL_OUTWARD_CONTEXT_TRIAL)
+CONTEXT_TRIALS = (CONTEXT_TRIAL, *ACTIVE_CONTEXT_TRIALS)
 SUPPORT_POLISH_POLICY = "bounded_dual_active_set_v1"
 COST_PARENT_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
 COST_PARENT_RECEIPT_SHA = "e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b"
@@ -163,7 +166,7 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    if plan.get("trial_protocol")==ACTIVE_CONTEXT_TRIAL:
+    if plan.get("trial_protocol") in ACTIVE_CONTEXT_TRIALS:
         return validate_typed_active_context_transfer(saved,checkpoint,plan,root)
     context=plan.get("trial_protocol")==CONTEXT_TRIAL
     natural=plan.get("trial_protocol") in (COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
@@ -323,7 +326,7 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
-    if algorithm.trial_protocol==ACTIVE_CONTEXT_TRIAL:
+    if algorithm.trial_protocol in ACTIVE_CONTEXT_TRIALS:
         return apply_typed_active_context_transfer(algorithm,normalizers,saved,provenance)
     if algorithm.trial_protocol==CONTEXT_TRIAL:
         return apply_typed_context_policy_transfer(algorithm,normalizers,saved,provenance)
@@ -486,6 +489,8 @@ def validate_typed_active_context_transfer(saved, checkpoint, plan, root):
         fresh_actor_optimizer=True,fresh_critic_optimizer=True,fresh_RND=True,fresh_RND_optimizer=True,
         parent_RNG_loaded=False,new_starting_iteration=0,new_checkpoint=None,
         normalizer_prefix_counts={"actor":24576000,"critic":24576000})
+    if "retained_v11_archive" in custody:
+        result["retained_v11_archive"]=copy.deepcopy(custody["retained_v11_archive"])
     return result
 
 
@@ -493,7 +498,7 @@ def apply_typed_active_context_transfer(algorithm, normalizers, saved, provenanc
     """Copy same-width model and complete own block norms; reset no hidden state."""
     from task_context_normalization import normalization_metadata
     from v11_parent_custody import PARENT_KIND, INITIALIZATION_MODE
-    require(algorithm.trial_protocol==ACTIVE_CONTEXT_TRIAL and provenance["kind"]==PARENT_KIND
+    require(algorithm.trial_protocol in ACTIVE_CONTEXT_TRIALS and provenance["kind"]==PARENT_KIND
             and provenance["mode"]==INITIALIZATION_MODE and provenance["parent_uncommitted_rollout"] is True
             and provenance["parent_natural_completion"] is False and provenance["parent_runtime_rollback_completed"] is True,
             "v11 transfer must preserve restored-parent semantics")
@@ -898,21 +903,21 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
+        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
                 or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
                 "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
-        self.support_polish_enabled=trial_protocol==ACTIVE_CONTEXT_TRIAL
+        self.support_polish_enabled=trial_protocol in ACTIVE_CONTEXT_TRIALS
         require(actor_proposal_support_polish_policy==(SUPPORT_POLISH_POLICY if self.support_polish_enabled else None),
                 "Active-support polish belongs only to the reviewedv11 profile")
         self.projection_support_polish_policy=actor_proposal_support_polish_policy
         self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
-        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -940,7 +945,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(ACTIVE_CONTEXT_FORMAT if trial_protocol==ACTIVE_CONTEXT_TRIAL else CONTEXT_FORMAT if trial_protocol==CONTEXT_TRIAL else CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(FULL_OUTWARD_CONTEXT_FORMAT if trial_protocol==FULL_OUTWARD_CONTEXT_TRIAL else ACTIVE_CONTEXT_FORMAT if trial_protocol==ACTIVE_CONTEXT_TRIAL else CONTEXT_FORMAT if trial_protocol==CONTEXT_TRIAL else CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
