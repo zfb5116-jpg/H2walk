@@ -835,7 +835,7 @@ def verify_complete_v13_parent_files(plan, root):
     require(Path(review['artifact_manifest']).resolve(strict=True)==manifest_path
             and review['artifact_manifest_sha256']==plan['parent_formal_artifact_manifest_sha256'],
             'Natural v13 review must bind its actual13-entry artifact list')
-    for name,item in validate_closed_formal_artifact_manifest(read(manifest_path),formal_case/'evaluation').items():
+    for name,item in validate_complete_v13_formal_artifact_manifest(read(manifest_path),formal_case/'evaluation').items():
         retain(name,item['sha256'],item['bytes'])
     require(all(request['root_hashes'].get(name,value)==value
                 for name,value in request['frozen_files'].items() if name in request['root_hashes']),
@@ -895,4 +895,33 @@ def verify_complete_v13_parent_files(plan, root):
         parent_ROOT_archive_manifest=str(stage/'parent_ROOT_archive_manifest.json'),parent_ROOT_archive_manifest_sha256=COMPLETE_V13_ROOT_ARCHIVE_SHA,
         parent_formal_analysis_closure=str(formal_case/'formal_analysis_closure.json'),parent_formal_analysis_closure_sha256=COMPLETE_V13_FORMAL_CLOSURE_SHA,
         parent_pre_change_custody_review=str(prechange_path),parent_pre_change_custody_review_sha256=COMPLETE_V13_PRE_CHANGE_CUSTODY_SHA)
+    return result
+
+
+
+def validate_complete_v13_formal_artifact_manifest(rows, evaluation_directory):
+    """Parse the actual v13 bare13-row list; do not open any artifact bytes."""
+    directory=Path(evaluation_directory).resolve()
+    expected={'agent.yaml','checkpoint.validation.json','checkpoint_run.json','env0.mp4','environment.yaml',
+        'episodes.csv','first_episode_terminal.npz','footfall_events.json','result.json','run.json',
+        'runtime_physical_parameters.npz','saved_observation_normalizers.pt','trajectories.npz'}
+    require(isinstance(rows,list) and len(rows)==13,
+            'Natural v13 formal manifest must be its native top-level13-entry list')
+    result={}
+    for row in rows:
+        require(isinstance(row,dict) and isinstance(row.get('path'),str) and bool(row['path']),
+                'Natural v13 formal artifact row/path is malformed')
+        raw=Path(row['path']);path=raw.resolve()
+        require(raw.is_absolute() and path.parent==directory and path.name in expected
+                and str(path) not in result,
+                'Natural v13 formal artifact is duplicate/outside the exact evaluation directory')
+        value=row.get('sha256')
+        require(type(row.get('bytes')) is int and row['bytes']>0
+                and type(row.get('mtime_ns')) is int and row['mtime_ns']>=0
+                and isinstance(value,str) and len(value)==64
+                and all(c in '0123456789abcdef' for c in value),
+                'Natural v13 formal artifact size/mtime/SHA is malformed')
+        result[str(path)]={'bytes':row['bytes'],'sha256':value}
+    require({Path(name).name for name in result}==expected,
+            'Natural v13 formal manifest must retain the exact unique13 artifact names')
     return result
