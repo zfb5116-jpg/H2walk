@@ -16,10 +16,14 @@ from stable_baselines3.common.env_util import make_vec_env
 import mujoco_stairs  # noqa: F401 - registers the environment
 
 
+from mujoco_stairs.checkpoint import validate_checkpoint_contract
+
+
 def save_training_state(model: PPO, path: Path, args: argparse.Namespace) -> None:
     model.save(str(path))
     state = {"terrain_mode": args.terrain_mode, "num_timesteps": model.num_timesteps,
              "arguments": vars(args),
+             "training_contract": model.get_env().env_method("get_training_contract")[0],
              "environments": model.get_env().env_method("get_curriculum_state")}
     path.with_suffix(".curriculum.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -60,7 +64,7 @@ class TrainingDiagnostics(BaseCallback):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train H2: flat -> low stairs -> 20 cm stairs")
+    parser = argparse.ArgumentParser(description="WM-LOCO stairs rewards: 12 legs + 3 active waist joints")
     parser.add_argument("--total-timesteps", type=int, default=10_000_000,
                         help="Additional steps to train, including after --init-from")
     parser.add_argument("--n-envs", type=int, default=8)
@@ -69,11 +73,7 @@ def main() -> None:
     parser.add_argument("--low-step-height", type=float, default=0.05)
     parser.add_argument("--curriculum-window", type=int, default=20)
     parser.add_argument("--curriculum-success-rate", type=float, default=0.8)
-    parser.add_argument("--clearance-margin", type=float, default=0.05)
-    parser.add_argument("--swing-reward-weight", type=float, default=2.5)
-    parser.add_argument("--stair-boundary-weight", type=float, default=-0.05)
-    parser.add_argument("--stair-riser-weight", type=float, default=-0.5)
-    parser.add_argument("--stair-tread-weight", type=float, default=0.5)
+    parser.add_argument("--stair-direction", choices=("up", "down", "mixed"), default="mixed")
     parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--init-from", default=None)
     parser.add_argument("--resume-curriculum", action="store_true",
@@ -85,7 +85,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--model-path", default=None)
-    parser.add_argument("--run-dir", default="logs/mujoco_h2_stairs")
+    parser.add_argument("--run-dir", default="logs/mujoco_h2_wm_loco_waist")
     args = parser.parse_args()
     if min(args.n_envs, args.total_timesteps, args.batch_size) < 1 or args.n_steps < 2:
         parser.error("env count, training steps and batch size must be positive; n-steps must be >=2")
@@ -94,17 +94,18 @@ def main() -> None:
     Path(args.run_dir).mkdir(parents=True, exist_ok=True)
     env_kwargs = {name: getattr(args, name) for name in (
         "terrain_mode", "low_step_height", "start_stage", "curriculum_window",
-        "curriculum_success_rate", "clearance_margin", "swing_reward_weight",
-        "stair_boundary_weight", "stair_riser_weight", "stair_tread_weight", "stair_lane_half_width")}
+        "curriculum_success_rate", "stair_direction", "stair_lane_half_width")}
     if args.model_path:
         env_kwargs["model_path"] = args.model_path
-    env = make_vec_env("CtrlLab-H2-Stairs-MuJoCo-v0", n_envs=args.n_envs,
+    env = make_vec_env("CtrlLab-H2-Stairs-MuJoCo-v1", n_envs=args.n_envs,
                        seed=args.seed, env_kwargs=env_kwargs,
-                       monitor_kwargs={"info_keywords": ("success", "terrain_step_height", "max_landed_level")})
+                       monitor_kwargs={"info_keywords": ("success", "terrain_step_height", "stair_completed_treads")})
     try:
         if args.resume_curriculum:
             path = Path(args.init_from).with_suffix(".curriculum.json")
             state = json.loads(path.read_text(encoding="utf-8"))
+            if state.get("training_contract") != env.env_method("get_training_contract")[0]:
+                parser.error("Checkpoint training contract differs; legacy 12-action policies cannot resume")
             if state["terrain_mode"] != "curriculum" or len(state["environments"]) != args.n_envs:
                 parser.error("saved curriculum must be from curriculum mode with the same n-envs")
             for index, saved in enumerate(state["environments"]):
@@ -112,6 +113,7 @@ def main() -> None:
         lr = args.learning_rate if args.learning_rate is not None else (1e-4 if args.init_from else 3e-4)
         batch_size = min(args.batch_size, args.n_envs * args.n_steps)
         if args.init_from:
+            validate_checkpoint_contract(args.init_from, env)
             model = PPO.load(args.init_from, env=env, device=args.device,
                              learning_rate=lr, n_steps=args.n_steps, batch_size=batch_size,
                              tensorboard_log=args.run_dir, seed=args.seed)
@@ -123,7 +125,7 @@ def main() -> None:
                         tensorboard_log=args.run_dir, verbose=1, device=args.device, seed=args.seed)
         model.learn(total_timesteps=args.total_timesteps, callback=TrainingDiagnostics(args),
                     reset_num_timesteps=not bool(args.init_from))
-        save_training_state(model, Path(args.run_dir) / "h2_stairs_lowerbody_ppo", args)
+        save_training_state(model, Path(args.run_dir) / "h2_stairs_waist_ppo", args)
     finally:
         env.close()
 

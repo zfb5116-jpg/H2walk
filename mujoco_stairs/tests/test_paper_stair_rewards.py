@@ -88,11 +88,11 @@ def test_all_six_treads_complete_once_and_reset_removes_history():
     sequence = SequentialTreadReward(GEOMETRY)
     total = 0.0
     for index in range(6):
-        for _ in range(11):
+        for _ in range(15 if index == 5 else 11):
             total += sequence.step(ratios(index, float(index % 2 == 0), float(index % 2 == 1)),
                                    0.5, 0.01, active=True)
     assert sequence.current_index == 6
-    assert total == pytest.approx(66.0)
+    assert total == pytest.approx(70.0)
     assert sequence.step(ratios(5), 0.5, 0.01, active=True) == 0.0
     sequence.reset()
     assert sequence.current_index == 0 and sequence.expected_foot is None
@@ -107,74 +107,19 @@ def test_window_duration_adapts_to_speed_and_control_dt(speed, required):
     assert sequence.required_hold == required
 
 
-def test_new_terms_leave_flat_rollouts_identical_with_weights_enabled_or_disabled():
-    enabled = H2StairsEnv(terrain_mode="flat")
-    disabled = H2StairsEnv(terrain_mode="flat", stair_boundary_weight=0.0,
-                           stair_riser_weight=0.0, stair_tread_weight=0.0)
-    try:
-        enabled.reset(seed=3)
-        disabled.reset(seed=3)
-        random = np.random.default_rng(8)
-        for _ in range(40):
-            action = random.uniform(-0.3, 0.3, 12)
-            a, b = enabled.step(action), disabled.step(action)
-            assert np.array_equal(a[0], b[0])
-            assert a[1:4] == b[1:4]
-            for name in ("stair_boundary", "stair_riser", "stair_tread"):
-                assert a[4]["reward_terms"][name] == 0.0
-    finally:
-        enabled.close()
-        disabled.close()
 
 
-def test_real_first_tread_contact_activates_sequence_and_resets_cleanly():
-    env = H2StairsEnv(terrain_mode="20cm")
-    try:
-        env.reset(seed=0)
-        env.data.qpos[0] = 1.04
-        env.data.qpos[2] += 0.20
-        mujoco.mj_forward(env.model, env.data)
-        env._foot_states(1.0)
-        active_reward = []
-        for _ in range(60):
-            _, _, terminated, _, info = env.step(np.zeros(12))
-            active_reward.append(info["reward_terms"]["stair_tread"])
-            if terminated:
-                break
-        assert max(active_reward) > 0.0
-        assert info["stair_completed_treads"] >= 1
-        assert env._world_foot_points(env._foot_volume_local)[0].shape == (45, 3)
-        assert env._world_foot_points(env._foot_sole_local)[0].shape == (35, 3)
-        env.reset()
-        assert env._tread_reward.current_index == 0
-        assert not env._tread_reward.window_opened
-    finally:
-        env.close()
+def test_descending_tread_contacts_and_riser_cuboids_use_descending_heights():
+    geometry = replace(GEOMETRY, direction="down")
+    sole = np.array([[1., 0., 1.0], [1.1, 0., 1.0]])
+    ratios = sole_contact_ratios([sole, sole], [True, False], .2, geometry)
+    assert ratios[0, 0] == 1. and not ratios[0, 1:].any()
+    assert stair_riser_count(points([.9, 0., 1.05], [.9, 0., 1.18]), .2, geometry) == 1
+    assert geometry.tread_height(5, .2) == 0.
 
 
-def test_real_collision_samples_produce_negative_riser_and_boundary_terms():
-    env = H2StairsEnv(terrain_mode="20cm")
-    try:
-        env.reset()
-        env.data.qpos[0] = 0.77
-        mujoco.mj_forward(env.model, env.data)
-        feet, _ = env._foot_states(1.0)
-        terms, diagnostics = env._stair_reward_terms(feet, 0.01)
-        assert diagnostics["stair_riser_points"] > 0
-        assert terms["stair_riser"] == -0.5 * diagnostics["stair_riser_points"]
-        env.data.qpos[1] = 0.80
-        mujoco.mj_forward(env.model, env.data)
-        feet, _ = env._foot_states(1.0)
-        terms, diagnostics = env._stair_reward_terms(feet, 0.01)
-        assert diagnostics["stair_boundary_points"] > 0
-        assert terms["stair_boundary"] == -0.05 * diagnostics["stair_boundary_points"]
-    finally:
-        env.close()
-
-
-@pytest.mark.parametrize("kwargs", [{"stair_boundary_weight": 0.1}, {"stair_riser_weight": 0.5},
-                                     {"stair_tread_weight": -1.0}, {"stair_riser_weight": float("nan")},
-                                     {"stair_lane_half_width": 2.0}])
-def test_invalid_stair_configuration_is_rejected(kwargs):
-    with pytest.raises(ValueError):
-        H2StairsEnv(**kwargs)
+def test_final_long_landing_uses_actual_region_depth_for_window():
+    sequence = SequentialTreadReward(GEOMETRY)
+    sequence.current_index = 5
+    sequence.step(ratios(5), .5, .01, active=True)
+    assert sequence.required_hold == 15

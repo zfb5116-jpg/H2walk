@@ -1,8 +1,4 @@
-"""MuJoCo H2 stair-climbing branch.
-
-The policy controls the 12 leg joints only.  Waist and arm joints are kept at
-the H2 standing pose by :class:`H2StairsEnv`.
-"""
+"""MuJoCo H2 stairs: WM-LOCO rewards and 15 leg+waist policy actions."""
 
 from .h2_stairs_env import H2StairsEnv
 

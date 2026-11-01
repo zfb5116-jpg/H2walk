@@ -13,18 +13,17 @@ import numpy as np
 from stable_baselines3 import PPO
 
 import mujoco_stairs  # noqa: F401 - registers the environment
+from mujoco_stairs.checkpoint import validate_checkpoint_contract
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate a lower-body H2 stair policy")
+    parser = argparse.ArgumentParser(description="Evaluate a WM-LOCO leg+waist H2 policy")
     parser.add_argument("checkpoint")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--terrain-mode", choices=("flat", "low", "20cm"), default="20cm")
     parser.add_argument("--low-step-height", type=float, default=0.05)
-    parser.add_argument("--stair-boundary-weight", type=float, default=-0.05)
-    parser.add_argument("--stair-riser-weight", type=float, default=-0.5)
-    parser.add_argument("--stair-tread-weight", type=float, default=0.5)
+    parser.add_argument("--stair-direction", choices=("up", "down", "mixed"), default="mixed")
     parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default=None, help="Write per-episode diagnostics as JSON")
@@ -32,12 +31,19 @@ def main() -> None:
     if args.episodes < 1:
         parser.error("episodes must be positive")
     kwargs = {"terrain_mode": args.terrain_mode, "low_step_height": args.low_step_height}
-    kwargs.update({name: getattr(args, name) for name in ("stair_boundary_weight", "stair_riser_weight",
-                                                         "stair_tread_weight", "stair_lane_half_width")})
+    kwargs.update(stair_direction=args.stair_direction, stair_lane_half_width=args.stair_lane_half_width)
     if args.model_path:
         kwargs["model_path"] = args.model_path
-    env = gym.make("CtrlLab-H2-Stairs-MuJoCo-v0", **kwargs)
-    policy = PPO.load(args.checkpoint)
+    env = gym.make("CtrlLab-H2-Stairs-MuJoCo-v1", **kwargs)
+    try:
+        validate_checkpoint_contract(args.checkpoint, env, allow_direction_change=True)
+        policy = PPO.load(args.checkpoint, device="cpu")
+    except Exception:
+        env.close()
+        raise
+    if policy.observation_space != env.observation_space or policy.action_space != env.action_space:
+        env.close()
+        raise ValueError("Expected a new 86-observation/15-action policy; old leg-only checkpoints are incompatible")
     successes = []
     episodes = []
     for episode in range(args.episodes):
@@ -60,16 +66,17 @@ def main() -> None:
                 totals[name] = totals.get(name, 0.0) + value
         successes.append(success)
         episodes.append({"success": success, "max_x": float(max_x), "steps": steps,
-                         "max_landed_level": info["max_landed_level"],
+                         "stair_direction": info["stair_direction"],
                          "sequential_treads": max_treads, "reward_totals": totals})
+    contract = env.unwrapped.get_training_contract()
     env.close()
     print(f"{args.terrain_mode} success: {np.mean(successes):.1%} ({sum(successes)}/{len(successes)})")
     print(f"mean max x: {np.mean([e['max_x'] for e in episodes]):.3f} m; "
-          f"mean highest landed stair: {np.mean([e['max_landed_level'] for e in episodes]):.2f}")
+          f"mean completed sequential treads: {np.mean([e['sequential_treads'] for e in episodes]):.2f}")
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"terrain_mode": args.terrain_mode, "episodes": episodes}, indent=2), encoding="utf-8")
+        path.write_text(json.dumps({"terrain_mode": args.terrain_mode, "training_contract": contract, "episodes": episodes}, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

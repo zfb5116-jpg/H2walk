@@ -22,6 +22,15 @@ class StairGeometry:
     riser_half_thickness: float = 0.02
     riser_top_exclusion: float = 0.04
     sole_height_tolerance: float = 0.02
+    direction: str = "up"
+
+    def __post_init__(self):
+        if self.direction not in ("up", "down"):
+            raise ValueError("Stair direction must be up or down")
+
+    def tread_height(self, index: int, step_height: float) -> float:
+        level = index + 1 if self.direction == "up" else self.step_count - index - 1
+        return level * step_height
 
     def tread_bounds(self, index: int) -> tuple[float, float]:
         start = self.first_edge + index * self.tread_depth
@@ -50,7 +59,7 @@ def stair_riser_count(foot_volume_points: list[np.ndarray], step_height: float,
     """Count volume points in thin cuboids over risers, excluding top 4 cm.
 
     An exclusion equal to a shallow riser's full height leaves no cuboid. This
-    is intentional; clearance shaping still teaches the 4 cm curriculum stage.
+    is intentional and follows the paper; tread/contact shaping remains active.
     Overlapping cuboids are a union: each point can be counted only once.
     """
     if step_height <= geometry.riser_top_exclusion:
@@ -59,10 +68,11 @@ def stair_riser_count(foot_volume_points: list[np.ndarray], step_height: float,
     inside = np.zeros(len(points), dtype=bool)
     for index in range(geometry.step_count):
         edge = geometry.first_edge + index * geometry.tread_depth
+        bottom = index * step_height if geometry.direction == "up" else (geometry.step_count - index - 1) * step_height
         inside |= ((np.abs(points[:, 0] - edge) <= geometry.riser_half_thickness)
                    & (np.abs(points[:, 1]) <= geometry.physical_half_width)
-                   & (points[:, 2] >= index * step_height)
-                   & (points[:, 2] < (index + 1) * step_height - geometry.riser_top_exclusion))
+                   & (points[:, 2] >= bottom)
+                   & (points[:, 2] < bottom + step_height - geometry.riser_top_exclusion))
     return int(np.count_nonzero(inside))
 
 
@@ -84,7 +94,7 @@ def sole_contact_ratios(sole_points: list[np.ndarray], supported: list[bool],
             start, end = geometry.tread_bounds(index)
             inside = ((points[:, 0] >= start + 0.005) & (points[:, 0] <= end - 0.005)
                       & (np.abs(points[:, 1]) <= geometry.lane_half_width)
-                      & (np.abs(points[:, 2] - (index + 1) * step_height)
+                      & (np.abs(points[:, 2] - geometry.tread_height(index, step_height))
                          <= geometry.sole_height_tolerance))
             ratios[foot_id, index] = np.count_nonzero(inside) / len(points)
     return ratios
@@ -122,9 +132,8 @@ class SequentialTreadReward:
         if not self.window_opened:
             if not qualified.any():
                 return 0.0
-            # Use a nominal tread depth even on the longer finishing platform;
-            # otherwise its reward duration would depend on the goal extension.
-            tau = float(np.clip(self.geometry.tread_depth / (2.0 * command_speed * dt), 5.0, 50.0))
+            start, end = self.geometry.tread_bounds(self.current_index)
+            tau = float(np.clip((end - start) / (2.0 * command_speed * dt), 5.0, 50.0))
             self.window_remaining = int(math.ceil(tau))
             self.required_hold = int(math.ceil(0.3 * tau))
             self.window_opened = True
