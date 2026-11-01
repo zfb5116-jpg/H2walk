@@ -12,7 +12,7 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.save_interval=500
         self.algorithm.class_name='H2GuardedPPO'
         self.policy.extra_context_dim=5
-        self.algorithm.trial_protocol='explicit_task_context_v1'
+        self.algorithm.trial_protocol='explicit_task_context_active_support_v1'
         self.algorithm.actor_action_budget_penalty_weight=0.
         self.algorithm.actor_action_budget_penalty_epsilon=1.e-6
         self.algorithm.actor_proposal_projection='simultaneous_actual_bank_reserved_linear_v1'
@@ -21,6 +21,7 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.algorithm.actor_proposal_max_active_rows=None
         self.algorithm.actor_proposal_jacobian_arena_budget_bytes=1073741824
         self.algorithm.actor_proposal_primal_precision_policy='direct_fp64_primal_envelope_v1'
+        self.algorithm.actor_proposal_support_polish_policy='bounded_dual_active_set_v1'
         self.algorithm.actor_proposal_max_solver_sweeps=2048
         self.algorithm.learning_rate=1.e-5
         self.algorithm.actor_learning_rate=1.e-5

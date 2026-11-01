@@ -95,8 +95,9 @@ def main():
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
         trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
-        context_flat = trial_protocol == "explicit_task_context_v1"
-        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1")
+        active_support_flat = trial_protocol == "explicit_task_context_active_support_v1"
+        context_flat = trial_protocol in ("explicit_task_context_v1", "explicit_task_context_active_support_v1")
+        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1")
         expected_initial_sha = {
             "guarded_flat_balance_v1":"ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688",
             "overspeed_credit_action_margin_v1":"01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68",
@@ -108,13 +109,14 @@ def main():
             "outward_tilt_growth_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
             "episode_clean_force_eligibility_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
             "explicit_task_context_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
+            "explicit_task_context_active_support_v1":"b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce",
         }.get(trial_protocol)
         if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != ([1034,871,73,12] if context_flat else [1029,866,73,12])
                 or guarded_plan["initial_policy_sha256"] != expected_initial_sha
                 or expected_initial_sha is None
                 or args.num_envs != 1024 or args.seed != 42):
             raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
-        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1"):
             from evaluate_flat_balance_policy import (validate_episode_force_reward_plan,
                                                      validate_episode_force_reward_metadata)
             validate_episode_force_reward_plan(guarded_plan)
@@ -169,12 +171,14 @@ def main():
         training_tool_names.append("stair_exploration.py")
     if guarded_flat:
         training_tool_names.append("guarded_flat_ppo.py")
-        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
+        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1"):
             training_tool_names.append("functional_proposal.py")
-        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1"):
             training_tool_names.extend(["evaluate_flat_balance_policy.py", "evaluate_direct_initialization.py"])
         if context_flat:
             training_tool_names.extend(["task_context_normalization.py", "task_context_metadata.py"])
+        if active_support_flat:
+            training_tool_names.append("v11_parent_custody.py")
     for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)
     shutil.copy2(args.stop_policy, source_dir / "stop_policy.json")
@@ -307,7 +311,7 @@ def main():
                 raise ValueError(f"Non-finite initial observations in {name}")
         if guarded_flat:
             metadata["runtime_flat_geometry"] = env.unwrapped.runtime_contract
-            if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
+            if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1"):
                 validate_episode_force_reward_metadata(metadata["runtime_flat_geometry"], guarded_plan)
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"[H2] Runtime dimensions: {json.dumps(metadata['observation_shapes'])}; "
@@ -351,14 +355,24 @@ def main():
                         or digest != guarded_plan["initial_policy_sha256"]):
                     raise ValueError("Guarded-flat is not initializing its exact reviewed policy parent")
                 for name in ("obs_norm_state_dict", "privileged_obs_norm_state_dict"):
-                    if int(boot[name]["count"]) != 24576000:
+                    if int(boot[name]["prefix.count" if active_support_flat else "count"]) != 24576000:
                         raise ValueError("Guarded-flat inherited normalization count changed")
                 # Only this distinct repair trial permits the already measured
                 # unsuccessful initializer; it is not a declaration of readiness.
                 metadata["guarded_flat_initial_policy_not_ready"] = True
             metadata["initial_policy_sha256"] = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
             if guarded_flat:
-                if context_flat:
+                if active_support_flat:
+                    if not all(transfer.get(key) is True for key in ("actor_and_critic_loaded_bitwise","dualnorm_loaded_bitwise","same_width_context_transfer")):
+                        raise RuntimeError("v11 must transfer the complete same-width model and own norms")
+                    metadata["initial_actor_weights_match_parent_exactly"] = True
+                    metadata["initial_critic_weights_match_parent_exactly"] = True
+                    for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
+                        if path.is_file() and "__pycache__" not in path.parts and path.suffix!=".pyc":
+                            if hashlib.sha256(path.read_bytes()).hexdigest()!=parent_source_hashes.get(str(path.relative_to(ROOT))):
+                                raise RuntimeError("v11 network must retain the exact parent source")
+                    metadata["initial_network_source_matches_parent_exactly"] = True
+                elif context_flat:
                     if not all(transfer.get(key) is True for key in (
                         "actor_and_critic_prefix_loaded_bitwise","dualnorm_prefix_loaded_bitwise","new_context_columns_zero")):
                         raise RuntimeError("Initial context transfer did not verify inherited prefixes and zero columns")

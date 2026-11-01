@@ -277,7 +277,7 @@ class SupervisedRunner(OnPolicyRunner):
             # RND state or the later step normalization path.
             restore_act()
             normalizers = {"actor": self.obs_normalizer, "critic": self.privileged_obs_normalizer}
-            context=getattr(self.alg,"trial_protocol",None)=="explicit_task_context_v1"
+            context=getattr(self.alg,"trial_protocol",None) in ("explicit_task_context_v1","explicit_task_context_active_support_v1")
             if context:
                 preprocessing["last_normalizer_prefix_counts_before"]={
                     name:int(normalizer.prefix_count) for name,normalizer in normalizers.items()}

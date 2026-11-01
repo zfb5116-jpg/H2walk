@@ -26,7 +26,8 @@ from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snaps
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy, LEGS
 from evaluate_flat_balance_policy import (validate_outward_reward_plan, validate_outward_reward_metadata,
                                          validate_episode_force_reward_plan, validate_episode_force_reward_metadata)
-from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, validate_task_context_plan,
+from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT,
+    CONTEXT_PROTOCOLS, validate_task_context_plan,
     validate_task_context_metadata, validate_normalization_metadata)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -165,7 +166,8 @@ def preflight(args):
     require(declared.get("status") == "reviewed_ready", "Flat repair implementation has not been reviewed")
     require([declared[k] for k in ("task", "num_envs", "num_steps_per_env", "max_iterations", "save_interval")]
             == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
-    context=declared.get("trial_protocol")==CONTEXT_PROTOCOL
+    active=declared.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL
+    context=declared.get("trial_protocol") in CONTEXT_PROTOCOLS
     if context:
         validate_task_context_plan(declared)
         require(declared.get("source_commit")==git("rev-parse","HEAD"),
@@ -175,9 +177,9 @@ def preflight(args):
                                                     for path,value in root_hashes().items()},
                 "Actual ROOT source/tools set differs from the completed independent review")
         deltas=declared.get("reported_source_delta_sha256",{})
-        expected_deltas={"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/actor_critic_our.py",
+        expected_deltas=({"tools/functional_proposal.py"} if active else {"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/actor_critic_our.py",
                          "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/direct_initialization.py",
-                         "tools/functional_proposal.py"}
+                         "tools/functional_proposal.py"})
         require(set(deltas)==expected_deltas and all(digest(ROOT/k)==v for k,v in deltas.items()),
                 "Reported context source adapters are not exactly reviewed/pinned")
     else:
@@ -186,13 +188,13 @@ def preflight(args):
     clean_force = context or declared.get("trial_protocol") == CLEAN_FORCE_PROTOCOL
     outward_tilt = clean_force or declared.get("trial_protocol") == OUTWARD_TILT_PROTOCOL
     velocity_cost = declared.get("trial_protocol") == VELOCITY_COST_PROTOCOL
-    natural_parent = outward_tilt or velocity_cost
-    precision = natural_parent or declared.get("trial_protocol") == PRECISION_PROTOCOL
+    natural_parent = (outward_tilt or velocity_cost) and not active
+    precision = outward_tilt or velocity_cost or declared.get("trial_protocol") == PRECISION_PROTOCOL
     resource = precision or declared.get("trial_protocol") == RESOURCE_PROTOCOL
     reserved = resource or declared.get("trial_protocol") == RESERVED_PROTOCOL
     projected = reserved or declared.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    expected_initial_sha = VELOCITY_COST_SHA if natural_parent else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
+    expected_initial_sha = "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else VELOCITY_COST_SHA if natural_parent else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
     require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
     receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
@@ -218,11 +220,11 @@ def preflight(args):
     if context:
         frozen.update(hashes(ROOT/"artifacts/flat_forward"))
     if transfer:
-        require(declared.get("initial_parent_kind") == ("saved_complete_PPO_v6_context_extension_transfer" if context else "saved_complete_PPO_v6_policy_transfer" if natural_parent else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
-                and declared.get("initialization_mode") == ("extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization" if context else "transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if natural_parent else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
+        require(declared.get("initial_parent_kind") == ("saved_guard_restored_v10_context_policy_transfer" if active else "saved_complete_PPO_v6_context_extension_transfer" if context else "saved_complete_PPO_v6_policy_transfer" if natural_parent else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
+                and declared.get("initialization_mode") == ("transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else "extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization" if context else "transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if natural_parent else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
                 "New trial must explicitly transfer model/norm only and start fresh optimization")
-        require(receipt.get("checkpoint_format") == ("h2_guarded_flat_ppo_v6" if natural_parent else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
-                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (1000 if natural_parent else 183 if precision else 613 if resource else 105 if reserved else 101 if projected else 165)
+        require(receipt.get("checkpoint_format") == (CONTEXT_FORMAT if active else "h2_guarded_flat_ppo_v6" if natural_parent else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
+                and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (372 if active else 1000 if natural_parent else 183 if precision else 613 if resource else 105 if reserved else 101 if projected else 165)
                 and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
         parent_run = inside(declared["initial_parent_run"])
         require(str(parent_run) == receipt["producer_run"] and digest(parent_run) == receipt["producer_run_sha256"]
@@ -239,7 +241,7 @@ def preflight(args):
                     and calibration.get("command_m_s")==.3
                     and calibration.get("maximum_positive_forward_rate")==3.,
                     "Reviewed complete-parent/command-scaled existing-cost profile changed")
-        if outward_tilt:
+        if outward_tilt and not active:
             require(declared.get("parent_natural_completion") is True
                     and declared.get("parent_runtime_rollback_completed") is False
                     and declared.get("parent_accepted_updates")==1000
@@ -249,12 +251,17 @@ def preflight(args):
                 validate_episode_force_reward_plan(declared)
             else:
                 validate_outward_reward_plan(declared)
+        if active:
+            from v11_parent_custody import verify_parent_files
+            active_parent=verify_parent_files(declared,ROOT)
+            frozen.update(active_parent["frozen_files"])
+            validate_episode_force_reward_plan(declared)
         parent_source = inside(declared["initial_parent_source_root"])
         actual_source = {"source/" + str(Path(path).relative_to(parent_source)): value for path, value in hashes(parent_source).items()}
         require(actual_source == receipt["source_sha256"], "Parent model's training source changed")
         for name, expected in declared["protected_network_input_native_source_sha256"].items():
             require(expected == receipt["source_sha256"][name],"Protected parent source changed: "+name)
-            child_expected=declared["reported_source_delta_sha256"].get(name,expected) if context else expected
+            child_expected=declared["reported_source_delta_sha256"].get(name,expected) if context and not active else expected
             require(digest(ROOT/name)==child_expected,"Child source differs from the exact reviewed adapter: "+name)
         require(declared["learning"]["actor_action_budget_penalty"]["weight"] == (0. if projected else .01)
                 and declared["learning"]["actor_action_budget_penalty"]["epsilon"] == 1e-6,
@@ -277,9 +284,10 @@ def preflight(args):
                         "Reviewed CPU-byte-derived coverage changed")
             if precision:
                 require(projection.get("primal_precision_policy")=="direct_fp64_primal_envelope_v1"
-                        and projection.get("max_polish_per_QP")==1
-                        and projection.get("max_support_pivots")==0
-                        and projection.get("max_polish_per_projection")==28,
+                        and projection.get("max_polish_per_QP")== (1345 if active else 1)
+                        and projection.get("max_support_pivots")== (1344 if active else 0)
+                        and projection.get("max_polish_per_projection")== (37660 if active else 28)
+                        and (not active or projection.get("support_polish_policy")=="bounded_dual_active_set_v1"),
                         "Reviewed strict primal feasibility policy changed")
         frozen[str(parent_run)] = digest(parent_run)
         frozen[str(parent_run.parent / "params/agent.yaml")] = digest(parent_run.parent / "params/agent.yaml")
@@ -349,6 +357,7 @@ def preflight(args):
                 initial_policy=str(initial), initial_policy_sha256=expected_initial_sha,
                 initial_parent_kind=declared.get("initial_parent_kind", "direct_imitation_initializer_v1"),
                 trial_protocol=declared.get("trial_protocol", "guarded_flat_balance_v1"),
+                **({"parent_excluded_prior_active_ROOT_hashes":active_parent["excluded_prior_active_ROOT_hashes"]} if active else {}),
                 plan_path=str(plan), plan_sha256=digest(plan), duplicate_guard=str(guard),
                 parent_case=str(parent) if parent else None,
                 checkpoint=str(checkpoint) if checkpoint else None,
@@ -703,7 +712,7 @@ def check_inputs(request):
         changes.append("Actual imported source snapshot file set or bytes")
     if request.get("dataset") and dataset_stats(request["dataset"]) != request["dataset_stats"]:
         changes.append("Fixed real audit dataset identity changed")
-    if request.get("trial_protocol")==CONTEXT_PROTOCOL and request.get("job_kind")==KIND:
+    if request.get("trial_protocol") in CONTEXT_PROTOCOLS and request.get("job_kind")==KIND:
         seal_path=Path(request["case"])/"actual_bank.sealed.json"
         state=read(Path(request["case"])/"supervision.json")
         if seal_path.is_file():
@@ -739,7 +748,8 @@ def startup_contract(metadata, request):
     expect(metadata.get("initial_policy_sha256") == request["initial_policy_sha256"], "Wrong actual initializer")
     expect([metadata.get(k) for k in ("num_envs", "num_steps_per_env", "max_iterations", "save_interval", "num_actions")]
            == [1024, 24, 1000, 500, 12], "Wrong sampling/action/iteration budget")
-    context=request.get("trial_protocol")==CONTEXT_PROTOCOL
+    active=request.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL
+    context=request.get("trial_protocol") in CONTEXT_PROTOCOLS
     expect(metadata.get("policy_shape") == [1024, 1034 if context else 1029], "Actor layout changed")
     shapes = metadata.get("observation_shapes", {})
     expect(shapes.get("critic") == [1024, 871 if context else 866] and shapes.get("rnd_state") == [1024, 73], "Critic/RND layout changed")
@@ -774,16 +784,16 @@ def startup_contract(metadata, request):
     reserved = resource or request.get("trial_protocol") == RESERVED_PROTOCOL
     projected = reserved or request.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or request.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    actor_flag = ("initial_actor_prefix_and_zero_columns_verified" if context else
+    actor_flag = ("initial_actor_weights_match_parent_exactly" if active else "initial_actor_prefix_and_zero_columns_verified" if context else
                   "initial_actor_weights_match_parent_exactly" if transfer else "initial_actor_weights_match_ce822_exactly")
-    source_flag = ("initial_context_source_matches_reviewed_delta" if context else
+    source_flag = ("initial_network_source_matches_parent_exactly" if active else "initial_context_source_matches_reviewed_delta" if context else
                    "initial_network_source_matches_parent_exactly" if transfer else "initial_network_source_matches_ce822_exactly")
     expect(metadata.get(actor_flag) is True and metadata.get(source_flag) is True,
            "Actual initialized actor/network does not match the reviewed candidate")
     if transfer:
-        expect(metadata.get("initial_critic_prefix_and_zero_columns_verified" if context else "initial_critic_weights_match_parent_exactly") is True,
+        expect(metadata.get("initial_critic_prefix_and_zero_columns_verified" if context and not active else "initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == (CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
+        expect(guarded.get("optimizer_format") == (ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
         expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
@@ -811,9 +821,10 @@ def startup_contract(metadata, request):
                        "Runtime compute coverage is not the reviewed fixed CPU-byte-derived resource protocol")
             if precision:
                 expect(proposal.get("primal_precision_policy")=="direct_fp64_primal_envelope_v1"
-                       and proposal.get("max_polish_per_QP")==1
-                       and proposal.get("max_support_pivots")==0
-                       and proposal.get("max_polish_per_projection")==28
+                       and proposal.get("max_polish_per_QP")== (1345 if active else 1)
+                       and proposal.get("max_support_pivots")== (1344 if active else 0)
+                       and proposal.get("max_polish_per_projection")== (37660 if active else 28)
+                       and (not active or proposal.get("support_polish_policy")=="bounded_dual_active_set_v1")
                        and proposal.get("solver_optimality_and_direct_primal_separate") is True
                        and proposal.get("primal_envelope_is_machine_derived") is True
                        and proposal.get("final_same_direction_cast_JVP_required") is True,
@@ -839,8 +850,30 @@ def startup_contract(metadata, request):
             validate_normalization_metadata(guarded.get("normalization_abi"),guarded.get("normalizer_prefix_counts"))
         except (RuntimeError,TypeError,ValueError) as error:
             errors.append(str(error))
-        expect({"task_context_normalization.py","task_context_metadata.py"}.issubset(metadata.get("training_tool_sha256",{})),
+        expect(({"task_context_normalization.py","task_context_metadata.py"}|({"v11_parent_custody.py"} if active else set())).issubset(metadata.get("training_tool_sha256",{})),
                "Explicit context producer omitted normalization/metadata source dependencies")
+    if active:
+        transfer_record=metadata.get("initial_policy_transfer",{})
+        expect(guarded.get("trial_protocol")==learning.get("trial_protocol")==ACTIVE_CONTEXT_PROTOCOL,
+               "v11 runtime state protocol differs")
+        expect(transfer_record.get("kind")=="saved_guard_restored_v10_context_policy_transfer"
+               and transfer_record.get("mode")=="transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization"
+               and transfer_record.get("parent_accepted_updates")==372
+               and transfer_record.get("parent_last_complete_iteration")==371
+               and transfer_record.get("parent_uncommitted_rollout") is True
+               and transfer_record.get("parent_natural_completion") is False
+               and transfer_record.get("parent_runtime_rollback_completed") is True
+               and transfer_record.get("same_width_context_transfer") is True
+               and transfer_record.get("actor_and_critic_loaded_bitwise") is True
+               and transfer_record.get("dualnorm_loaded_bitwise") is True
+               and transfer_record.get("loading_did_not_change_fresh_RNG") is True
+               and transfer_record.get("model_and_dualnorm_only") is True
+               and all(transfer_record.get(key) is True for key in ("fresh_actor_optimizer","fresh_critic_optimizer","fresh_RND","fresh_RND_optimizer"))
+               and transfer_record.get("parent_RNG_loaded") is False
+               and transfer_record.get("new_starting_iteration")==0
+               and transfer_record.get("new_checkpoint") is None
+               and transfer_record.get("normalizer_prefix_counts")=={"actor":24576000,"critic":24576000},
+               "v11 actual initializer must be the restored372 same-width model/norm-only transfer")
     if outward_tilt:
         try:
             if clean_force:

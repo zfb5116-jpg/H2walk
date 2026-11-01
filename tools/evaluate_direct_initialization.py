@@ -428,7 +428,7 @@ def evaluate(args, app, source, receipt, metadata):
         require(covered==set(qids), "Missing native leg actuator coverage")
         metadata["native_actuator_certificate"]=actuator_certificate
         obs, extras = wrapped.get_observations()
-        context=saved.get("format")=="h2_guarded_flat_ppo_v10"
+        context=saved.get("format") in ("h2_guarded_flat_ppo_v10","h2_guarded_flat_ppo_v11")
         require(tuple(obs.shape)==(n,1034 if context else 1029)
                 and tuple(extras["observations"]["critic"].shape)==(n,871 if context else 866), "Observation layout mismatch")
         require(bool((raw.episode_length_buf==0).all()) and bool((raw.action_manager.action==0).all()), "First episodes do not start at actual reset")

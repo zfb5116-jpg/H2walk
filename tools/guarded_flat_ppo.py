@@ -41,6 +41,10 @@ CLEAN_FORCE_FORMAT = "h2_guarded_flat_ppo_v9"
 CLEAN_FORCE_TRIAL = "episode_clean_force_eligibility_v1"
 CONTEXT_FORMAT = "h2_guarded_flat_ppo_v10"
 CONTEXT_TRIAL = "explicit_task_context_v1"
+ACTIVE_CONTEXT_TRIAL = "explicit_task_context_active_support_v1"
+ACTIVE_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v11"
+CONTEXT_TRIALS = (CONTEXT_TRIAL, ACTIVE_CONTEXT_TRIAL)
+SUPPORT_POLISH_POLICY = "bounded_dual_active_set_v1"
 COST_PARENT_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
 COST_PARENT_RECEIPT_SHA = "e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b"
 COST_PARENT_RUN_SHA = "797aecdb0c137d57f396fd7705940921b0ea9624c7b75323f8bcde58caf9e33c"
@@ -159,6 +163,8 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
+    if plan.get("trial_protocol")==ACTIVE_CONTEXT_TRIAL:
+        return validate_typed_active_context_transfer(saved,checkpoint,plan,root)
     context=plan.get("trial_protocol")==CONTEXT_TRIAL
     natural=plan.get("trial_protocol") in (COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
     strict=plan.get("trial_protocol")==STRICT_TRIAL
@@ -317,6 +323,8 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
+    if algorithm.trial_protocol==ACTIVE_CONTEXT_TRIAL:
+        return apply_typed_active_context_transfer(algorithm,normalizers,saved,provenance)
     if algorithm.trial_protocol==CONTEXT_TRIAL:
         return apply_typed_context_policy_transfer(algorithm,normalizers,saved,provenance)
     require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL) and algorithm.completed_updates==0
@@ -443,12 +451,90 @@ class FunctionalUpdateRejected(RuntimeError):
         self.reason_kind=reason_kind
 
 
+def validate_typed_active_context_transfer(saved, checkpoint, plan, root):
+    """Validate the exact complete restored-v10 parent; do not resume state."""
+    from v11_parent_custody import verify_parent_files, PARENT_KIND, INITIALIZATION_MODE
+    custody=verify_parent_files(plan,root)
+    require(saved.get("format")==CONTEXT_FORMAT and saved.get("trial_protocol")==CONTEXT_TRIAL
+            and saved.get("iter")==371, "v11 initializer is not the exact restored-v10 model")
+    gs=saved["guarded_ppo_state"]
+    require(gs["completed_updates"]==372 and gs["uncommitted_rollout"] is True
+            and gs["actor_optimizer_steps"]==6640 and gs["critic_optimizer_steps"]==gs["rnd_optimizer_steps"]==7440
+            and gs["rnd_update_counter"]==saved["rnd_runtime"]["update_counter"]==8952
+            and gs["proposal_projection"]["committed_minibatches"]==6640,
+            "Actualv10 parent packet history differs from its complete CPU receipt")
+    protected=plan["protected_network_input_native_source_sha256"]
+    require(len(protected)==14 and all(custody["parent_source_sha256"].get(key)==value
+            and sha(Path(root)/key)==value for key,value in protected.items()),
+            "v11 may not change the inherited network/input/native14 source files")
+    result=dict(kind=PARENT_KIND,mode=INITIALIZATION_MODE,
+        parent_checkpoint=str(Path(checkpoint).resolve(strict=True)),parent_checkpoint_sha256=plan["initial_policy_sha256"],
+        parent_CPU_receipt=plan["initial_policy_CPU_receipt"],parent_CPU_receipt_sha256=plan["initial_policy_CPU_receipt_sha256"],
+        parent_run=plan["initial_parent_run"],parent_run_sha256=plan["initial_parent_run_sha256"],
+        parent_source_root=plan["initial_parent_source_root"],parent_source_sha256=custody["parent_source_sha256"],
+        parent_source_commit="18840a7e87558e5f664f4ee0996cacc30821b8ba",
+        parent_external_dependency_sha256=json.loads(Path(plan["initial_policy_CPU_receipt"]).read_text())["external_dependency_sha256"],
+        parent_accepted_updates=372,parent_last_complete_iteration=371,parent_uncommitted_rollout=True,
+        parent_natural_completion=False,parent_runtime_rollback_completed=True,parent_rollback_evidence=custody["parent_rollback_evidence"],
+        parent_persistent_state_digest=custody["parent_persistent_state_digest"],
+        parent_formal_review=custody["parent_formal_review"],parent_formal_review_sha256=custody["parent_formal_review_sha256"],
+        parent_formal_result=custody["parent_formal_result"],parent_formal_result_sha256=custody["parent_formal_result_sha256"],
+        parent_formal_successful_envs=842,parent_formal_acceptance_passed=False,
+        protected_network_input_native_source_sha256=protected,model_and_dualnorm_only=True,
+        same_width_context_transfer=True,network_or_input_structure_changed=False,raw_context_semantics_unchanged=True,
+        parent_network_dimensions=[1034,871,73,12],network_dimensions=[1034,871,73,12],
+        fresh_actor_optimizer=True,fresh_critic_optimizer=True,fresh_RND=True,fresh_RND_optimizer=True,
+        parent_RNG_loaded=False,new_starting_iteration=0,new_checkpoint=None,
+        normalizer_prefix_counts={"actor":24576000,"critic":24576000})
+    return result
+
+
+def apply_typed_active_context_transfer(algorithm, normalizers, saved, provenance):
+    """Copy same-width model and complete own block norms; reset no hidden state."""
+    from task_context_normalization import normalization_metadata
+    from v11_parent_custody import PARENT_KIND, INITIALIZATION_MODE
+    require(algorithm.trial_protocol==ACTIVE_CONTEXT_TRIAL and provenance["kind"]==PARENT_KIND
+            and provenance["mode"]==INITIALIZATION_MODE and provenance["parent_uncommitted_rollout"] is True
+            and provenance["parent_natural_completion"] is False and provenance["parent_runtime_rollback_completed"] is True,
+            "v11 transfer must preserve restored-parent semantics")
+    require(algorithm.completed_updates==algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps
+            ==algorithm.rnd_optimizer_steps==0 and not algorithm.actor_optimizer.state
+            and not algorithm.critic_optimizer.state and not algorithm.rnd_optimizer.state
+            and algorithm.rnd.update_counter==0, "v11 must start all optimization/RND counters fresh")
+    rnd_before=state_digest(algorithm.rnd.state_dict())
+    rng_before=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    require(set(algorithm.policy.state_dict())==set(saved["model_state_dict"])
+            and all(a.shape==saved["model_state_dict"][key].shape for key,a in algorithm.policy.state_dict().items()),
+            "v11 must not extend, truncate or rename any model tensor")
+    algorithm.policy.load_state_dict(saved["model_state_dict"],strict=True)
+    for key,value in algorithm.policy.state_dict().items():
+        require(torch.equal(value.detach().cpu(),saved["model_state_dict"][key].detach().cpu()),
+                "v11 full inherited model differs: "+key)
+    for name,key in (("actor","obs_norm_state_dict"),("critic","privileged_obs_norm_state_dict")):
+        normalizers[name].load_state_dict(saved[key],strict=True);normalizers[name].eval()
+        require(state_digest(normalizers[name].state_dict())==state_digest(saved[key]),
+                "v11 full own prefix/fixed-context normalization differs")
+    abi=normalization_metadata(normalizers)
+    require(abi==saved["normalization_abi"] and abi["prefix_empirical_counts"]=={"actor":24576000,"critic":24576000},
+            "v11 own normalization ABI/counts changed")
+    require(rnd_before==state_digest(algorithm.rnd.state_dict()),"v11 imported parentRND state")
+    rng_after=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    require(rng_before==rng_after,"v11 changed/imported fresh RNG during parameter transfer")
+    result=copy.deepcopy(provenance)
+    result.update(actor_and_critic_loaded_bitwise=True,dualnorm_loaded_bitwise=True,
+        normalization_abi=abi,fresh_RND_digest=rnd_before,loading_did_not_change_fresh_RNG=True)
+    algorithm.initialization_transfer=result
+    return result
+
+
 class RealInputFunctionalGuard:
     def __init__(self, algorithm, normalizers, exploration, fixed_bank, directory, maximum_angle=MAX_ANGLE,
                  *, acquisition_spec=None, on_bank_sealed=None):
         self.algorithm, self.normalizers, self.exploration = algorithm, normalizers, exploration
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
-        self.context_mode=getattr(algorithm,"trial_protocol",None)==CONTEXT_TRIAL
+        self.context_mode=getattr(algorithm,"trial_protocol",None) in CONTEXT_TRIALS
         self.fixed=None;self.fixed_digest=None;self._sealed_file_hashes={}
         if not self.context_mode:
             with np.load(fixed_bank,allow_pickle=False) as saved: self.fixed={key:saved[key].copy() for key in saved.files}
@@ -797,7 +883,8 @@ class H2GuardedPPO(PPO):
                  actor_action_budget_penalty_epsilon=1e-6, actor_proposal_projection=None,
                  actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
                  actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None,
-                 actor_proposal_jacobian_arena_budget_bytes=None,actor_proposal_primal_precision_policy=None, **kwargs):
+                 actor_proposal_jacobian_arena_budget_bytes=None,actor_proposal_primal_precision_policy=None,
+                 actor_proposal_support_polish_policy=None, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -811,17 +898,21 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
+        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
                 or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
                 "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
+        self.support_polish_enabled=trial_protocol==ACTIVE_CONTEXT_TRIAL
+        require(actor_proposal_support_polish_policy==(SUPPORT_POLISH_POLICY if self.support_polish_enabled else None),
+                "Active-support polish belongs only to the reviewedv11 profile")
+        self.projection_support_polish_policy=actor_proposal_support_polish_policy
         self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
-        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -849,7 +940,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(CONTEXT_FORMAT if trial_protocol==CONTEXT_TRIAL else CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(ACTIVE_CONTEXT_FORMAT if trial_protocol==ACTIVE_CONTEXT_TRIAL else CONTEXT_FORMAT if trial_protocol==CONTEXT_TRIAL else CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
@@ -877,7 +968,7 @@ class H2GuardedPPO(PPO):
         self.completed_updates=self.actor_optimizer_steps=self.critic_optimizer_steps=self.rnd_optimizer_steps=0
         self.actor_updates_accepted=0;self.guard=None;self.normalizers=None;self.exploration=None
         self.uncommitted_rollout=False;self.last_guard_summary={};self.initial_policy_sha256=None
-        if trial_protocol==CONTEXT_TRIAL:
+        if trial_protocol in CONTEXT_TRIALS:
             require(policy.actor.extra_context_dim==5 and policy.actor.obs_dim==1034
                     and self.projection_mean_elements==782988 and self.projection_bytes_per_row==37583424
                     and self.projection_max_active_rows==28,
@@ -903,7 +994,7 @@ class H2GuardedPPO(PPO):
     def compute_returns(self,last_critic_obs):
         # The original RSL loop reaches here only after24real env.step and
         # process_env_step returns. Seal before its ordinary critic bootstrap.
-        if self.trial_protocol==CONTEXT_TRIAL:
+        if self.trial_protocol in CONTEXT_TRIALS:
             require(self.guard is not None,"Context rollout has no real-input bank guard")
             if self.guard.bank_receipt["status"]=="collecting_first_rollout":
                 self.guard.seal_first_rollout(self.storage.step,self.completed_updates)
@@ -922,7 +1013,7 @@ class H2GuardedPPO(PPO):
             RND_predictor_actually_updated=self.rnd_optimizer_steps>0,
             rnd_optimizer_steps_per_accepted_iteration=20,rnd_initialization="fresh independent RND and Adam, never BC/imitation state",
             normalizers_frozen=True,normalizer_counts={k:int(v.count) for k,v in self.normalizers.items()}
-                if self.normalizers and self.trial_protocol!=CONTEXT_TRIAL else {},
+                if self.normalizers and self.trial_protocol not in CONTEXT_TRIALS else {},
             initial_policy_sha256=self.initial_policy_sha256,uncommitted_rollout=self.uncommitted_rollout,
             trial_protocol=self.trial_protocol,action_margin=dict(kind="worst_actual_input_log_barrier" if self.action_margin_weight else "disabled",
                 weight=self.action_margin_weight,epsilon=self.action_margin_epsilon,whole_update_reference=True,
@@ -931,7 +1022,7 @@ class H2GuardedPPO(PPO):
                 latest_summary=self.last_margin_summary),
             finite_guard_limitation="5120 actual inputs; update-change bound is not unseen-state or physical-stability proof",
             last_guard=self.last_guard_summary)
-        if self.trial_protocol==CONTEXT_TRIAL:
+        if self.trial_protocol in CONTEXT_TRIALS:
             from task_context_normalization import normalization_metadata
             state.pop("normalizer_counts")
             abi=normalization_metadata(self.normalizers) if self.normalizers else None
@@ -962,11 +1053,16 @@ class H2GuardedPPO(PPO):
             if self.strict_primal_enabled:
                 state["proposal_projection"].update(primal_precision_policy=self.projection_primal_precision_policy,
                     primal_precision_summary=copy.deepcopy(self.last_projection_summary.get("primal_precision_summary",{})),
-                    max_polish_per_QP=1,max_support_pivots=0,max_polish_per_projection=28,
+                    max_polish_per_QP=1345 if self.support_polish_enabled else 1,
+                    max_support_pivots=1344 if self.support_polish_enabled else 0,
+                    max_polish_per_projection=37660 if self.support_polish_enabled else 28,
                     solver_optimality_and_direct_primal_separate=True,
                     primal_envelope_is_machine_derived=True,
                     primal_envelope_scope="Direct FP64 dot/reconstruction arithmetic, not an NN or full-bank JVP input-error bound",
                     final_same_direction_cast_JVP_required=True)
+                if self.support_polish_enabled:
+                    state["proposal_projection"].update(support_polish_policy=self.projection_support_polish_policy,
+                        support_pivot_limit_rule="2*m",polish_call_limit_per_subproblem_rule="2*m+1")
         return state
 
     def _exploration_state(self):
@@ -976,7 +1072,7 @@ class H2GuardedPPO(PPO):
     def packet(self,iteration,infos=None):
         self.guard.assert_frozen()
         normalization_fields={}
-        if self.trial_protocol==CONTEXT_TRIAL:
+        if self.trial_protocol in CONTEXT_TRIALS:
             from task_context_normalization import normalization_metadata
             require(self.guard.bank_receipt["status"]=="sealed","An unsealed input bank cannot produce a deployable PPO packet")
             abi=normalization_metadata(self.normalizers)
@@ -1191,6 +1287,8 @@ class H2GuardedPPO(PPO):
                 projection_options.update(max_active_rows=None,jacobian_arena_budget_bytes=self.projection_arena_budget_bytes)
             if self.strict_primal_enabled:
                 projection_options["primal_precision_policy"]=self.projection_primal_precision_policy
+            if self.support_polish_enabled:
+                projection_options["support_polish_policy"]=self.projection_support_polish_policy
             projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
                 self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
                 **projection_options)
@@ -1221,11 +1319,21 @@ class H2GuardedPPO(PPO):
                 precision=metadata.get("primal_precision_summary")
                 if not (metadata.get("primal_precision_policy")==self.projection_primal_precision_policy
                         and isinstance(precision,dict) and precision.get("direct_primal_certified") is True
-                        and precision.get("polish_call_limit_per_subproblem")==1
-                        and precision.get("polish_call_limit_per_projection")==28
-                        and precision.get("support_pivot_limit")==0
+                        and precision.get("polish_call_limit_per_subproblem")== (1345 if self.support_polish_enabled else 1)
+                        and precision.get("polish_call_limit_per_projection")== (37660 if self.support_polish_enabled else 28)
+                        and precision.get("support_pivot_limit")== (1344 if self.support_polish_enabled else 0)
                         and precision.get("final_same_direction_row_JVP_checked") is True):
                     raise ProposalProjectionError(dict(metadata,reason="Missing direct FP64 primal precision certificate"))
+            if self.support_polish_enabled:
+                from v11_parent_custody import validate_support_projection_metadata
+                try:
+                    validate_support_projection_metadata(
+                        {"actor_proposal_support_polish_policy":self.projection_support_polish_policy},
+                        dict(support_polish_policy=self.projection_support_polish_policy,max_polish_per_QP=1345,
+                            max_support_pivots=1344,max_polish_per_projection=37660,
+                            support_pivot_limit_rule="2*m",polish_call_limit_per_subproblem_rule="2*m+1"),metadata)
+                except (RuntimeError,TypeError,KeyError) as error:
+                    raise ProposalProjectionError(dict(metadata,reason="Invalid bounded support certificate: "+str(error))) from error
             # Std keeps its actual Adam proposal. commit dispatches no optimizer
             # hook; run the unchanged exploration post-hook exactly once here.
             proposal.commit(tuple(projected)+(proposal.deltas[44],))

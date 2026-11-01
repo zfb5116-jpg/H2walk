@@ -17,7 +17,7 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='explicit_task_context_v1'
+TRIAL_PROTOCOL='explicit_task_context_active_support_v1'
 POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_clean_force_v1'
 EPISODE_FORCE_CREDIT_POLICY={
     'kind':'whole_episode_clean_force_positive_credit_and_first_union_failure_v1',

@@ -14,6 +14,10 @@ import struct
 
 CONTEXT_PROTOCOL = "explicit_task_context_v1"
 CONTEXT_FORMAT = "h2_guarded_flat_ppo_v10"
+ACTIVE_CONTEXT_PROTOCOL = "explicit_task_context_active_support_v1"
+ACTIVE_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v11"
+CONTEXT_PROTOCOLS = (CONTEXT_PROTOCOL, ACTIVE_CONTEXT_PROTOCOL)
+CONTEXT_FORMATS = (CONTEXT_FORMAT, ACTIVE_CONTEXT_FORMAT)
 FORMAT = CONTEXT_FORMAT
 CONTEXT_KIND = "controlled_root_link_heading_velocity_world_goal_force_eligibility_v1"
 CONTEXT_ORDER = (
@@ -120,23 +124,31 @@ def validate_task_context_plan(plan):
     provenance and the actual acquisition receipt remain caller obligations.
     """
     plan = _mapping(plan, "plan")
+    active = plan.get("trial_protocol") == ACTIVE_CONTEXT_PROTOCOL
     _expect(plan, {
-        "trial_protocol": CONTEXT_PROTOCOL,
-        "checkpoint_format": CONTEXT_FORMAT,
-        "network_or_input_structure_change": True,
+        "trial_protocol": ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL,
+        "checkpoint_format": ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT,
+        "network_or_input_structure_change": not active,
         "network_dimensions": CONTEXT_DIMS,
-        "initialization_mode": CONTEXT_INITIALIZATION_MODE,
-        "initial_parent_kind": CONTEXT_PARENT_KIND,
-        "initial_policy_sha256": CONTEXT_PARENT_SHA256,
-        "parent_natural_completion": True,
-        "parent_runtime_rollback_completed": False,
-        "parent_accepted_updates": 1000,
-        "parent_last_complete_iteration": 999,
+        "initialization_mode": ("transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else CONTEXT_INITIALIZATION_MODE),
+        "initial_parent_kind": "saved_guard_restored_v10_context_policy_transfer" if active else CONTEXT_PARENT_KIND,
+        "initial_policy_sha256": "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else CONTEXT_PARENT_SHA256,
+        "parent_natural_completion": not active,
+        "parent_runtime_rollback_completed": active,
+        "parent_accepted_updates": 372 if active else 1000,
+        "parent_last_complete_iteration": 371 if active else 999,
         "starting_iteration": 0,
         "checkpoint": None,
         "num_steps_per_env": 24,
         "fixed_real_audit_dataset": None,
     }, "plan")
+    if active:
+        shape = _mapping(_field(plan, "guard_input_shape_adaptation", "plan"), "plan.guard_input_shape_adaptation")
+        _expect(shape, {"shape_admission_unchanged_from_v10": True,
+            "original_geometry_Gram_JVP_eta_hard_gate_unchanged": True,
+            "support_polish_changed": True}, "plan.guard_input_shape_adaptation")
+        require("all_projection_math_and_hard_gate_unchanged" not in shape,
+                "v11 must explicitly declare the changed support refinement method")
     labels = _mapping(_field(plan, "network_dimension_labels", "plan"), "plan.network_dimension_labels")
     _expect(labels, {"actor": 1034, "critic": 871, "rnd": 73, "action": 12},
             "plan.network_dimension_labels")
@@ -206,7 +218,9 @@ def validate_task_context_metadata(runtime_flat_geometry, plan=None):
     if plan is not None:
         validate_task_context_plan(plan)
     if "trial_protocol" in runtime:
-        _exact(runtime["trial_protocol"], CONTEXT_PROTOCOL, "runtime_flat_geometry.trial_protocol")
+        require(runtime["trial_protocol"] in CONTEXT_PROTOCOLS, "runtime_flat_geometry.trial_protocol differs")
+        if plan is not None:
+            _exact(runtime["trial_protocol"], plan["trial_protocol"], "runtime_flat_geometry.trial_protocol")
     if "reward_profile" in runtime:
         _exact(runtime["reward_profile"], CONTEXT_REWARD_PROFILE, "runtime_flat_geometry.reward_profile")
     context = _mapping(_field(runtime, "task_context", "runtime_flat_geometry"),

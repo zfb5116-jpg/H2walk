@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 
 import numpy as np
 import torch
@@ -27,6 +28,11 @@ JACOBIAN_RESOURCE_KIND = "single_cpu_float32_jacobian_arena_v1"
 PRIMAL_PRECISION_POLICY = "direct_fp64_primal_envelope_v1"
 MAX_KKT_POLISH_CALLS = 28
 MAX_KKT_POLISH_SUPPORT = 672
+FIXED_SUPPORT_POLISH_POLICY = "fixed_positive_support_v1"
+BOUNDED_SUPPORT_POLISH_POLICY = "bounded_dual_active_set_v1"
+MAX_BOUNDED_POLISH_CALLS_PER_QP = 2 * MAX_KKT_POLISH_SUPPORT + 1
+MAX_BOUNDED_POLISH_CALLS_PER_PROJECTION = MAX_KKT_POLISH_CALLS * MAX_BOUNDED_POLISH_CALLS_PER_QP
+BOUNDED_BOUNDARY_ARITHMETIC = "exact_rational_from_represented_fp64_endpoints_then_fp64"
 
 
 def _metadata_value(value):
@@ -483,10 +489,222 @@ def _native_active_primal(jacobian,direction,upper,lower):
     return dot,np.r_[dot-upper,-dot+lower]
 
 
+def _bounded_dual_active_support(gram,rhs,dual,tolerance,certify,*,remaining_svd_calls):
+    """Refine a converged nonnegative dual on explicitly retained faces.
+
+    New zero-valued constraints remain in ``working`` until its next SVD.
+    Negative face solutions move along the exact represented-endpoint segment
+    to a nonnegative boundary. No negative multiplier is clipped to zero.
+    Only scalar boundary arithmetic uses Fraction; Gram/SVD and the unchanged
+    reconstruction/direct-primal certificate remain CPU FP64.
+    """
+    m=len(rhs)
+    meta=dict(support_polish_policy=BOUNDED_SUPPORT_POLISH_POLICY,QP_inequalities=int(m),
+        support_pivot_limit=2*m,polish_call_limit=2*m+1,polish_calls=0,
+        support_pivots=0,support_additions=0,support_drops=0,
+        positive_support_size=0,working_support_size=0,certified=False,
+        boundary_arithmetic=BOUNDED_BOUNDARY_ARITHMETIC,
+        support_addition_ids=[],support_drop_ids=[],boundary_steps=[],direct_certificate_checks=0)
+    evidence={};current=np.array(dual,dtype=np.float64,copy=True);working=set()
+    last_checked=None;last_summary=None;last_detail=None
+
+    def check_current():
+        nonlocal last_checked,last_summary,last_detail
+        if last_checked is None or last_checked.tobytes()!=current.tobytes():
+            last_summary,last_detail=certify(current)
+            last_checked=current.copy();meta["direct_certificate_checks"]+=1
+        evidence.update(last_detail)
+        return last_summary,last_detail
+
+    def rejected(reason,*,inspect_current=True,**details):
+        meta.update(details,reason=reason,certified=False,
+                    positive_support_size=int(np.count_nonzero(current>0.)),working_support_size=len(working))
+        evidence.update(dual=current.copy(),working_support_indices=np.asarray(sorted(working),dtype=np.int64))
+        if inspect_current:
+            check_current()
+        return None,meta,evidence
+
+    if (not 0<m<=MAX_KKT_POLISH_SUPPORT or gram.shape!=(m,m) or rhs.shape!=(m,)
+            or current.shape!=(m,) or not np.isfinite(gram).all() or not np.isfinite(rhs).all()
+            or not np.isfinite(current).all() or np.any(current<0.)):
+        return rejected("bounded_active_support_invalid_input",inspect_current=False)
+    if type(remaining_svd_calls) is not int or remaining_svd_calls<0:
+        return rejected("bounded_active_support_invalid_SVD_budget",inspect_current=False)
+    working=set(np.flatnonzero(current>0.).tolist())
+    call_limit=min(meta["polish_call_limit"],remaining_svd_calls)
+    meta.update(remaining_projection_SVD_budget=remaining_svd_calls,effective_polish_call_limit=call_limit)
+
+    while True:
+        indices=np.asarray(sorted(working),dtype=np.int64)
+        meta.update(working_support_size=len(working),positive_support_size=int(np.count_nonzero(current>0.)))
+        if len(indices):
+            if meta["polish_calls"]>=call_limit:
+                return rejected("bounded_active_support_SVD_limit")
+            small=gram[np.ix_(indices,indices)]
+            evidence.update(working_support_indices=indices.copy(),support_Gram=small.copy())
+            meta["polish_calls"]+=1
+            try:
+                left,singular,right=np.linalg.svd(small,full_matrices=False)
+            except np.linalg.LinAlgError:
+                return rejected("bounded_active_support_factorization_failed")
+            if not all(np.isfinite(item).all() for item in (left,singular,right)):
+                return rejected("bounded_active_support_nonfinite_factorization")
+            threshold=len(indices)*np.finfo(np.float64).eps*float(singular[0])
+            rank=int(np.count_nonzero(singular>threshold))
+            evidence["support_singular_values"]=singular.copy()
+            meta.update(support_rank=rank,rank_threshold=float(threshold),
+                support_condition_number=float(singular[0]/singular[-1]) if singular[-1]>0 else "singular")
+            if rank!=len(indices):
+                return rejected("bounded_active_support_rank_deficient")
+            solution=right.T@((left.T@rhs[indices])/singular)
+            evidence["support_dual_solution"]=solution.copy()
+            if not np.isfinite(solution).all():
+                return rejected("bounded_active_support_nonfinite_face_solution")
+            negative=np.flatnonzero(solution<0.)
+            if len(negative):
+                # Ratios/interpolation are exact for the represented FP64
+                # endpoints, so tied boundary multipliers become exactly0.
+                ratios=[(Fraction.from_float(float(current[indices[j]]))/
+                         (Fraction.from_float(float(current[indices[j]]))-
+                          Fraction.from_float(float(solution[j]))),int(indices[j])) for j in negative]
+                alpha,blocking=min(ratios,key=lambda item:(item[0],item[1]))
+                if not Fraction(0)<=alpha<=Fraction(1):
+                    return rejected("bounded_active_support_invalid_boundary_ratio")
+                candidate=current.copy();zeros=[]
+                for j,index in enumerate(indices):
+                    old=Fraction.from_float(float(current[index]));target=Fraction.from_float(float(solution[j]))
+                    value=old+alpha*(target-old)
+                    if value<0:
+                        return rejected("bounded_active_support_negative_exact_boundary")
+                    represented=float(value)
+                    if not math.isfinite(represented) or (value>0 and represented==0.):
+                        return rejected("bounded_active_support_boundary_range_failure")
+                    candidate[index]=represented
+                    if value==0:zeros.append(int(index))
+                if blocking not in zeros or not zeros:
+                    return rejected("bounded_active_support_boundary_not_reached")
+                if meta["support_pivots"]+len(zeros)>meta["support_pivot_limit"]:
+                    evidence["attempted_boundary_dual"]=candidate
+                    return rejected("bounded_active_support_pivot_limit",attempted_drop_ids=zeros)
+                if np.any(candidate<0.) or not np.isfinite(candidate).all():
+                    return rejected("bounded_active_support_nonnegative_boundary_uncertified")
+                current=candidate;working.difference_update(zeros)
+                meta["support_pivots"]+=len(zeros);meta["support_drops"]+=len(zeros)
+                meta["support_drop_ids"].extend(zeros)
+                meta["boundary_steps"].append(dict(alpha=float(alpha),alpha_numerator=str(alpha.numerator),
+                    alpha_denominator=str(alpha.denominator),blocking_constraint=blocking,dropped_constraints=zeros,
+                    minimum_dual_after=float(current.min()),negative_multiplier_clipping=False))
+                continue
+            current=np.zeros_like(current);current[indices]=solution
+
+        summary,detail=check_current()
+        residual=detail["primal_residual_direct64"];eta=detail["primal_eta64"]
+        gram_residual=rhs-gram@current
+        kkt=np.where(current>0.,np.abs(gram_residual),np.maximum(gram_residual,0.))
+        evidence.update(dual=current.copy(),positive_dual_indices=np.flatnonzero(current>0.).astype(np.int64),
+            working_support_indices=np.asarray(sorted(working),dtype=np.int64),
+            polished_dual=current.copy(),polished_Gram_residual=gram_residual.copy())
+        if not all(np.isfinite(value).all() for value in (residual,eta,gram_residual,kkt)):
+            return rejected("bounded_active_support_nonfinite_certificate")
+        meta["polished_max_KKT_residual_rad"]=float(kkt.max())
+        if summary["certified"]:
+            if float(kkt.max())>tolerance:
+                return rejected("bounded_active_support_KKT_uncertified")
+            meta.update(certified=True,positive_support_size=int(np.count_nonzero(current>0.)),
+                        working_support_size=len(working))
+            return current.copy(),meta,evidence
+
+        outside=np.ones(m,dtype=bool)
+        if working:outside[np.asarray(sorted(working),dtype=np.int64)]=False
+        candidates=np.flatnonzero((residual>eta)&outside)
+        if not len(candidates):
+            reason=("bounded_active_support_unresolved_active_primal" if np.any(residual>eta)
+                    else "bounded_active_support_direct_envelope_uncertified")
+            return rejected(reason)
+        # Stable signed-index ordering resolves exact residual ties.
+        chosen=int(candidates[int(np.argmax(residual[candidates]))])
+        if meta["support_pivots"]>=meta["support_pivot_limit"]:
+            return rejected("bounded_active_support_pivot_limit",attempted_add_constraint=chosen)
+        if len(working)>=MAX_KKT_POLISH_SUPPORT:
+            return rejected("bounded_active_support_size_limit",attempted_add_constraint=chosen)
+        working.add(chosen)
+        # Keep this zero-valued new member explicitly for the NEXT SVD.
+        if current[chosen]!=0.:
+            return rejected("bounded_active_support_inconsistent_working_face")
+        meta["support_pivots"]+=1;meta["support_additions"]+=1
+        meta["support_addition_ids"].append(chosen)
+
+
+def _active_support_gram_and_direction(jacobian,proposed,upper,lower,sweeps,tolerance,polish_budget):
+    """The opt-in bounded polish, only after the original Hildreth converges."""
+    rows,width=jacobian.shape;m=2*rows
+    precision=dict(policy=PRIMAL_PRECISION_POLICY,certified=False,polish_calls=0,
+        KKT_optimality_tolerance_rad=float(tolerance),support_polish_policy=BOUNDED_SUPPORT_POLISH_POLICY,
+        QP_inequalities=m,support_pivot_limit=2*m,polish_call_limit=2*m+1,
+        support_pivots=0,support_additions=0,support_drops=0,
+        positive_support_size=0,working_support_size=0,boundary_arithmetic=BOUNDED_BOUNDARY_ARITHMETIC)
+    evidence=dict(active_upper=upper.copy(),active_lower=lower.copy())
+    if not 0<m<=MAX_KKT_POLISH_SUPPORT:
+        return None,dict(converged=False,reason="bounded_active_support_inequality_limit",
+                         solver_sweeps=0,primal_precision=precision),evidence
+    positive=np.zeros((rows,rows),dtype=np.float64);jd=np.zeros(rows,dtype=np.float64)
+    for start in range(0,width,GRAM_COLUMN_CHUNK):
+        stop=min(start+GRAM_COLUMN_CHUNK,width);block=jacobian[:,start:stop].astype(np.float64)
+        positive+=block@block.T;jd+=block@proposed[start:stop]
+    gram=np.block([[positive,-positive],[-positive,positive]]);gram=(gram+gram.T)*.5
+    rhs=np.r_[jd-upper,-jd+lower]
+    evidence.update(signed_Gram=gram,rhs=rhs)
+    if not np.isfinite(gram).all() or not np.isfinite(rhs).all():
+        return None,dict(converged=False,reason="nonfinite_Gram_or_dual_rhs",solver_sweeps=0,
+                         primal_precision=precision),evidence
+    dual,meta=_hildreth_with_evidence(gram,rhs,sweeps,tolerance)
+    evidence.update(dual_before_polish=dual.copy(),dual=dual.copy(),primal_residual_Gram=rhs-gram@dual)
+    if not meta["converged"]:
+        return None,dict(meta,primal_precision=precision),evidence
+    state={}
+
+    def certify(value):
+        direction,error,operations=_reconstruct_and_envelope(jacobian,proposed,value)
+        summary,detail=_direct_primal_envelope(jacobian,direction,error,upper,lower,tolerance)
+        state.update(dual=value.copy(),direction=direction,error=error,operations=operations,
+                     summary=summary,detail=detail)
+        return summary,detail
+
+    initial,detail=certify(dual)
+    evidence.update(detail,d64_before_polish=state["direction"].copy(),
+        primal_residual_direct64_before_polish=detail["primal_residual_direct64"].copy(),
+        primal_eta64_before_polish=detail["primal_eta64"].copy())
+    precision.update(initial_direct_primal=initial,reconstruction_operation_count=state["operations"],
+        positive_support_size=int(np.count_nonzero(dual>0.)),working_support_size=int(np.count_nonzero(dual>0.)))
+    if not initial["certified"]:
+        polished,refinement,extra=_bounded_dual_active_support(gram,rhs,dual,tolerance,certify,
+                                                             remaining_svd_calls=polish_budget)
+        precision.update(refinement);evidence.update(extra)
+        if polished is None:
+            precision.update(state["summary"]);precision["certified"]=False
+            evidence.update(d64=state["direction"],reconstruction_error64=state["error"],
+                            primal_residual_Gram=rhs-gram@state["dual"])
+            return None,dict(meta,reason=refinement["reason"],primal_precision=precision),evidence
+        dual=polished
+    final=state["summary"]
+    evidence.update(state["detail"],dual=dual.copy(),positive_dual_indices=np.flatnonzero(dual>0.).astype(np.int64),
+                    d64=state["direction"],reconstruction_error64=state["error"],primal_residual_Gram=rhs-gram@dual)
+    precision.update(final)
+    residual=rhs-gram@dual;kkt=np.where(dual>0.,np.abs(residual),np.maximum(residual,0.))
+    meta.update(hildreth_max_residual_rad=meta.get("max_residual_rad"),
+        hildreth_max_KKT_residual_rad=meta.get("max_KKT_residual_rad"),max_residual_rad=float(residual.max()),
+        max_KKT_residual_rad=float(kkt.max()),nonzero_dual_constraints=int(np.count_nonzero(dual)),
+        primal_precision=precision,objective_half_squared_change=float(.5*np.dot(state["direction"]-proposed,state["direction"]-proposed)),
+        constraints=m,gram_dtype="float64",jacobian_storage_dtype=str(jacobian.dtype))
+    if not final["certified"] or float(kkt.max())>tolerance:
+        return None,dict(meta,reason="bounded_active_support_final_certificate_failed"),evidence
+    return state["direction"],meta,evidence
+
+
 def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
                         interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048,
                         working_budget_fraction=None, jacobian_arena_budget_bytes=None,
-                        primal_precision_policy=None):
+                        primal_precision_policy=None, support_polish_policy=FIXED_SUPPORT_POLISH_POLICY):
     """Project44 Adam directions into simultaneous actual-output linear bounds.
 
     The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
@@ -506,6 +724,7 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     reserved = working_budget_fraction is not None
     resource_mode = jacobian_arena_budget_bytes is not None
     strict_primal = primal_precision_policy is not None
+    bounded_support = support_polish_policy == BOUNDED_SUPPORT_POLISH_POLICY
     precision_evidence = None
     metadata = dict(kind=RESERVED_KIND if reserved else KIND, feasible=False, interior_fraction=.5,
                     max_active_rows=8, max_solver_sweeps=2048,
@@ -522,6 +741,13 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False),
             diagnostic_evidence=precision_evidence if strict_primal else None)
 
+    if support_polish_policy not in (FIXED_SUPPORT_POLISH_POLICY,BOUNDED_SUPPORT_POLISH_POLICY):
+        fail("Undeclared support polish policy")
+    if bounded_support:
+        if not strict_primal or not resource_mode or not reserved:
+            fail("Bounded support polish requires strict resource/reserved mode")
+        metadata.update(support_polish_policy=BOUNDED_SUPPORT_POLISH_POLICY,
+                        boundary_arithmetic=BOUNDED_BOUNDARY_ARITHMETIC)
     if interior_fraction != .5 or max_solver_sweeps != 2048:
         fail("Fixed prospective projection protocol changed")
     if resource_mode:
@@ -559,6 +785,14 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
             no_active_rows_vacuous=True,
             scope="eta64 is FP64 arithmetic only; final same-direction JVP difference is an observation,not a global NN bound")
         metadata.update(primal_precision_policy=PRIMAL_PRECISION_POLICY,primal_precision_summary=precision_summary)
+        if bounded_support:
+            precision_summary.update(support_polish_policy=BOUNDED_SUPPORT_POLISH_POLICY,
+                polish_call_limit_per_subproblem=MAX_BOUNDED_POLISH_CALLS_PER_QP,
+                polish_call_limit_per_projection=MAX_BOUNDED_POLISH_CALLS_PER_PROJECTION,
+                support_pivot_limit=2*MAX_KKT_POLISH_SUPPORT,support_pivot_limit_rule="2*m",
+                polish_call_limit_per_subproblem_rule="2*m+1",support_pivot_limit_scope="per_QP_maximum_at_m672",
+                support_pivots=0,support_additions=0,support_drops=0,QP_support_refinements=[],
+                boundary_arithmetic=BOUNDED_BOUNDARY_ARITHMETIC)
     if not isinstance(bank, Mapping) or any(k not in bank for k in ("obs", "lower", "upper")):
         fail("Incomplete actual bank")
     if actor_normalizer.training:
@@ -781,14 +1015,25 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
             fail("solver_sweep_cap")
         active_ids = metadata["active_row_ids"]
         if strict_primal:
-            projected,solve,precision_evidence=_strict_gram_and_direction(active_matrix,proposed,
-                upper[active_ids].reshape(-1),lower[active_ids].reshape(-1),remaining,LINEAR_TOLERANCE_RAD,
-                MAX_KKT_POLISH_CALLS-precision_summary["polish_calls"])
+            if bounded_support:
+                projected,solve,precision_evidence=_active_support_gram_and_direction(active_matrix,proposed,
+                    upper[active_ids].reshape(-1),lower[active_ids].reshape(-1),remaining,LINEAR_TOLERANCE_RAD,
+                    MAX_BOUNDED_POLISH_CALLS_PER_PROJECTION-precision_summary["polish_calls"])
+            else:
+                projected,solve,precision_evidence=_strict_gram_and_direction(active_matrix,proposed,
+                    upper[active_ids].reshape(-1),lower[active_ids].reshape(-1),remaining,LINEAR_TOLERANCE_RAD,
+                    MAX_KKT_POLISH_CALLS-precision_summary["polish_calls"])
             precision=solve["primal_precision"]
             precision_evidence["active_row_ids"]=np.asarray(active_ids,dtype=np.int64)
             precision_summary["QP_subproblems"]+=1
             precision_summary["polish_calls"]+=precision.get("polish_calls",0)
             precision_summary["direct_primal_certified"] &= bool(precision.get("certified",False))
+            if bounded_support:
+                fields=("QP_inequalities","support_pivot_limit","polish_call_limit","polish_calls", "support_pivots",
+                        "support_additions","support_drops","positive_support_size","working_support_size","certified")
+                precision_summary["QP_support_refinements"].append({key:precision[key] for key in fields})
+                for key in ("support_pivots","support_additions","support_drops"):
+                    precision_summary[key]+=precision[key]
             for key in ("direct_primal_max_eta64_rad","direct_primal_max_upper_bound_rad","direct_primal_max_residual_rad"):
                 precision_summary[key]=max(precision_summary[key],precision.get(key,0.))
         else:
