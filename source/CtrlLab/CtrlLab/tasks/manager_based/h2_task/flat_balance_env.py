@@ -17,8 +17,8 @@ from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='explicit_task_context_full_outward_growth_v1'
-POSITIVE_CREDIT_PROFILE='overspeed_full_outward_tilt_growth_clean_force_v1'
+TRIAL_PROTOCOL='explicit_task_context_forward_excess_cost_v1'
+POSITIVE_CREDIT_PROFILE='overspeed_full_outward_growth_forward_excess_clean_force_v1'
 EPISODE_FORCE_CREDIT_POLICY={
     'kind':'whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
     'agreement_absolute_tolerance_N':1.0,
@@ -328,6 +328,8 @@ class FlatBalanceEnv(DirectInitializationEnv):
         growth_margin=float(growth_cfg.params['margin_angle'])
         growth_limit=float(self.termination_manager.get_term_cfg('bad_orientation').params['limit_angle'])
         growth_interval=cos(growth_margin)-cos(growth_limit)
+        forward_cfg=self.reward_manager.get_term_cfg('world_forward_excess_speed')
+        forward_speed=float(forward_cfg.params['command_speed'])
         self.runtime_contract={
             'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
             'task_context':task_context_runtime_contract(self),
@@ -362,7 +364,7 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 'command_m_s':command_speed,
                 'uses_existing_body_gravity_and_gyro':True,'same_reward_endpoint':True,
                 'no_new_policy_input':True,
-                'no_new_policy_input_scope':'Only this auxiliary reward still uses existing body gravity/gyro; the explicit task context changes the global policy input.',
+                'no_new_policy_input_scope':'This existing outward term is unchanged relative to v12; the new forward-excess term is declared separately and adds no policy input.',
                 'reward_dt_multiplications':1,
                 'discrete_total_not_exact_failure_charge':True,
                 'activation_profile':'full_upright_to_native_limit_outward_growth_v1',
@@ -373,7 +375,22 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 'state_tilt_margin_source_constant_rad':.35,
                 'state_tilt_margin_source_scope':'Unchanged kernel source constant; AST-bound, not a runtimecfg parameter getter.',
                 'upright_potential_zero_is_geometry':True,
-                'only_existing_outward_activation_and_calibration_changed':True},
+                'only_existing_outward_activation_and_calibration_changed':False},
+            'forward_excess_speed_cost':{
+                'kind':'existing_world_root_link_one_sided_forward_excess_square_v1',
+                'actual_function_name':forward_cfg.func.__name__,
+                'actual_weight':float(forward_cfg.weight),
+                'actual_params':dict(forward_cfg.params),
+                'command_m_s':forward_speed,'threshold_m_s':forward_speed,
+                'actual_reward_term_count':len(self.reward_manager.active_terms),
+                'actual_reward_term_names':list(self.reward_manager.active_terms),
+                'actual_reward_weights':{name:float(self.reward_manager.get_term_cfg(name).weight)
+                                        for name in self.reward_manager.active_terms},
+                'reward_dt_multiplications':1,
+                'calibration_maximum_positive_forward_rate':signed_forward_weight*forward_speed,
+                'cost_at_twice_command_per_s':float(forward_cfg.weight)*forward_speed**2,
+                'other_13_reward_kernels_weights_unchanged_relative_v12':True,
+                'no_new_policy_input':True,'no_native_speed_limit_changed':True},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),
             'terrain_subtypes':{name:type(term).__name__ for name,term in generator.sub_terrains.items()},
@@ -512,3 +529,8 @@ def flat_soft_excess(env):
     data=env.asset.data
     q,limits=data.joint_pos[:,ids],data.soft_joint_pos_limits[:,ids]
     return ((limits[...,0]-q).clamp_min(0)+(q-limits[...,1]).clamp_min(0)).sum(-1)
+
+
+def flat_forward_excess_speed(env, command_speed=.3):
+    """One-sided world root-link forward excess, independent of eligibility."""
+    return torch.relu(env.asset.data.root_link_lin_vel_w[:,0]-command_speed).square()

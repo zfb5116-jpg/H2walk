@@ -12,7 +12,7 @@ class H2FlatBalancePPORunnerCfg(H2StairAscentPPORunnerCfg):
         self.save_interval=500
         self.algorithm.class_name='H2GuardedPPO'
         self.policy.extra_context_dim=5
-        self.algorithm.trial_protocol='explicit_task_context_full_outward_growth_v1'
+        self.algorithm.trial_protocol='explicit_task_context_forward_excess_cost_v1'
         self.algorithm.actor_action_budget_penalty_weight=0.
         self.algorithm.actor_action_budget_penalty_epsilon=1.e-6
         self.algorithm.actor_proposal_projection='simultaneous_actual_bank_reserved_linear_v1'

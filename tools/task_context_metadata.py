@@ -18,8 +18,11 @@ ACTIVE_CONTEXT_PROTOCOL = "explicit_task_context_active_support_v1"
 ACTIVE_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v11"
 FULL_OUTWARD_CONTEXT_PROTOCOL = "explicit_task_context_full_outward_growth_v1"
 FULL_OUTWARD_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v12"
-ACTIVE_CONTEXT_PROTOCOLS = (ACTIVE_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_PROTOCOL)
-ACTIVE_CONTEXT_FORMATS = (ACTIVE_CONTEXT_FORMAT, FULL_OUTWARD_CONTEXT_FORMAT)
+FORWARD_EXCESS_CONTEXT_PROTOCOL = "explicit_task_context_forward_excess_cost_v1"
+FORWARD_EXCESS_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v13"
+RESTORED_CONTEXT_PROTOCOLS = (ACTIVE_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_PROTOCOL)
+ACTIVE_CONTEXT_PROTOCOLS = (*RESTORED_CONTEXT_PROTOCOLS, FORWARD_EXCESS_CONTEXT_PROTOCOL)
+ACTIVE_CONTEXT_FORMATS = (ACTIVE_CONTEXT_FORMAT, FULL_OUTWARD_CONTEXT_FORMAT, FORWARD_EXCESS_CONTEXT_FORMAT)
 CONTEXT_PROTOCOLS = (CONTEXT_PROTOCOL, *ACTIVE_CONTEXT_PROTOCOLS)
 CONTEXT_FORMATS = (CONTEXT_FORMAT, *ACTIVE_CONTEXT_FORMATS)
 FORMAT = CONTEXT_FORMAT
@@ -37,6 +40,7 @@ CONTEXT_INITIALIZATION_MODE = "extend_completed_v6_policy_and_frozen_prefix_norm
 CONTEXT_PARENT_SHA256 = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
 CONTEXT_REWARD_PROFILE = "overspeed_outward_tilt_growth_clean_force_v1"
 FULL_OUTWARD_REWARD_PROFILE = "overspeed_full_outward_tilt_growth_clean_force_v1"
+FORWARD_EXCESS_REWARD_PROFILE = "overspeed_full_outward_growth_forward_excess_clean_force_v1"
 CONTEXT_BANK_KIND = "new_run_first_rollout_actual_preaction_v1"
 CONTEXT_NORMALIZATION_KIND = "frozen_empirical_prefix_fixed_task_context_v1"
 _VELOCITY_CONTEXT_SCALE_FLOAT32 = struct.unpack("<f", struct.pack("<f", 1.0 / 0.3))[0]
@@ -129,20 +133,21 @@ def validate_task_context_plan(plan):
     provenance and the actual acquisition receipt remain caller obligations.
     """
     plan = _mapping(plan, "plan")
+    forward_excess = plan.get("trial_protocol") == FORWARD_EXCESS_CONTEXT_PROTOCOL
     full_outward = plan.get("trial_protocol") == FULL_OUTWARD_CONTEXT_PROTOCOL
     active = plan.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     _expect(plan, {
-        "trial_protocol": FULL_OUTWARD_CONTEXT_PROTOCOL if full_outward else ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL,
-        "checkpoint_format": FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT,
+        "trial_protocol": FORWARD_EXCESS_CONTEXT_PROTOCOL if forward_excess else FULL_OUTWARD_CONTEXT_PROTOCOL if full_outward else ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL,
+        "checkpoint_format": FORWARD_EXCESS_CONTEXT_FORMAT if forward_excess else FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT,
         "network_or_input_structure_change": not active,
         "network_dimensions": CONTEXT_DIMS,
-        "initialization_mode": ("transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else CONTEXT_INITIALIZATION_MODE),
-        "initial_parent_kind": "saved_guard_restored_v10_context_policy_transfer" if active else CONTEXT_PARENT_KIND,
-        "initial_policy_sha256": "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else CONTEXT_PARENT_SHA256,
-        "parent_natural_completion": not active,
-        "parent_runtime_rollback_completed": active,
-        "parent_accepted_updates": 372 if active else 1000,
-        "parent_last_complete_iteration": 371 if active else 999,
+        "initialization_mode": ("transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else CONTEXT_INITIALIZATION_MODE),
+        "initial_parent_kind": "saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer" if active else CONTEXT_PARENT_KIND,
+        "initial_policy_sha256": "f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83" if forward_excess else "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else CONTEXT_PARENT_SHA256,
+        "parent_natural_completion": forward_excess or not active,
+        "parent_runtime_rollback_completed": active and not forward_excess,
+        "parent_accepted_updates": 1000 if forward_excess else 372 if active else 1000,
+        "parent_last_complete_iteration": 999 if forward_excess else 371 if active else 999,
         "starting_iteration": 0,
         "checkpoint": None,
         "num_steps_per_env": 24,
@@ -152,7 +157,7 @@ def validate_task_context_plan(plan):
         shape = _mapping(_field(plan, "guard_input_shape_adaptation", "plan"), "plan.guard_input_shape_adaptation")
         _expect(shape, {"shape_admission_unchanged_from_v10": True,
             "original_geometry_Gram_JVP_eta_hard_gate_unchanged": True,
-            "support_polish_changed": True}, "plan.guard_input_shape_adaptation")
+            "support_polish_changed": not forward_excess}, "plan.guard_input_shape_adaptation")
         require("all_projection_math_and_hard_gate_unchanged" not in shape,
                 "v11 must explicitly declare the changed support refinement method")
     labels = _mapping(_field(plan, "network_dimension_labels", "plan"), "plan.network_dimension_labels")
@@ -228,7 +233,7 @@ def validate_task_context_metadata(runtime_flat_geometry, plan=None):
         if plan is not None:
             _exact(runtime["trial_protocol"], plan["trial_protocol"], "runtime_flat_geometry.trial_protocol")
     if "reward_profile" in runtime:
-        _exact(runtime["reward_profile"], FULL_OUTWARD_REWARD_PROFILE if runtime.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL else CONTEXT_REWARD_PROFILE, "runtime_flat_geometry.reward_profile")
+        _exact(runtime["reward_profile"], FORWARD_EXCESS_REWARD_PROFILE if runtime.get("trial_protocol")==FORWARD_EXCESS_CONTEXT_PROTOCOL else FULL_OUTWARD_REWARD_PROFILE if runtime.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL else CONTEXT_REWARD_PROFILE, "runtime_flat_geometry.reward_profile")
     context = _mapping(_field(runtime, "task_context", "runtime_flat_geometry"),
                        "runtime_flat_geometry.task_context")
     path = "runtime_flat_geometry.task_context"

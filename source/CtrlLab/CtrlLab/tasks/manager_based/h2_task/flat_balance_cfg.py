@@ -25,6 +25,8 @@ class FlatBalanceRewardsCfg:
     bounded_target_change = RewTerm(func=rewards.flat_target_change,weight=-.02)
     native_overspeed = RewTerm(func=rewards.flat_native_overspeed,weight=-.1)
     actual_soft_excess = RewTerm(func=rewards.flat_soft_excess,weight=-5.)
+    world_forward_excess_speed = RewTerm(func=rewards.flat_forward_excess_speed,
+        weight=-(10.0*.3)/(.3**2),params={'command_speed':.3})
 
 
 @configclass

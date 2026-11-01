@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from task_context_metadata import (ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT,
-    ACTIVE_CONTEXT_PROTOCOLS, FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT,
+    ACTIVE_CONTEXT_PROTOCOLS, RESTORED_CONTEXT_PROTOCOLS, FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT,
     CONTEXT_PROTOCOL, CONTEXT_FORMAT, validate_task_context_plan,
     validate_task_context_metadata, validate_normalization_metadata)
 
@@ -58,7 +58,7 @@ def reviewed_parent():
 def validate_parent_records(plan, receipt, producer, guard, claim, formal, formal_review):
     """Metadata-only predicate, also usable with explicit synthetic fixtures."""
     validate_task_context_plan(plan)
-    require(plan['trial_protocol'] in ACTIVE_CONTEXT_PROTOCOLS
+    require(plan['trial_protocol'] in RESTORED_CONTEXT_PROTOCOLS
             and plan['checkpoint_format']==(FULL_OUTWARD_CONTEXT_FORMAT if plan['trial_protocol']==FULL_OUTWARD_CONTEXT_PROTOCOL else ACTIVE_CONTEXT_FORMAT)
             and plan['parent_uncommitted_rollout'] is True
             and plan['initial_policy_CPU_receipt_sha256']==PARENT_RECEIPT_SHA
@@ -392,3 +392,221 @@ def validate_closed_formal_artifact_manifest(manifest, evaluation_directory):
         result[str(path)]={'bytes':row['bytes'],'sha256':value}
     require({Path(name).name for name in result}==expected,'Retainedv11 manifest unique artifact set differs')
     return result
+
+# The v13 initializer is a different, naturally completed same-width parent.
+# The restored-v10 admission above remains isolated and unchanged.
+COMPLETE_V12_PARENT_SHA = 'f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83'
+COMPLETE_V12_RECEIPT_SHA = 'bede2e6f2c1d2b72551f603964f1664e222251656f55c91413fd1c7c5a92d4e3'
+COMPLETE_V12_RUN_SHA = '3004b6ccf9e617ef182d77b3a274a5270c0511e4678e79cb49b34f6d6c1ec781'
+COMPLETE_V12_COMMIT = '007e7a20d850827bf28e69d16a5d08ae89a7f7a2'
+COMPLETE_V12_PLAN_SHA = 'de7909cf332b5c1954f6d2215e94b35463a2a12b2a2f2d937ca1d149045467ed'
+COMPLETE_V12_KIND = 'saved_complete_PPO_v12_context_policy_transfer'
+COMPLETE_V12_MODE = 'transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization'
+
+
+def reviewed_complete_v12_parent():
+    return dict(sha=COMPLETE_V12_PARENT_SHA,receipt=COMPLETE_V12_RECEIPT_SHA,run=COMPLETE_V12_RUN_SHA,
+        format=FULL_OUTWARD_CONTEXT_FORMAT,iteration=999,updates=1000,status='completed',
+        kind=COMPLETE_V12_KIND,mode=COMPLETE_V12_MODE,restored=False)
+
+
+def validate_complete_v12_parent_records(plan, receipt, producer, terminal, claim, formal, review, best):
+    """New natural-parent metadata boundary; fixtures are not tensor proofs."""
+    from task_context_metadata import FORWARD_EXCESS_CONTEXT_PROTOCOL, FORWARD_EXCESS_CONTEXT_FORMAT
+    validate_task_context_plan(plan)
+    require(plan['trial_protocol']==FORWARD_EXCESS_CONTEXT_PROTOCOL
+            and plan['checkpoint_format']==FORWARD_EXCESS_CONTEXT_FORMAT
+            and plan['parent_uncommitted_rollout'] is False
+            and plan['parent_rollback_evidence'] is None and plan['parent_rollback_evidence_sha256'] is None
+            and plan['parent_complete_state_digest'] is None,
+            'v13 requires natural v12 completion, with no borrowed rollback proof')
+    require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True
+            and receipt['sha256']==COMPLETE_V12_PARENT_SHA
+            and receipt['checkpoint_format']==FULL_OUTWARD_CONTEXT_FORMAT
+            and receipt['trial_protocol']==FULL_OUTWARD_CONTEXT_PROTOCOL
+            and receipt['checkpoint_iteration']==999 and receipt['committed_updates']==1000
+            and receipt['finite_tensors']==255 and receipt['uncommitted_rollout'] is False
+            and receipt['rnd_rollout_update_counter']==24000
+            and receipt['network_dimensions']==[1034,871,73,12]
+            and receipt['plan_sha256']==COMPLETE_V12_PLAN_SHA
+            and receipt.get('rollback_equivalence') is None,
+            'Natural v12 parent CPU/layout/counters differ')
+    require(producer['status']=='completed' and producer['git_commit']==COMPLETE_V12_COMMIT
+            and producer['completed_iterations']==1000 and producer['total_timesteps']==24576000
+            and producer['actual_sampled_environment_steps']==24576000
+            and producer['discarded_uncommitted_rollout_steps']==0,
+            'Natural v12 parent terminal status or sample budget differs')
+    gs=producer['guarded_ppo_state']
+    require(gs['trial_protocol']==FULL_OUTWARD_CONTEXT_PROTOCOL and gs['completed_updates']==1000
+            and gs['uncommitted_rollout'] is False and gs['actor_optimizer_steps']==19200
+            and gs['critic_optimizer_steps']==gs['rnd_optimizer_steps']==20000
+            and gs['rnd_update_counter']==24000 and gs['proposal_projection']['committed_minibatches']==19200,
+            'Natural v12 actual saved counters differ')
+    for name,count,steps in (('actor',45,19200),('critic',8,20000),('rnd',4,20000)):
+        require(receipt['optimizers'][name]['parameter_count']==count and receipt['optimizers'][name]['steps']==steps,
+                'Natural parent exact optimizer history differs: '+name)
+    require(receipt['actor_proposal_projection']['committed_minibatches']==19200,
+            'Natural parent projection counter differs')
+    require(terminal['status']=='passed_natural1000_completion' and terminal['natural_completion'] is True
+            and terminal['last_iteration']==999 and terminal['completed_iterations']==1000
+            and terminal['producer_run_sha256']==COMPLETE_V12_RUN_SHA
+            and terminal['source_commit']==COMPLETE_V12_COMMIT
+            and terminal['RND_counter']==24000 and terminal['proposal_commit_hook']==19200
+            and terminal['manager']['status']=='finished' and terminal['manager']['exit_code']==0
+            and terminal['manager']['error'] is None and terminal['manager']['GPU_released'] is True,
+            'Natural parent terminal review is not the ended original producer')
+    require(claim['status']=='entry_returned' and claim['exit_code']==0
+            and claim['checkpoint_sha256']==COMPLETE_V12_PARENT_SHA
+            and claim['source_commit']==COMPLETE_V12_COMMIT and claim['plan_sha256']==COMPLETE_V12_PLAN_SHA
+            and claim['final_CPU_status']=='passed' and claim['final_CPU_receipt_sha256']==COMPLETE_V12_RECEIPT_SHA
+            and claim['same_checkpoint_replay_allowed'] is False,
+            'Parent integrated finalCPU/formal once record differs; not a guard CPU claim')
+    validate_task_context_metadata(producer['runtime_flat_geometry'])
+    validate_normalization_metadata(receipt['normalization_abi'],receipt['normalizer_prefix_counts'])
+    require(receipt['normalization_abi']==producer['guarded_flat_learning']['normalization_abi']
+            and receipt['task_context']==producer['runtime_flat_geometry']['task_context'],
+            'Natural parent own context and normalization ABI differ')
+    require(formal['status']=='completed' and formal['checkpoint_sha256']==COMPLETE_V12_PARENT_SHA
+            and formal['num_envs']==1024 and formal['successful_envs']==848
+            and formal['duration_s']==20. and formal['simulated_steps']==1000
+            and formal['training_updates']==0 and formal['required_successful_envs']==922
+            and formal['formal_acceptance_passed'] is False and formal['flat_balance_ready'] is False,
+            'Natural v12 parent848 must remain its one original-gate measurement, not acceptance')
+    require(review['checkpoint_sha256']==COMPLETE_V12_PARENT_SHA
+            and review['CPU_receipt_sha256']==COMPLETE_V12_RECEIPT_SHA
+            and review['actual_final_CPU_schema_finite_count']==255
+            and review['unique_complete_final_CPU_and_formal_consumed'] is True
+            and review['successful_envs']==848 and review['num_envs']==review['first_episodes']==1024
+            and review['required_successful_envs']==922 and review['simulated_steps']==1000
+            and review['simulated_duration_s']==20 and review['gate_unchanged'] is True
+            and review['exact_all1024_CSV_original_conjunction'] is True
+            and review['policy_dualnorm_source_provenance_unchanged'] is True
+            and review['manager_finished'] is True and review['exit_code']==0 and review['error'] is None
+            and review['actual_births_ended'] is True and review['fresh_GPUempty'] is True
+            and review['walking_acceptance_passed'] is False,
+            'Parent848 sealed formal review differs')
+    require(best['kind']=='complete_naturally_completed_v12_context_policy'
+            and best['successful_envs']==848 and best['accepted'] is False
+            and best['checkpoint_sha256']==COMPLETE_V12_PARENT_SHA
+            and best['CPU_receipt_sha256']==COMPLETE_V12_RECEIPT_SHA
+            and best['producer_run_sha256']==COMPLETE_V12_RUN_SHA
+            and best['producer_natural_completion'] is True and best['producer_completed_iterations']==1000
+            and best['checkpoint_iteration']==999 and best['model_source_commit']==COMPLETE_V12_COMMIT
+            and best['same_PT_formal_replay_allowed'] is False,
+            'Newbest848 identity must not be replaced by old842 or813')
+    return dict(parent_checkpoint_sha256=COMPLETE_V12_PARENT_SHA,parent_accepted_updates=1000,
+        parent_last_complete_iteration=999,parent_uncommitted_rollout=False,parent_natural_completion=True,
+        parent_runtime_rollback_completed=False,parent_rollback_evidence=None,parent_persistent_state_digest=None,
+        parent_formal_successful_envs=848,parent_formal_acceptance_passed=False)
+
+
+def verify_complete_v12_parent_files(plan, root):
+    """Byte/JSON custody only. Never deserialize PT/NPZ or rerun parent CPU/Sim."""
+    root=Path(root).resolve(strict=True)
+    run=root/'logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_17-18-48_guarded_flat_balance_c5c01c3e'
+    case=root/'logs/stair_learning/flat_balance_20261101_171844_c5c01c3e'
+    formal_case=root/'logs/stair_learning/flat_balance_20261101_200056_b0b8481f'
+    checkpoint=run/'model_999.pt';receipt_path=checkpoint.with_suffix('.validation.json')
+    bindings=(('initial_policy',checkpoint,COMPLETE_V12_PARENT_SHA),
+        ('initial_policy_CPU_receipt',receipt_path,COMPLETE_V12_RECEIPT_SHA),
+        ('initial_parent_run',run/'run.json',COMPLETE_V12_RUN_SHA),
+        ('parent_terminal_review',case/'natural_completion_review.json','31f248e1c0f7e42f64deb021bf15be29fb045f9b90f90224910657baa9df5de7'),
+        ('parent_CPU_once',case/'final_CPU_and_formal_start.once.json','68f97151ed421425313911e90ab7f5cf821f609a2d72bd3413382917f37059d6'),
+        ('parent_formal_review',formal_case/'formal_result_review.json','2fd18c7b9c47d0761f7f5a3524a758379b8cc420cd18a1e52dca14739da4420e'),
+        ('parent_formal_result',formal_case/'evaluation/result.json','0957e3084c0318fc34c1c46ced8c2211dd320e13a8a65edd26bd2d1edeae89bb'),
+        ('parent_formal_artifact_manifest',formal_case/'formal_artifacts.sha256.json','fb1cf3bbb98d9faea8d87966f2c7faff8afe8fbd424d7b32b9d1c09af6ccd88d'),
+        ('parent_best_record',formal_case/'best_direct_flat_policy_record.json','2344969cda652725b5f8eb34c12df18d32ac7c976cd9c38604d2c62f2e244549'))
+    frozen={}
+    for key,path,value in bindings:
+        require(Path(plan[key]).resolve(strict=True)==path and plan[key+'_sha256']==value and sha(path)==value,
+                'Exact complete-v12 file binding differs: '+key)
+        frozen[str(path)]=value
+    receipt=read(receipt_path);producer=read(run/'run.json');review=read(formal_case/'formal_result_review.json')
+    result=validate_complete_v12_parent_records(plan,receipt,producer,read(case/'natural_completion_review.json'),
+        read(case/'final_CPU_and_formal_start.once.json'),read(formal_case/'evaluation/result.json'),review,
+        read(formal_case/'best_direct_flat_policy_record.json'))
+    source=Path(plan['initial_parent_source_root']).resolve(strict=True)
+    require(source==run/'training_source/source'==Path(receipt['source_root']).resolve(strict=True),
+            'Natural v12 must retain its complete own007 source')
+    actual={'source/'+str(p.relative_to(source)):sha(p) for p in source.rglob('*')
+            if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
+    require(actual==receipt['source_sha256'] and receipt['producer_run_sha256']==COMPLETE_V12_RUN_SHA
+            and Path(receipt['producer_run']).resolve(strict=True)==run/'run.json'
+            and Path(receipt['checkpoint']).resolve(strict=True)==checkpoint
+            and Path(producer['final_checkpoint']).resolve(strict=True)==checkpoint,
+            'Natural parent own source/checkpoint/run identity changed')
+    protected=plan.get('protected_network_input_native_source_sha256',{})
+    validate_complete_v12_protected_source_records(protected,actual,
+        {name:sha(root/name) for name in protected})
+    frozen.update({str(source/key.removeprefix('source/')):value for key,value in actual.items()})
+    require(producer['training_tool_sha256']==receipt['producer_training_tool_sha256'],
+            'Natural parent tool manifest differs')
+    for name,value in producer['training_tool_sha256'].items():
+        path=source.parent/name;require(sha(path)==value,'Natural parent own tool changed: '+name);frozen[str(path)]=value
+    for path,value in receipt['external_dependency_sha256'].items():
+        require(sha(path)==value,'Natural parent external dependency changed');frozen[path]=value
+    bank=receipt['fixed_context_bank_custody']
+    for key,sha_key in (('bank_path','bank_sha256'),('receipt_path','receipt_sha256'),('seal_path','seal_sha256'),('acquisition_log_path','acquisition_log_sha256')):
+        path=Path(bank[key]).resolve(strict=True);require(sha(path)==bank[sha_key],'Natural parent own bank changed: '+key)
+        frozen[str(path)]=bank[sha_key]
+    require(Path(receipt['plan_path']).resolve(strict=True)==root/'logs/stairs_work/full_outward_growth_20261101_165237/plan.json'
+            and sha(receipt['plan_path'])==COMPLETE_V12_PLAN_SHA,
+            'Natural parent original plan identity changed')
+    manifest_path=formal_case/'formal_artifacts.sha256.json'
+    require(Path(review['artifact_manifest']).resolve(strict=True)==manifest_path
+            and review['artifact_manifest_sha256']==plan['parent_formal_artifact_manifest_sha256'],
+            'Natural parent review must bind its actual13-list manifest')
+    for name,item in validate_closed_formal_artifact_manifest(read(manifest_path),formal_case/'evaluation').items():
+        path=Path(name);require(path.stat().st_size==item['bytes'] and sha(path)==item['sha256'],
+                'Natural parent formal artifact changed: '+name);frozen[name]=item['sha256']
+    # Preserve every immutable original formal/ancestor/history216 input.
+    # Legal new ROOT edits require exact frozen-copy or Git origins, never omission.
+    excluded={};request=read(formal_case/'request.json')
+    require(all(request['root_hashes'].get(name,value)==value
+                for name,value in request['frozen_files'].items() if name in request['root_hashes']),
+            'Original formal ROOT/frozen hash declarations conflict')
+    prior_inputs={**request['root_hashes'],**request['frozen_files']}
+    for name,value in prior_inputs.items():
+        path=Path(name).resolve(strict=True)
+        if path.is_relative_to(root/'source') or path.is_relative_to(root/'tools'):
+            rel=path.relative_to(root)
+            copies=([source/path.relative_to(root/'source')] if path.is_relative_to(root/'source') else
+                [source.parent/path.name,formal_case/'snapshot/tools'/path.name,formal_case/'evaluation/tools_snapshot'/path.name])
+            origin=next((p for p in copies if p.is_file() and sha(p)==value),None)
+            if origin is not None:
+                frozen[str(origin)]=value;excluded[name]=dict(sha256=value,origin=str(origin),kind='own_snapshot')
+            else:
+                commit=request.get('launcher_commit',request['source_commit'])
+                blob=subprocess.check_output(['git','show',commit+':'+str(rel)],cwd=root)
+                require(hashlib.sha256(blob).hexdigest()==value,'Natural parent oldROOT lacks exact archived origin: '+name)
+                excluded[name]=dict(sha256=value,origin=commit+':'+str(rel),kind='git_blob')
+            continue
+        require(sha(path)==value,'Immutable natural-parent/ancestor input changed: '+name);frozen[str(path)]=value
+    terminal=read(case/'natural_completion_review.json')
+    for path in (case/'request.json',case/'launch.json',case/'launch.lock',formal_case/'request.json',
+            formal_case/'launch.json',formal_case/'launch.lock',run/'params/agent.yaml',Path(receipt['plan_path']),
+            Path(terminal['completion_audit'])):
+        frozen[str(path)]=sha(path)
+    result.update(frozen_files=frozen,excluded_prior_active_ROOT_hashes=excluded,parent_source_sha256=actual,
+        parent_formal_review=str(formal_case/'formal_result_review.json'),parent_formal_review_sha256=plan['parent_formal_review_sha256'],
+        parent_formal_result=str(formal_case/'evaluation/result.json'),parent_formal_result_sha256=plan['parent_formal_result_sha256'],
+        parent_formal_artifact_manifest=str(manifest_path),parent_formal_artifact_manifest_sha256=plan['parent_formal_artifact_manifest_sha256'],
+        parent_best_record=str(formal_case/'best_direct_flat_policy_record.json'),parent_best_record_sha256=plan['parent_best_record_sha256'])
+    return result
+
+
+COMPLETE_V12_PROTECTED_FILES = tuple('source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/'+name for name in (
+    'action_contract.py','direct_leg_action.py','config/observations_cfg.py','mdp/observations.py',
+    'manager/action_manager.py','manager/actuators.py','manager/leg_action.py','assets/robot.py',
+    'direct_initialization.py','stair_ascent_cfg.py','networks/__init__.py','networks/actor_critic_our.py',
+    'networks/terrain_reconstructor.py','networks/lidar_terrain_reconstructor.py'))
+
+
+def validate_complete_v12_protected_source_records(protected, parent_source, current_source):
+    """Early v13-only custody admission; no tensor initialization is needed."""
+    require(isinstance(protected,dict) and set(protected)==set(COMPLETE_V12_PROTECTED_FILES),
+            'Natural v12 transfer requires the exact complete original14 protected keys')
+    require(all(parent_source.get(name)==value==current_source.get(name)
+                for name,value in protected.items()),
+            'Natural v12 protected parent/current source bytes differ')
+    return dict(protected_file_count=14,parent_and_current_equal=True)
