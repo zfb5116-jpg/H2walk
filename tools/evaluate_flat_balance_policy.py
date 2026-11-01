@@ -515,7 +515,7 @@ def verify_context_bank_custody(run, plan):
                 raw_width=1034,rows=4096,finite_bank_not_physical_acceptance=True)
 
 
-def validate_cpu(args):
+def validate_cpu(args, *, restored_state_inspector=None):
     os.environ['CUDA_VISIBLE_DEVICES']=''
     import torch
     import yaml
@@ -813,6 +813,9 @@ def validate_cpu(args):
         validator_sha256=sha(Path(__file__)),physical_validator_sha256=sha(Path(physical.__file__)),
         rnd_semantics='Weight0 means no intrinsic reward; actual fresh predictor Adam and normalization continue and are checked.',
         integrity_is_not_walking_acceptance=True)
+    if restored_state_inspector is not None:
+        receipt['rollback_equivalence']=restored_state_inspector(saved)
+        require(receipt['rollback_equivalence'].get('status')=='passed','Restored-state inspector did not pass')
     write(args.validation_output,receipt)
     print('[FLAT_BALANCE_CPU] '+json.dumps({key:receipt[key] for key in (
         'status','cpu_only','checkpoint','sha256','checkpoint_iteration','committed_updates',

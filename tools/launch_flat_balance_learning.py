@@ -36,6 +36,7 @@ SLOT = ROOT / "logs/stair_learning/flat_balance.slot.lock"
 TASK = "Unitree-H2-Flat-Balance-Policy"
 KIND = "guarded_flat_balance_ppo_learning"
 EVAL_KIND = "guarded_flat_balance_frozen_validation"
+V10_RESTORED372_KIND = "single_frozen_validation_of_controlled_guard_restored_v10_context_372"
 BRANCH = "codex/h2-stair-ascent-20261030"
 INIT_SHA = "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
 TRANSFER_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
@@ -358,8 +359,164 @@ def preflight(args):
                 accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
 
 
+def v10_restored372_custody(review, parent, parent_request, state):
+    """Admit this one restored context policy using its single complete CPU audit."""
+    expected_case=ROOT/"logs/stair_learning/flat_balance_20261101_101628_48cecc2f"
+    expected_run=ROOT/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_10-16-33_guarded_flat_balance_48cecc2f"
+    model_commit="18840a7e87558e5f664f4ee0996cacc30821b8ba"
+    model_sha="b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce"
+    state_sha="f1c5ae30855147af9b12c757f89831fa8af2913406d2ac3145df09e112a12f91"
+    producer_plan_sha="560c0b630ece3407ea7a82dc0a3010518291248eab91adee41c698b457faa045"
+    postend_tools={"tools/launch_flat_balance_learning.py","tools/evaluate_flat_balance_policy.py",
+                   "tools/verify_guard_restored_flat.py"}
+    require(review.get("kind")==V10_RESTORED372_KIND and review.get("status")=="reviewed_ready"
+            and parent==expected_case
+            and parent_request["job_kind"]==KIND and parent_request["trial_protocol"]==CONTEXT_PROTOCOL
+            and parent_request["source_commit"]==model_commit==review["model_source_commit"]
+            and state.get("status")=="stopped_functional_guard", "Wrong restored-v10 producer")
+    tools=review["postend_tool_sha256"]
+    require(set(tools)==postend_tools and all(digest(ROOT/name)==value for name,value in tools.items()),
+            "Unreviewed postend tool change")
+    current,old=root_hashes(),parent_request["root_hashes"]
+    allowed={str(ROOT/name) for name in postend_tools}
+    require(set(current)==set(old)|{str(ROOT/"tools/verify_guard_restored_flat.py")}
+            and all(current.get(name)==value for name,value in old.items() if name not in allowed),
+            "A producer source/tool changed outside the three postend tools")
+    require(hashes(parent_request["source_root"])==parent_request["source_hashes"],
+            "Original producer full source changed")
+    for path,value in parent_request["frozen_files"].items():
+        require(digest(path)==value,"Original frozen producer input changed: "+path)
+    require(digest(parent/"launch.json")==read(parent/"launch.identity.sha256.json")["sha256"],
+            "Original producer launch identity changed")
+    ended=read(parent/"manager_state.json")
+    require(ended.get("status")=="finished" and ended.get("exit_code")==0 and ended.get("error") is None,
+            "Producer manager has not finished cleanly")
+    run=inside(state["run_dir"]);checkpoint=inside(review["checkpoint"])
+    require(run==expected_run and checkpoint==run/"model_371_guard_restored.pt"
+            and checkpoint==inside(state["final_checkpoint"])
+            and digest(checkpoint)==review["checkpoint_sha256"]==model_sha,
+            "Only the recorded restored-v10 policy is eligible")
+    guard_path=inside(review["rollback_evidence"]);guard=read(guard_path)
+    require(guard_path==run/"functional_guard/rejected_update_0372.json"
+            and guard_path==inside(state["functional_guard_evidence"])
+            and digest(guard_path)==review["rollback_evidence_sha256"]
+            and guard.get("status")=="stopped_functional_guard"
+            and guard.get("complete_update_restored") is True and guard.get("retry_allowed") is False
+            and guard["rollback_state_digest_before"]==guard["rollback_state_digest_after"]
+            ==review["rollback_state_digest"]==state_sha
+            and guard["completed_updates"]==guard["update_index"]==state["completed_iterations"]
+            ==review["committed_updates"]==372 and guard["minibatch"]==19,
+            "Actual restored-v10 rollback identity differs")
+    baseline=inside(review["original_baseline_snapshot"])
+    require(baseline==run/"functional_guard/rejected_update_0372_baseline.pt"
+            and baseline==inside(guard["baseline"]) and digest(baseline)==guard["baseline_sha256"]
+            and inside(guard["restored_checkpoint"])==checkpoint
+            and guard["restored_checkpoint_sha256"]==model_sha,
+            "Baseline/candidate/restored policy identities were mixed")
+    terminal_path=inside(review["terminal_review"]);terminal=read(terminal_path)
+    require(terminal_path==parent/"terminal_v10_guardstop_review.json"
+            and digest(terminal_path)==review["terminal_review_sha256"]
+            and terminal.get("manager_finished") is True and terminal.get("GPU_released") is True
+            and terminal.get("natural_completion") is False and terminal.get("complete_update_restored") is True
+            and terminal.get("checkpoint_sha256")==model_sha
+            and terminal.get("rollback_evidence_sha256")==digest(guard_path)
+            and terminal.get("pre_tool_change_frozen_differences")==[]
+            and terminal.get("terminal_commit_journal_verified") is True,
+            "Independent ended-producer terminal review changed")
+    receipt_path=inside(review["CPU_receipt"]);receipt=read(receipt_path)
+    require(receipt_path==checkpoint.with_suffix(".validation.json")
+            and digest(receipt_path)==review["CPU_receipt_sha256"]
+            and receipt.get("status")=="passed" and receipt.get("cpu_only") is True
+            and inside(receipt["checkpoint"])==checkpoint and receipt["sha256"]==model_sha
+            and receipt["checkpoint_format"]==CONTEXT_FORMAT and receipt["trial_protocol"]==CONTEXT_PROTOCOL
+            and receipt["checkpoint_iteration"]==371 and receipt["committed_updates"]==372
+            and receipt["finite_tensors"]==255 and receipt["uncommitted_rollout"] is True
+            and receipt["rnd_rollout_update_counter"]==8952
+            and receipt["network_dimensions"]==[1034,871,73,12]
+            and receipt.get("normalizer_prefix_frozen_and_parent_bitwise_equal") is True
+            and receipt.get("normalizers_frozen_and_parent_bitwise_equal") is False,
+            "Restored-v10 complete CPU receipt differs")
+    require(receipt["validator_sha256"]==tools["tools/evaluate_flat_balance_policy.py"]
+            and receipt["physical_validator_sha256"]==digest(ROOT/"tools/evaluate_direct_initialization.py"),
+            "Actual integrity/physical validator changed after the CPU receipt")
+    proof=receipt.get("rollback_equivalence",{})
+    require(proof.get("status")=="passed" and proof.get("state_excluded_fields")==["infos"]
+            and proof.get("all_state_fields_equal") is True
+            and proof.get("baseline_state_digest")==proof.get("restored_state_digest")==state_sha
+            and proof.get("cuda_rng_equal") is True and type(proof.get("cuda_rng_tensor_count")) is int
+            and proof["cuda_rng_tensor_count"]>0 and inside(proof["baseline"])==baseline
+            and proof["baseline_sha256"]==guard["baseline_sha256"]
+            and proof["evidence_sha256"]==digest(guard_path)
+            and proof["inspector_sha256"]==tools["tools/verify_guard_restored_flat.py"]
+            and proof.get("restored_packet_reused_from_complete_validator") is True
+            and proof.get("restored_checkpoint_loads")==proof.get("baseline_checkpoint_loads")==1
+            and proof.get("candidate_checkpoint_loads")==proof.get("NNforward_calls")==proof.get("optimizer_updates")==0
+            and proof.get("no_simulation") is True and proof.get("CUDA_runtime_initialized") is False,
+            "Independent full-state/GPU-RNG comparison is missing or differs")
+    claim_path=inside(checkpoint.with_suffix(".CPU_once.json"));claim=read(claim_path)
+    require(claim.get("status")=="passed" and inside(claim["checkpoint"])==checkpoint
+            and claim["sha256"]==model_sha and inside(claim["receipt"])==receipt_path
+            and claim["receipt_sha256"]==digest(receipt_path)
+            and claim["inspector_sha256"]==proof["inspector_sha256"],
+            "The exclusive restored-policy CPU claim did not pass")
+    source=inside(receipt["source_root"])
+    require(source==run/"training_source/source", "Restored-v10 must use its own imported source")
+    actual={"source/"+str(Path(path).relative_to(source)):value for path,value in hashes(source).items()}
+    require(actual==receipt["source_sha256"],"Restored-v10 imported source changed")
+    producer_path=inside(receipt["producer_run"]);producer=read(producer_path)
+    require(producer_path==run/"run.json" and digest(producer_path)==receipt["producer_run_sha256"]
+            and producer["status"]=="stopped_functional_guard" and producer["git_commit"]==model_commit
+            and inside(producer["final_checkpoint"])==checkpoint
+            and inside(producer["functional_guard_evidence"])==guard_path
+            and producer["completed_iterations"]==372 and producer["total_timesteps"]==9142272
+            and producer["actual_sampled_environment_steps"]==9166848
+            and producer["discarded_uncommitted_rollout_steps"]==24576,
+            "Stopped producer sampling/status/source evidence changed")
+    require(receipt["plan_sha256"]==producer_plan_sha==digest(inside(receipt["plan_path"]))
+            ==parent_request["plan_sha256"]==review["producer_plan_sha256"],"Producer plan changed")
+    validate_task_context_metadata(producer["runtime_flat_geometry"])
+    validate_normalization_metadata(receipt["normalization_abi"],receipt["normalizer_prefix_counts"])
+    require(receipt["normalization_abi"]==producer["guarded_flat_learning"]["normalization_abi"]
+            ==review["normalization_abi"] and receipt["task_context"]==producer["runtime_flat_geometry"]["task_context"],
+            "Restored-v10 own normalization/context ABI changed")
+    for name,count,steps in (("actor",45,6640),("critic",8,7440),("rnd",4,7440)):
+        require(receipt["optimizers"][name]["parameter_count"]==count
+                and receipt["optimizers"][name]["steps"]==steps,"Restored-v10 optimizer history differs")
+    require(receipt["actor_proposal_projection"]["committed_minibatches"]==6640,
+            "Restored-v10 projection commits differ from actual actor Adam")
+    frozen=dict(parent_request["frozen_files"])
+    frozen.update({str(path):digest(path) for path in (checkpoint,baseline,guard_path,terminal_path,receipt_path,
+        claim_path,producer_path,run/"params/agent.yaml",parent/"request.json",parent/"launch.json",
+        parent/"launch.identity.sha256.json",parent/"launch.lock",parent/"completion_audit.json")})
+    for key in ("candidate","prospective_adam_audit","actual_input_evidence"):
+        path=inside(guard[key])
+        require(path.parent==run/"functional_guard" and digest(path)==guard[key+"_sha256"],
+                "Preserved rejected-update evidence changed: "+key)
+        frozen[str(path)]=guard[key+"_sha256"]
+    numerical=guard["projection_failure"]["numerical_diagnostic_evidence"]
+    path=inside(numerical["path"])
+    require(path==run/"functional_guard/rejected_update_0372_numerical_evidence.npz"
+            and digest(path)==numerical["sha256"],"Preserved numerical failure evidence changed")
+    frozen[str(path)]=numerical["sha256"]
+    require(receipt["producer_training_tool_sha256"]==producer["training_tool_sha256"],"Producer tool manifest differs")
+    for name,value in producer["training_tool_sha256"].items():
+        path=inside(source.parent/name)
+        require(digest(path)==value,"Frozen producer tool changed: "+name);frozen[str(path)]=value
+    require(proof["producer_state_digest_source_sha256"]==producer["training_tool_sha256"]["guarded_flat_ppo.py"],
+            "State comparison did not use the frozen producer digest implementation")
+    bank=receipt["fixed_context_bank_custody"]
+    for key,sha_key in (("bank_path","bank_sha256"),("receipt_path","receipt_sha256"),
+                        ("acquisition_log_path","acquisition_log_sha256"),("seal_path","seal_sha256")):
+        path=inside(bank[key]);require(digest(path)==bank[sha_key],"Frozen context bank changed: "+key)
+        frozen[str(path)]=bank[sha_key]
+    frozen.update({str(ROOT/name):value for name,value in tools.items()})
+    return dict(checkpoint=checkpoint,source=source,source_hashes=actual,receipt=receipt,frozen_files=frozen)
+
+
 def postmortem_custody(review, parent, parent_request, state):
     """Bind a preserved baseline or a completely restored policy without loading it."""
+    if review.get("kind")==V10_RESTORED372_KIND:
+        return v10_restored372_custody(review,parent,parent_request,state)
     legacy = review.get("kind") == "single_frozen_validation_of_preserved_pre_guard_baseline_v1"
     restored = review.get("kind") == "single_frozen_validation_of_controlled_guard_restored_v4"
     require(legacy or restored, "Unknown postmortem custody protocol")
@@ -470,7 +627,8 @@ def preflight_postmortem(args):
     review = read(review_path)
     require(review.get("status") == "reviewed_ready" and
             review.get("kind") in ("single_frozen_validation_of_preserved_pre_guard_baseline_v1",
-                                   "single_frozen_validation_of_controlled_guard_restored_v4"),
+                                   "single_frozen_validation_of_controlled_guard_restored_v4",
+                                   V10_RESTORED372_KIND),
             "A specific reviewed postmortem measurement plan is required")
     require(review.get("protocol") == dict(num_envs=1024, duration_s=20, speed_m_s=.3, seed=42,
         minimum_successful_envs=922, minimum_forward_m=4.8, maximum_forward_m=7.2,
@@ -494,7 +652,9 @@ def preflight_postmortem(args):
     baseline = pointer["accepted_flat_baseline"]
     require(digest(baseline["final_checkpoint"]) == baseline["checkpoint_sha256"], "Protected flat baseline changed")
     for name, expected in baseline["network_hashes"].items():
-        require(digest(ROOT / "source" / name) == expected, "Original network/input source changed")
+        published=(ROOT/"artifacts/flat_forward/training_source/source"/name
+                   if review["kind"]==V10_RESTORED372_KIND else ROOT/"source"/name)
+        require(digest(published) == expected, "Original network/input source changed")
     # Use model/source/protocol identity, not tooling revisions, for deduplication.
     key = hashlib.sha256(json.dumps(dict(kind=EVAL_KIND, checkpoint=digest(checkpoint),
         source=actual, protocol=review["protocol"]), sort_keys=True).encode()).hexdigest()[:20]
@@ -508,6 +668,8 @@ def preflight_postmortem(args):
         plan_path=str(review_path), plan_sha256=digest(review_path), duplicate_guard=str(guard),
         parent_case=str(parent), checkpoint=str(checkpoint), dataset=None, dataset_stats={},
         producer_completed_iterations=review["committed_updates"],
+        **(dict(trial_protocol=CONTEXT_PROTOCOL,producer_status="stopped_functional_guard",
+                producer_uncommitted_rollout=True) if review["kind"]==V10_RESTORED372_KIND else {}),
         postmortem_measurement=True, accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
 
 
