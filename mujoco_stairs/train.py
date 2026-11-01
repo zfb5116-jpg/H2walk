@@ -76,6 +76,8 @@ def main() -> None:
     parser.add_argument("--stair-direction", choices=("up", "down", "mixed"), default="mixed")
     parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--init-from", default=None)
+    parser.add_argument("--allow-reward-change", action="store_true",
+                        help="Explicitly migrate a compatible v2 86/15 policy to dense v3 rewards")
     parser.add_argument("--resume-curriculum", action="store_true",
                         help="Restore curriculum sidecar as well as policy/optimizer state")
     parser.add_argument("--learning-rate", type=float, default=None)
@@ -91,6 +93,8 @@ def main() -> None:
         parser.error("env count, training steps and batch size must be positive; n-steps must be >=2")
     if args.resume_curriculum and (not args.init_from or args.terrain_mode != "curriculum"):
         parser.error("--resume-curriculum requires --init-from and --terrain-mode curriculum")
+    if args.allow_reward_change and (not args.init_from or args.resume_curriculum):
+        parser.error("--allow-reward-change requires --init-from and a fresh curriculum")
     Path(args.run_dir).mkdir(parents=True, exist_ok=True)
     env_kwargs = {name: getattr(args, name) for name in (
         "terrain_mode", "low_step_height", "start_stage", "curriculum_window",
@@ -113,7 +117,7 @@ def main() -> None:
         lr = args.learning_rate if args.learning_rate is not None else (1e-4 if args.init_from else 3e-4)
         batch_size = min(args.batch_size, args.n_envs * args.n_steps)
         if args.init_from:
-            validate_checkpoint_contract(args.init_from, env)
+            validate_checkpoint_contract(args.init_from, env, allow_reward_change=args.allow_reward_change)
             model = PPO.load(args.init_from, env=env, device=args.device,
                              learning_rate=lr, n_steps=args.n_steps, batch_size=batch_size,
                              tensorboard_log=args.run_dir, seed=args.seed)

@@ -1,3 +1,22 @@
+# 本次修复：楼梯前停步
+
+当前奖励版本为 `h2_stairs_dense_v3`，细节见 [REWARDS.md](REWARDS.md)。
+优先从已有平地稳定的 86 观测 / 15 动作 v2 策略开始上楼专项训练：
+
+```bash
+python -m mujoco_stairs.train --init-from /path/to/h2_stairs_waist_ppo.zip --allow-reward-change --terrain-mode curriculum --start-stage low --stair-direction up --learning-rate 0.0001 --total-timesteps 10000000 --n-envs 8 --run-dir logs/h2_stairs_dense_v3
+```
+
+`--allow-reward-change` 只允许 v2 到 v3 的奖励迁移，机器人模型、86/15 接口和控制参数仍须完全匹配。
+方向设置也须与 checkpoint 一致；若原策略使用 mixed，训练命令应使用 mixed。
+不加 `--resume-curriculum`，课程从 4 cm 重新开始，避免继承停滞状态。
+沿用 PPO 策略和优化器，不沿用旧奖励的训练契约。请使用独立输出目录。
+
+每次评估看 success、最大前进距离、stair_completed_treads，以及 stair_lift/reach 是否实际触发；
+总回报因奖励版本变化不能与旧值直接比较。20 cm 目标仍需重新训练后用多 seed 验证。
+
+---
+
 # H2 MuJoCo：WM-LOCO 楼梯奖励与主动腰部控制
 
 当前入口为 `CtrlLab-H2-Stairs-MuJoCo-v1`，策略控制 **12 个腿关节 + 3 个腰关节**。

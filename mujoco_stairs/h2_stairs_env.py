@@ -11,6 +11,7 @@ from gymnasium import spaces
 
 from dataclasses import replace
 import hashlib
+from .dense_stair_reward import DenseStairReward
 from .rewards import REWARD_VERSION, REWARD_WEIGHTS, compute_standard_rewards, weighted_rewards
 
 from .curriculum import StairCurriculum
@@ -166,6 +167,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         self._stair_geometry = StairGeometry(landing_end=self._landing_end,
                                              lane_half_width=stair_lane_half_width)
         self._tread_reward = SequentialTreadReward(self._stair_geometry)
+        self._dense_reward = DenseStairReward(self._stair_geometry)
         self._foot_geoms = [self._collision_geoms(b) for b in (self._left_foot, self._right_foot)]
         self._geom_to_foot = {g: i for i, geoms in enumerate(self._foot_geoms) for g in geoms}
         # Fixed sample density makes raw point-count penalties reproducible.
@@ -383,6 +385,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         self.episode_direction = str(self.np_random.choice(("up", "down"))) if self.stair_direction == "mixed" else self.stair_direction
         self._stair_geometry = replace(self._stair_geometry, direction=self.episode_direction)
         self._tread_reward = SequentialTreadReward(self._stair_geometry)
+        self._dense_reward = DenseStairReward(self._stair_geometry)
         self._set_stair_height()
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[self._qpos_adrs] = self._controlled_home
@@ -482,6 +485,9 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         raw = compute_standard_rewards(state)
         stair_raw, diagnostics = self._stair_reward_terms(support, self.dt)
         raw.update(stair_raw)
+        raw.update(self._dense_reward.step(sole_points, support, float(pos[0]), float(pos[1]),
+                                           self._terrain_step_height(), self._tread_reward.current_index,
+                                           self.dt, bool(self.command[0] > .05 and not fallen)))
         terms = weighted_rewards(raw, self.dt)
         self._previous_action[:] = action
         sequence_done = self._terrain_step_height() == 0 or self._tread_reward.current_index == 6

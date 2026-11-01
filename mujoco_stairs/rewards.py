@@ -1,20 +1,19 @@
-"""WM-LOCO Appendix B, Table 3 (Stairs column), adapted to MuJoCo H2.
+"""H2 dense stair rewards v3, extending the WM-LOCO-inspired v2 baseline.
 
-Table weights are transcribed; standard-term formulas/thresholds not specified
-by the paper are explicit H2 choices. See REWARDS.md. No fixed swing-height,
-raw forward-velocity, success, fall or upper-body-freeze reward is retained.
+Adds finite approach/lift/reach/completion budgets and progress-gated tracking.
+See REWARDS.md for the current schedule and historical paper adaptation.
 """
 
 from types import MappingProxyType
 
 import numpy as np
 
-REWARD_VERSION = "wm_loco_stairs_h2_v2"
+REWARD_VERSION = "h2_stairs_dense_v3"
 REWARD_WEIGHTS = MappingProxyType({
     "linear_velocity_tracking": 3.0,
     "angular_velocity_tracking": 3.0,
     "heading_error": -1.0,
-    "no_progress": -2.0,
+    "no_progress": -6.0,
     "alive": 0.5,
     "stand_pose_anchor": 1.5,
     "stand_pose_l2": -1.0,
@@ -23,6 +22,10 @@ REWARD_WEIGHTS = MappingProxyType({
     "stair_boundary": -0.05,
     "stair_riser": -0.5,
     "stair_tread": 0.5,
+    "stair_approach": 2.0,
+    "stair_lift": 3.0,
+    "stair_reach": 4.0,
+    "stair_completion": 6.0,
     "feet_air_time": 0.5,
     "feet_slide": -0.4,
     "feet_flat_orientation": -0.4,
@@ -67,10 +70,10 @@ def compute_standard_rewards(s: dict) -> dict[str, float]:
     foot_delta = s["foot_position"][0, :2] - s["foot_position"][1, :2]
     separation_error = foot_delta[0] ** 2 + (abs(foot_delta[1]) - 0.21) ** 2
     raw = {
-        "linear_velocity_tracking": np.exp(-np.square(s["linear_velocity"][:2] - s["command"][:2]).sum() / 0.25),
+        "linear_velocity_tracking": np.exp(-np.square(s["linear_velocity"][:2] - s["command"][:2]).sum() / 0.25) * (float(np.clip(s["forward_speed"] / max(s["command"][0], .05), 0., 1.)) if s["command"][0] > .05 else 1.),
         "angular_velocity_tracking": np.exp(-(s["angular_velocity"][2] - s["command"][2]) ** 2 / 0.25),
         "heading_error": s["heading_error"] ** 2,
-        "no_progress": moving * float(s["stall_time"] >= 1.0),
+        "no_progress": moving * float(s["stall_time"] >= 0.4),
         "alive": float(not s["fallen"]),
         "stand_pose_anchor": standing * np.exp(-pose_error / 0.25),
         "stand_pose_l2": standing * pose_error,
