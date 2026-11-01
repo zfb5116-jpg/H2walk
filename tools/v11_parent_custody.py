@@ -610,3 +610,289 @@ def validate_complete_v12_protected_source_records(protected, parent_source, cur
                 for name,value in protected.items()),
             'Natural v12 protected parent/current source bytes differ')
     return dict(protected_file_count=14,parent_and_current_equal=True)
+
+
+# The v14 child has a3000 learning budget, but this exact v13 parent completed1000.
+# Keep all prior helpers/pins above untouched, including v12 and guard-restored paths.
+COMPLETE_V13_PARENT_SHA = '756d623374ec9770ab3472e82587af8106f157129c8ab9a29e2a1f58f2714b32'
+COMPLETE_V13_RECEIPT_SHA = 'c53be1237ea3b6b5694b940d31bc3c0f2af26afdd3c18da176e0f664e7ce4c6d'
+COMPLETE_V13_RUN_SHA = '9be62a4a2528933023be70e226ad82bffcf2370580ed24af005193ddb94daf0f'
+COMPLETE_V13_COMMIT = '4397d17990e011629e9988328cf60b96ef81f631'
+COMPLETE_V13_PLAN_SHA = '974835e70a8ef66e9cfac12e26d4d2d97a44769bb82be92c4ca35885f58499dc'
+COMPLETE_V13_KIND = 'saved_complete_PPO_v13_context_policy_transfer'
+COMPLETE_V13_MODE = 'transfer_completed_v13_policy_and_frozen_dualnorm_fresh_optimization'
+COMPLETE_V13_ROOT_ARCHIVE_SHA = '31e9633794a226721967c813c9383186fbe8ac140d139362326e7abc58e14a7c'
+COMPLETE_V13_PRE_CHANGE_CUSTODY_SHA = 'd5555720362c519e656f95c1b97507e27b392d0f6956d0134bad941a605fff76'
+COMPLETE_V13_FORMAL_CLOSURE_SHA = 'a865c92164fe29d04d2647cf38be8da225df7346f81c93be0decd5ae5a05ce81'
+COMPLETE_V13_PROTECTED_FILES = COMPLETE_V12_PROTECTED_FILES
+
+
+def reviewed_complete_v13_parent():
+    from task_context_metadata import FORWARD_EXCESS_CONTEXT_FORMAT
+    return dict(sha=COMPLETE_V13_PARENT_SHA,receipt=COMPLETE_V13_RECEIPT_SHA,run=COMPLETE_V13_RUN_SHA,
+        format=FORWARD_EXCESS_CONTEXT_FORMAT,iteration=999,updates=1000,status='completed',
+        kind=COMPLETE_V13_KIND,mode=COMPLETE_V13_MODE,restored=False)
+
+
+def validate_complete_v13_protected_source_records(protected, parent_source, current_source):
+    """Metadata-only early exact14 admission for the new same-width transfer."""
+    require(isinstance(protected,dict) and set(protected)==set(COMPLETE_V13_PROTECTED_FILES),
+            'Natural v13 transfer requires the exact complete original14 protected keys')
+    require(all(parent_source.get(name)==value==current_source.get(name)
+                for name,value in protected.items()),
+            'Natural v13 protected parent/current source bytes differ')
+    return dict(protected_file_count=14,parent_and_current_equal=True)
+
+
+def validate_complete_v13_parent_records(plan, receipt, producer, terminal, claim, formal, review, best):
+    """Exact real-parent JSON schema; no tensor or physical validation is run."""
+    from task_context_metadata import (LONGER_BUDGET_CONTEXT_PROTOCOL, LONGER_BUDGET_CONTEXT_FORMAT,
+        FORWARD_EXCESS_CONTEXT_PROTOCOL, FORWARD_EXCESS_CONTEXT_FORMAT, context_learning_budget)
+    validate_task_context_plan(plan)
+    require(plan['trial_protocol']==LONGER_BUDGET_CONTEXT_PROTOCOL
+            and plan['checkpoint_format']==LONGER_BUDGET_CONTEXT_FORMAT
+            and plan['max_iterations']==context_learning_budget(plan['trial_protocol'])==3000
+            and plan['initial_parent_kind']==COMPLETE_V13_KIND and plan['initialization_mode']==COMPLETE_V13_MODE
+            and plan['initial_policy_sha256']==COMPLETE_V13_PARENT_SHA
+            and plan['initial_policy_CPU_receipt_sha256']==COMPLETE_V13_RECEIPT_SHA
+            and plan['initial_parent_run_sha256']==COMPLETE_V13_RUN_SHA
+            and plan['parent_accepted_updates']==1000 and plan['parent_last_complete_iteration']==999
+            and plan['parent_natural_completion'] is True and plan['parent_uncommitted_rollout'] is False
+            and plan['parent_runtime_rollback_completed'] is False and plan['parent_rollback_evidence'] is None
+            and plan['parent_rollback_evidence_sha256'] is None and plan['parent_complete_state_digest'] is None,
+            'v14 requires the natural1000 v13 parent, never child3000 counters or a borrowed rollback proof')
+    require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True
+            and receipt['sha256']==COMPLETE_V13_PARENT_SHA and receipt['checkpoint_format']==FORWARD_EXCESS_CONTEXT_FORMAT
+            and receipt['trial_protocol']==FORWARD_EXCESS_CONTEXT_PROTOCOL and receipt['checkpoint_iteration']==999
+            and receipt['committed_updates']==1000 and receipt['finite_tensors']==255
+            and receipt['uncommitted_rollout'] is False and receipt['rnd_rollout_update_counter']==24000
+            and receipt['network_dimensions']==[1034,871,73,12] and receipt['plan_sha256']==COMPLETE_V13_PLAN_SHA
+            and receipt.get('rollback_equivalence') is None,
+            'Natural v13 CPU/layout/counters differ from the already-issued full receipt')
+    require(producer['status']=='completed' and producer['git_commit']==COMPLETE_V13_COMMIT
+            and producer['completed_iterations']==1000 and producer['total_timesteps']==24576000
+            and producer['actual_sampled_environment_steps']==24576000
+            and producer['discarded_uncommitted_rollout_steps']==0,
+            'Natural v13 terminal status or committed/sample budget was relabeled')
+    gs=producer['guarded_ppo_state'];projection=gs['proposal_projection']
+    require(gs['trial_protocol']==FORWARD_EXCESS_CONTEXT_PROTOCOL and gs['completed_updates']==1000
+            and gs['uncommitted_rollout'] is False and gs['actor_optimizer_steps']==19200
+            and gs['critic_optimizer_steps']==gs['rnd_optimizer_steps']==20000 and gs['rnd_update_counter']==24000
+            and projection['committed_minibatches']==projection['proposal_calls']==projection['std_hook_calls']==19200,
+            'Natural v13 saved optimizer/RND/proposal/hook history differs')
+    for name,count,steps in (('actor',45,19200),('critic',8,20000),('rnd',4,20000)):
+        require(receipt['optimizers'][name]['parameter_count']==count and receipt['optimizers'][name]['steps']==steps,
+                'Natural parent exact optimizer history differs: '+name)
+    require(receipt['actor_proposal_projection']['committed_minibatches']==19200,
+            'Natural v13 CPU proposal counter differs')
+    require(terminal['status']=='passed' and terminal['natural_completion'] is True
+            and terminal['source_commit']==COMPLETE_V13_COMMIT and terminal['run_sha256']==COMPLETE_V13_RUN_SHA
+            and terminal['last_iteration']==999 and terminal['completed_iterations']==1000
+            and terminal['sampled_steps']==terminal['committed_steps']==24576000 and terminal['discarded_steps']==0
+            and terminal['guard_vetoes_observed']==0 and terminal['manager_finished'] is True
+            and terminal['wrapper_exit_code']==0 and terminal['both_actual_births_ended'] is True
+            and terminal['GPUempty'] is True and terminal['walking_acceptance_passed'] is False,
+            'Natural v13 completion review is not the original ended producer')
+    require(claim['status']=='passed' and claim['receipt_sha256']==COMPLETE_V13_RECEIPT_SHA
+            and claim['invocation']=='existing --validate completedv13case --start',
+            'Natural v13 finalCPU-once claim differs; it is not the old v12 claim or a guard proof')
+    validate_task_context_metadata(producer['runtime_flat_geometry'])
+    validate_normalization_metadata(receipt['normalization_abi'],receipt['normalizer_prefix_counts'])
+    require(receipt['normalization_abi']==producer['guarded_flat_learning']['normalization_abi']
+            and receipt['task_context']==producer['runtime_flat_geometry']['task_context'],
+            'Natural v13 full own block normalization/raw-context semantics changed')
+    require(formal['status']=='completed' and formal['checkpoint_sha256']==COMPLETE_V13_PARENT_SHA
+            and formal['checkpoint_format']==FORWARD_EXCESS_CONTEXT_FORMAT
+            and formal['trial_protocol']==FORWARD_EXCESS_CONTEXT_PROTOCOL
+            and formal['num_envs']==1024 and formal['successful_envs']==866 and formal['required_successful_envs']==922
+            and formal['duration_s']==20. and formal['simulated_steps']==1000 and formal['training_updates']==0
+            and formal['formal_acceptance_passed'] is False and formal['flat_balance_ready'] is False,
+            'Parent866 must remain its unique original-gate result, not a physical pass')
+    require(review['status']=='passed' and review['checkpoint_sha256']==COMPLETE_V13_PARENT_SHA
+            and review['checkpoint_format']==FORWARD_EXCESS_CONTEXT_FORMAT
+            and review['producer_run_sha256']==COMPLETE_V13_RUN_SHA
+            and review['complete_final_CPU_receipt_sha256']==COMPLETE_V13_RECEIPT_SHA
+            and review['all1024_first_episode_original_conjunction_exact'] is True
+            and review['successful_envs']==866 and review['required_successful_envs']==922
+            and review['simulated_steps']==1000 and review['simulated_duration_s']==20
+            and review['formal_acceptance_passed'] is False and review['stairs_acceptance_passed'] is False
+            and review['policy_and_own_normalizers_source_and_artifacts_unchanged'] is True
+            and review['manager_finished'] is True and review['wrapper_exit_code']==0
+            and review['actual_both_births_ended'] is True and review['GPUempty'] is True
+            and review['same_PT_formal_replay_allowed'] is False,
+            'Parent866 original formal review differs')
+    require(best['kind']=='complete_naturally_completed_v13_context_policy'
+            and best['successful_envs']==866 and best['accepted'] is False
+            and best['checkpoint_sha256']==COMPLETE_V13_PARENT_SHA
+            and best['CPU_receipt_sha256']==COMPLETE_V13_RECEIPT_SHA
+            and best['producer_run_sha256']==COMPLETE_V13_RUN_SHA
+            and best['producer_natural_completion'] is True and best['producer_completed_iterations']==1000
+            and best['checkpoint_iteration']==999 and best['model_source_commit']==COMPLETE_V13_COMMIT
+            and best['same_PT_formal_replay_allowed'] is False,
+            'Newbest866 identity cannot be replaced by older848/842 initializers')
+    return dict(parent_checkpoint_sha256=COMPLETE_V13_PARENT_SHA,parent_accepted_updates=1000,
+        parent_last_complete_iteration=999,parent_uncommitted_rollout=False,parent_natural_completion=True,
+        parent_runtime_rollback_completed=False,parent_rollback_evidence=None,parent_persistent_state_digest=None,
+        parent_formal_successful_envs=866,parent_formal_acceptance_passed=False)
+
+
+def verify_complete_v13_parent_files(plan, root):
+    """Cold byte/JSON custody only. Never deserialize a model, bank, or array."""
+    from task_context_metadata import LONGER_BUDGET_CONTEXT_PROTOCOL
+    root=Path(root).resolve(strict=True)
+    run=root/'logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_21-08-43_guarded_flat_balance_7093dca0'
+    case=root/'logs/stair_learning/flat_balance_20261101_210839_7093dca0'
+    formal_case=root/'logs/stair_learning/flat_balance_20261101_235607_a7f65b92'
+    stage=root/'logs/stairs_work/longer_budget_recovery_20261102_004214'
+    checkpoint=run/'model_999.pt';receipt_path=checkpoint.with_suffix('.validation.json')
+    validate_task_context_plan(plan)
+    require(plan['trial_protocol']==LONGER_BUDGET_CONTEXT_PROTOCOL,
+            'Complete-v13 custody is only the explicit new3000 protocol')
+    # Reject wrong identity/keysets using declarations before touching any model bytes.
+    protected=plan.get('protected_network_input_native_source_sha256',{})
+    require(isinstance(protected,dict) and set(protected)==set(COMPLETE_V13_PROTECTED_FILES),
+            'New v14 must declare the exact original14 protected files before any model access')
+    require(Path(plan['initial_policy']).resolve(strict=True)==checkpoint
+            and plan['initial_policy_sha256']==COMPLETE_V13_PARENT_SHA,
+            'New v14 canonical parent path/SHA must be the reviewed v13 M999')
+    bindings=(('initial_policy',checkpoint,COMPLETE_V13_PARENT_SHA),
+        ('initial_policy_CPU_receipt',receipt_path,COMPLETE_V13_RECEIPT_SHA),
+        ('initial_parent_run',run/'run.json',COMPLETE_V13_RUN_SHA),
+        ('parent_terminal_review',case/'natural_completion_review.json','afafc9e163f920618b9bfd3305ec92b4c1ebec4f007ed699e593660d2993fca6'),
+        ('parent_CPU_once',case/'final_CPU_review.once.json','bb3074b16362ec2db364e8cfbb2cba065c57a26d80ca86d8b6bc67cd3ca1f780'),
+        ('parent_formal_review',formal_case/'formal_result_review.json','9c12c1bbd8d4cf0cfd7f875ace3ea18491cfbc59f930a294f3b7376420c293ac'),
+        ('parent_formal_result',formal_case/'evaluation/result.json','2049fa40d2089314fdd270ffba273f530a530d399ac4e812f8931a851c17126a'),
+        ('parent_formal_artifact_manifest',formal_case/'formal_artifacts.sha256.json','48e1ada7130628677537787924d78a69fa836733e2e038a4d237ea18455a166a'),
+        ('parent_best_record',formal_case/'best_direct_flat_policy_record.json','5b6c263109f88b02a09501a4bf45fc0e5387ef1f4a3852313ca23cdeaf063830'),
+        ('parent_formal_analysis_closure',formal_case/'formal_analysis_closure.json',COMPLETE_V13_FORMAL_CLOSURE_SHA),
+        ('parent_ROOT_archive_manifest',stage/'parent_ROOT_archive_manifest.json',COMPLETE_V13_ROOT_ARCHIVE_SHA))
+    for key,path,value in bindings:
+        require(Path(plan[key]).resolve(strict=True)==path and plan[key+'_sha256']==value,
+                'Exact complete-v13 declaration differs before byte access: '+key)
+    receipt=read(receipt_path);producer=read(run/'run.json');terminal=read(case/'natural_completion_review.json')
+    claim=read(case/'final_CPU_review.once.json');formal=read(formal_case/'evaluation/result.json')
+    review=read(formal_case/'formal_result_review.json');best=read(formal_case/'best_direct_flat_policy_record.json')
+    result=validate_complete_v13_parent_records(plan,receipt,producer,terminal,claim,formal,review,best)
+    source=Path(plan['initial_parent_source_root']).resolve(strict=True)
+    require(source==run/'training_source/source'==Path(receipt['source_root']).resolve(strict=True)
+            and receipt['producer_run_sha256']==COMPLETE_V13_RUN_SHA
+            and Path(receipt['producer_run']).resolve(strict=True)==run/'run.json'
+            and Path(receipt['checkpoint']).resolve(strict=True)==checkpoint
+            and Path(producer['final_checkpoint']).resolve(strict=True)==checkpoint,
+            'Natural v13 must retain its exact own4397 source/checkpoint/run')
+    validate_complete_v13_protected_source_records(protected,receipt['source_sha256'],
+        {name:sha(root/name) for name in COMPLETE_V13_PROTECTED_FILES})
+    archive=read(stage/'parent_ROOT_archive_manifest.json');request=read(formal_case/'request.json')
+    require(archive['status']=='passed_exact_all128_old_ROOT_archive' and archive['all_128_present'] is True
+            and archive['source_edits_before_archive']==0 and archive['source_commit']==COMPLETE_V13_COMMIT
+            and Path(archive['root']).resolve(strict=True)==root
+            and Path(archive['parent_case']).resolve(strict=True)==case
+            and Path(archive['formal_case']).resolve(strict=True)==formal_case
+            and len(archive['root_hashes_expected'])==128
+            and archive['root_hashes_expected']==request['root_hashes']
+            and set(archive['origins'])==set(request['root_hashes']),
+            'Natural v13 oldROOT128 declarations/archive coverage differ')
+    old_ROOT_directory=stage/'old_ROOT_4397d179'
+    for name,value in request['root_hashes'].items():
+        old=Path(name).resolve(strict=True);origin=archive['origins'][name]
+        require(old.is_relative_to(root/'source') or old.is_relative_to(root/'tools'),
+                'OldROOT declaration is outside source/tools')
+        relative=old.relative_to(root)
+        require(origin['origin_kind']=='exact_own_copy' and origin['sha256']==origin['origin_sha256']==value
+                and origin['source_commit']==COMPLETE_V13_COMMIT
+                and origin['repository_relative_path']==str(relative)
+                and Path(origin['origin_path']).resolve(strict=True)==old_ROOT_directory/relative,
+                'OldROOT must retain its exact pre-change own copy: '+name)
+    # All declaration/source predicates have passed. Now fingerprint bytes;
+    # memoize overlaps so the original archive/ancestor union is not re-read per list.
+    frozen={};fingerprints={}
+    def retain(path, expected=None, size=None):
+        path=Path(path).resolve(strict=True);name=str(path)
+        if name not in fingerprints:fingerprints[name]=sha(path)
+        value=fingerprints[name]
+        require(expected is None or value==expected,'Immutable v13-parent bytes changed: '+name)
+        require(size is None or path.stat().st_size==size,'Immutable v13-parent size changed: '+name)
+        require(name not in frozen or frozen[name]==value,'Conflicting immutable v13-parent hash: '+name)
+        frozen[name]=value
+        return value
+    for key,path,value in bindings:retain(path,value)
+    actual={'source/'+str(p.relative_to(source)):retain(p) for p in source.rglob('*')
+            if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
+    require(actual==receipt['source_sha256'],'Natural v13 full ownsource bytes changed')
+    require(producer['training_tool_sha256']==receipt['producer_training_tool_sha256'],
+            'Natural v13 producer tool manifest differs')
+    for name,value in receipt['producer_training_tool_sha256'].items():retain(source.parent/name,value)
+    require(plan['initial_parent_external_dependency_sha256']==receipt['external_dependency_sha256']
+            ==producer['external_dependency_sha256'],'Natural v13 external source declaration changed')
+    for path,value in receipt['external_dependency_sha256'].items():retain(path,value)
+    bank=receipt['fixed_context_bank_custody']
+    for key,sha_key in (('bank_path','bank_sha256'),('receipt_path','receipt_sha256'),('seal_path','seal_sha256'),('acquisition_log_path','acquisition_log_sha256')):
+        retain(bank[key],bank[sha_key])
+    require(Path(receipt['plan_path']).resolve(strict=True)==root/'logs/stairs_work/forward_excess_braking_20261101_202310/plan.json'
+            and receipt['plan_sha256']==COMPLETE_V13_PLAN_SHA,'Natural v13 original readyplan declaration changed')
+    retain(receipt['plan_path'],COMPLETE_V13_PLAN_SHA)
+    manifest_path=formal_case/'formal_artifacts.sha256.json'
+    require(Path(review['artifact_manifest']).resolve(strict=True)==manifest_path
+            and review['artifact_manifest_sha256']==plan['parent_formal_artifact_manifest_sha256'],
+            'Natural v13 review must bind its actual13-entry artifact list')
+    for name,item in validate_closed_formal_artifact_manifest(read(manifest_path),formal_case/'evaluation').items():
+        retain(name,item['sha256'],item['bytes'])
+    require(all(request['root_hashes'].get(name,value)==value
+                for name,value in request['frozen_files'].items() if name in request['root_hashes']),
+            'Original v13 formal ROOT/frozen declarations conflict')
+    excluded={}
+    for name,value in {**request['root_hashes'],**request['frozen_files']}.items():
+        path=Path(name).resolve(strict=True)
+        if path.is_relative_to(root/'source') or path.is_relative_to(root/'tools'):
+            require(name in archive['origins'],'Live priorROOT path has no pre-change immutable origin')
+            origin=archive['origins'][name];retain(origin['origin_path'],value,origin['bytes'])
+            excluded[name]=dict(sha256=value,origin=origin['origin_path'],kind='exact_own_copy',
+                source_commit=COMPLETE_V13_COMMIT)
+        else:retain(path,value)
+    # Bind the already-closed non-ROOT evidence union as well as the formal request.
+    prechange_path=stage/'pre_change_custody_review.json';retain(prechange_path,COMPLETE_V13_PRE_CHANGE_CUSTODY_SHA)
+    prechange=read(prechange_path)
+    require(prechange['status']=='passed_before_any_ROOT_source_edit'
+            and prechange['parent_ROOT_archive_manifest_sha256']==COMPLETE_V13_ROOT_ARCHIVE_SHA
+            and prechange['old_ROOT_count']==128 and prechange['old_source_count']==75
+            and prechange['old_frozen_count']==1062 and prechange['immutable_non_ROOT_union_count']==1246
+            and len(prechange['immutable_inputs'])==1246 and prechange['source_edits']==prechange['Sim']==0,
+            'Pre-change complete v13 custody union metadata differs')
+    for entry in prechange['immutable_inputs']:
+        path=Path(entry['path']).resolve(strict=True)
+        require(not path.is_relative_to(root/'source') and not path.is_relative_to(root/'tools'),
+                'Pre-change immutable union cannot alias a live ROOT source/tool path')
+        retain(path,entry['sha256'],entry['bytes'])
+    closure=read(formal_case/'formal_analysis_closure.json')
+    require(closure['status']=='passed_ROOT_owned_new_analysis_closed' and closure['scope_closed'] is True
+            and Path(closure['case']).resolve(strict=True)==formal_case
+            and closure['primary_formal_review_sha256_unchanged']==plan['parent_formal_review_sha256']
+            and closure['best_record_sha256_unchanged']==plan['parent_best_record_sha256']
+            and closure['new_Sim_or_source_changes']==0 and all(v is True for v in closure['checks'].values()),
+            'Parent866 A/B/ROOT analysis closure differs')
+    for key in ('A_analysis','A_mechanism','B_native_review','training_budget_review'):
+        retain(closure[key],closure[key+'_sha256'])
+    analysis_directory=Path(closure['A_analysis']).resolve(strict=True).parent
+    retain(analysis_directory/'physical_artifact_manifest_fragment.json',closure['A_fragment_sha256'])
+    retain(analysis_directory/'analysis_manifest.json',closure['A_manifest_sha256'])
+    require(Path(claim['receipt']).resolve(strict=True)==receipt_path
+            and Path(claim['review']).resolve(strict=True)==case/'final_CPU_validation_review.json',
+            'Natural v13 completed CPU-once paths changed')
+    require(review['CPU_review_sha256']=='3fc1349f10d2272ae7dc272d3c152ff164532bfdc60638fe7c8fbe9560ac521b',
+            'Natural v13 full CPU review identity changed')
+    retain(claim['review'],review['CPU_review_sha256'])
+    for path in (case/'request.json',case/'launch.json',case/'launch.lock',case/'completion_audit.json',
+            formal_case/'request.json',formal_case/'launch.json',formal_case/'launch.lock',
+            formal_case/'completion_audit.json',run/'params/agent.yaml'):
+        retain(path)
+    for key in ('prerequisites_review','full_run_record_aggregation','terminal_monitor_commit_review'):
+        retain(terminal[key],terminal[key+'_sha256'])
+    result.update(frozen_files=frozen,excluded_prior_active_ROOT_hashes=excluded,parent_source_sha256=actual,
+        parent_formal_review=str(formal_case/'formal_result_review.json'),parent_formal_review_sha256=plan['parent_formal_review_sha256'],
+        parent_formal_result=str(formal_case/'evaluation/result.json'),parent_formal_result_sha256=plan['parent_formal_result_sha256'],
+        parent_formal_artifact_manifest=str(manifest_path),parent_formal_artifact_manifest_sha256=plan['parent_formal_artifact_manifest_sha256'],
+        parent_best_record=str(formal_case/'best_direct_flat_policy_record.json'),parent_best_record_sha256=plan['parent_best_record_sha256'],
+        parent_ROOT_archive_manifest=str(stage/'parent_ROOT_archive_manifest.json'),parent_ROOT_archive_manifest_sha256=COMPLETE_V13_ROOT_ARCHIVE_SHA,
+        parent_formal_analysis_closure=str(formal_case/'formal_analysis_closure.json'),parent_formal_analysis_closure_sha256=COMPLETE_V13_FORMAL_CLOSURE_SHA,
+        parent_pre_change_custody_review=str(prechange_path),parent_pre_change_custody_review_sha256=COMPLETE_V13_PRE_CHANGE_CUSTODY_SHA)
+    return result

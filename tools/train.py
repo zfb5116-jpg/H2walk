@@ -95,9 +95,9 @@ def main():
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
         trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
-        active_support_flat = trial_protocol in ("explicit_task_context_active_support_v1","explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1")
-        context_flat = trial_protocol in ("explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1")
-        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1")
+        active_support_flat = trial_protocol in ("explicit_task_context_active_support_v1","explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1")
+        context_flat = trial_protocol in ("explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1")
+        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1")
         expected_initial_sha = {
             "guarded_flat_balance_v1":"ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688",
             "overspeed_credit_action_margin_v1":"01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68",
@@ -111,17 +111,36 @@ def main():
             "explicit_task_context_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
             "explicit_task_context_active_support_v1":"b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce",
             "explicit_task_context_full_outward_growth_v1":"b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce",
-                        "explicit_task_context_forward_excess_cost_v1":"f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83",
+            "explicit_task_context_forward_excess_cost_v1":"f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83",
+            "explicit_task_context_longer_budget_v1":"756d623374ec9770ab3472e82587af8106f157129c8ab9a29e2a1f58f2714b32",
         }.get(trial_protocol)
         if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != ([1034,871,73,12] if context_flat else [1029,866,73,12])
                 or guarded_plan["initial_policy_sha256"] != expected_initial_sha
                 or expected_initial_sha is None
                 or args.num_envs != 1024 or args.seed != 42):
             raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
-        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1"):
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1"):
             from evaluate_flat_balance_policy import (validate_episode_force_reward_plan,
                                                      validate_episode_force_reward_metadata)
             validate_episode_force_reward_plan(guarded_plan)
+        if trial_protocol == "explicit_task_context_longer_budget_v1":
+            from v11_parent_custody import (COMPLETE_V13_PROTECTED_FILES, COMPLETE_V13_RECEIPT_SHA,
+                                             validate_complete_v13_protected_source_records)
+            canonical_parent = ROOT / "logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_21-08-43_guarded_flat_balance_7093dca0/model_999.pt"
+            if (args.initial_policy.resolve(strict=True) != canonical_parent
+                    or Path(guarded_plan["initial_policy"]).resolve(strict=True) != canonical_parent
+                    or guarded_plan.get("status") != "reviewed_ready"
+                    or set(guarded_plan.get("protected_network_input_native_source_sha256", {})) != set(COMPLETE_V13_PROTECTED_FILES)):
+                raise ValueError("New longer-budget type requires its readyplan/canonical parent/exact14 keys before model loading")
+            parent_receipt_path = canonical_parent.with_suffix(".validation.json")
+            if (Path(guarded_plan["initial_policy_CPU_receipt"]).resolve(strict=True) != parent_receipt_path
+                    or guarded_plan["initial_policy_CPU_receipt_sha256"] != COMPLETE_V13_RECEIPT_SHA
+                    or hashlib.sha256(parent_receipt_path.read_bytes()).hexdigest() != COMPLETE_V13_RECEIPT_SHA):
+                raise ValueError("New longer-budget type requires its already-issued canonical parent CPU metadata")
+            parent_receipt = json.loads(parent_receipt_path.read_text())
+            validate_complete_v13_protected_source_records(
+                guarded_plan["protected_network_input_native_source_sha256"], parent_receipt["source_sha256"],
+                {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in COMPLETE_V13_PROTECTED_FILES})
     spec = gym.spec(args.task)
     env_cfg = load_config(spec.kwargs["env_cfg_entry_point"])
     agent_cfg = load_config(spec.kwargs["rsl_rl_cfg_entry_point"])
@@ -133,9 +152,18 @@ def main():
         agent_cfg.max_iterations = args.max_iterations
     if args.save_interval is not None:
         agent_cfg.save_interval = args.save_interval
-    if guarded_flat and (agent_cfg.max_iterations != 1000 or agent_cfg.save_interval != 500
-            or agent_cfg.num_steps_per_env != 24 or agent_cfg.algorithm.class_name != "H2GuardedPPO"):
-        raise ValueError("Guarded-flat bounded1000/save500/24-step split-PPO protocol changed")
+    if guarded_flat:
+        from task_context_metadata import (CONTEXT_PROTOCOLS, LONGER_BUDGET_CONTEXT_PROTOCOL,
+                                           context_learning_budget)
+        budget = context_learning_budget(trial_protocol) if trial_protocol in CONTEXT_PROTOCOLS else 1000
+        if (agent_cfg.max_iterations != budget or guarded_plan["max_iterations"] != budget
+                or agent_cfg.save_interval != 500 or agent_cfg.num_steps_per_env != 24
+                or agent_cfg.algorithm.class_name != "H2GuardedPPO"):
+            raise ValueError("Guarded-flat typed budget/save500/24-step split-PPO protocol changed")
+        if trial_protocol == LONGER_BUDGET_CONTEXT_PROTOCOL:
+            # Opt in for this reviewed type only; the task's default remains v13/1000.
+            env_cfg.flat_trial_protocol = trial_protocol
+            agent_cfg.algorithm.trial_protocol = trial_protocol
     if guarded_flat and getattr(agent_cfg.algorithm,"trial_protocol","guarded_flat_balance_v1") != trial_protocol:
         raise ValueError("Guarded-flat saved config and reviewed trial profile differ")
     agent_cfg.experiment_name = f"h2_main_{args.task.rsplit('-', 1)[-1].lower()}_manager_based"
@@ -173,9 +201,9 @@ def main():
         training_tool_names.append("stair_exploration.py")
     if guarded_flat:
         training_tool_names.append("guarded_flat_ppo.py")
-        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1"):
+        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1"):
             training_tool_names.append("functional_proposal.py")
-        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1"):
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1"):
             training_tool_names.extend(["evaluate_flat_balance_policy.py", "evaluate_direct_initialization.py"])
         if context_flat:
             training_tool_names.extend(["task_context_normalization.py", "task_context_metadata.py"])
@@ -313,7 +341,7 @@ def main():
                 raise ValueError(f"Non-finite initial observations in {name}")
         if guarded_flat:
             metadata["runtime_flat_geometry"] = env.unwrapped.runtime_contract
-            if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1"):
+            if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1", "explicit_task_context_active_support_v1", "explicit_task_context_full_outward_growth_v1", "explicit_task_context_forward_excess_cost_v1", "explicit_task_context_longer_budget_v1"):
                 validate_episode_force_reward_metadata(metadata["runtime_flat_geometry"], guarded_plan)
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"[H2] Runtime dimensions: {json.dumps(metadata['observation_shapes'])}; "

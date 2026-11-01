@@ -58,7 +58,8 @@ class FlatBalanceProgress:
     """One physical endpoint per epoch; invalid/partial episodes remain explicit."""
     def __init__(self, n, device, masses, bounds, floor_tolerance, directory=None,
                  *,trial_protocol=TRIAL_PROTOCOL,reward_profile=POSITIVE_CREDIT_PROFILE):
-        if trial_protocol!=TRIAL_PROTOCOL or reward_profile!=POSITIVE_CREDIT_PROFILE:
+        if trial_protocol not in (TRIAL_PROTOCOL,
+                "explicit_task_context_longer_budget_v1") or reward_profile!=POSITIVE_CREDIT_PROFILE:
             raise ValueError('Unrecognized declared flat reward/optimization profile')
         self.n, self.device = n, device
         self.trial_protocol,self.reward_profile=trial_protocol,reward_profile

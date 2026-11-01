@@ -29,7 +29,8 @@ from evaluate_flat_balance_policy import (validate_outward_reward_plan, validate
 from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, ACTIVE_CONTEXT_PROTOCOL, ACTIVE_CONTEXT_FORMAT,
     CONTEXT_PROTOCOLS, ACTIVE_CONTEXT_PROTOCOLS, FULL_OUTWARD_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_FORMAT,
     FULL_OUTWARD_REWARD_PROFILE, FORWARD_EXCESS_CONTEXT_PROTOCOL, FORWARD_EXCESS_CONTEXT_FORMAT,
-    FORWARD_EXCESS_REWARD_PROFILE, validate_task_context_plan,
+    FORWARD_EXCESS_REWARD_PROFILE, LONGER_BUDGET_CONTEXT_PROTOCOL, LONGER_BUDGET_CONTEXT_FORMAT,
+    context_learning_budget, validate_task_context_plan,
     validate_task_context_metadata, validate_normalization_metadata)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,81 @@ def hashes(directory):
 
 def root_hashes():
     return {**hashes(ROOT / "source"), **hashes(ROOT / "tools")}
+
+
+def learning_budget(protocol):
+    """Version only the child learning cap, never parent/norm/episode counts."""
+    return context_learning_budget(protocol) if protocol in CONTEXT_PROTOCOLS else 1000
+
+
+def request_learning_budget(request):
+    budget = learning_budget(request.get("trial_protocol"))
+    if request.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL and request.get("job_kind") == KIND:
+        require([request.get(k) for k in ("max_iterations", "expected_final_iteration",
+                    "expected_total_timesteps", "starting_iteration", "num_envs", "num_steps_per_env", "save_interval")]
+                == [3000, 2999, 73728000, 0, 1024, 24, 500],
+                "New typed learning request has inconsistent budget/checkpoint counters")
+    return budget
+
+
+def dispatch_guard(kind, roots, source, initial_sha, checkpoint, plan):
+    key = hashlib.sha256(json.dumps(dict(kind=kind, root=roots, source=hashes(source),
+        initial=initial_sha, checkpoint=digest(checkpoint) if checkpoint else None,
+        plan=digest(plan)), sort_keys=True).encode()).hexdigest()[:20]
+    return ROOT / "logs/stair_learning" / ("flat_balance_" + key + ".launch.lock")
+
+
+def longer_final_cpu_claim(parent, request, state, metadata, run, checkpoint, source,
+                           pointer, plan, declared, guard):
+    """Claim this exact completed v14 before any model load; failures stay consumed."""
+    require(request.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL
+            and declared.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL,
+            "Final CPU type differs from the reviewed longer-budget type")
+    budget = request_learning_budget(request)
+    require(parent == inside(pointer["active_stair_job"])
+            and request.get("case") == str(parent)
+            and inside(request["plan_path"]) == plan
+            and request.get("plan_sha256") == digest(plan)
+            and request.get("source_commit") == declared.get("source_commit") == git("rev-parse", "HEAD"),
+            "Final CPU case/source/plan is not the actual completed longer-budget producer")
+    require(metadata.get("status") == state.get("status") == "completed"
+            and metadata.get("git_commit") == request["source_commit"]
+            and metadata.get("max_iterations") == metadata.get("target_total_iterations") == budget
+            and metadata.get("completed_iterations") == state.get("completed_iterations") == budget
+            and state.get("iteration") == budget - 1
+            and metadata.get("total_timesteps") == metadata.get("actual_sampled_environment_steps") == budget * 1024 * 24
+            and metadata.get("discarded_uncommitted_rollout_steps") == 0
+            and inside(state["run_dir"]) == run
+            and checkpoint == run / "model_2999.pt"
+            and inside(metadata["final_checkpoint"]) == inside(state.get("final_checkpoint") or state["latest_checkpoint"]) == checkpoint
+            and source == run / "training_source/source",
+            "Final CPU requires natural2999/3000/73728000 and its canonical final checkpoint")
+    gs = metadata.get("guarded_ppo_state", {})
+    projection = gs.get("proposal_projection", {})
+    guarded = metadata.get("guarded_flat_learning", {})
+    require(guarded.get("optimizer_format") == LONGER_BUDGET_CONTEXT_FORMAT
+            and guarded.get("trial_protocol") == gs.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL
+            and inside(guarded["plan_path"]) == plan and guarded.get("plan_sha256") == digest(plan)
+            and inside(metadata["source_snapshot"]) == source
+            and gs.get("completed_updates") == budget and gs.get("actor_optimizer_steps") == 59200
+            and gs.get("critic_optimizer_steps") == gs.get("rnd_optimizer_steps") == 60000
+            and gs.get("rnd_update_counter") == 72000
+            and gs.get("uncommitted_rollout") is False
+            and projection.get("proposal_calls") == projection.get("committed_minibatches") == projection.get("std_hook_calls") == 59200,
+            "Final CPU producer counters do not match the reviewed3000 fresh-optimization budget")
+    require(not guard.exists(), "Identical final validation was already dispatched before CPU")
+    claim = parent / "final_CPU_and_formal_start_v14.once.json"
+    require(not claim.exists() and not checkpoint.with_suffix(".validation.json").exists(),
+            "This final CPU was already claimed or validated; no model reload/retry")
+    binding = dict(case=str(parent), checkpoint=str(checkpoint), checkpoint_sha256=digest(checkpoint),
+                   source_root=str(source), source_hashes=hashes(source),
+                   source_commit=request["source_commit"], root_hashes=root_hashes(),
+                   plan_path=str(plan), plan_sha256=digest(plan), max_iterations=budget,
+                   expected_final_iteration=budget - 1, expected_total_timesteps=budget * 1024 * 24)
+    immutable(claim, dict(status="claimed_before_CPU", at=now(), binding=binding,
+                          binding_sha256=hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest(),
+                          automatic_retry_allowed=False))
+    return claim
 
 
 def dataset_stats(directory):
@@ -166,14 +242,25 @@ def preflight(args):
     plan = inside(args.plan or pointer.get("next_repair_plan") or pointer["guarded_flat_balance_plan"])
     declared = read(plan)
     require(declared.get("status") == "reviewed_ready", "Flat repair implementation has not been reviewed")
+    budget=learning_budget(declared.get("trial_protocol"))
     require([declared[k] for k in ("task", "num_envs", "num_steps_per_env", "max_iterations", "save_interval")]
-            == [TASK, 1024, 24, 1000, 500], "Plan sampling/budget changed")
-    forward_excess=declared.get("trial_protocol")==FORWARD_EXCESS_CONTEXT_PROTOCOL
+            == [TASK, 1024, 24, budget, 500], "Plan sampling/budget changed")
+    longer=declared.get("trial_protocol")==LONGER_BUDGET_CONTEXT_PROTOCOL
+    forward_excess=declared.get("trial_protocol") in (FORWARD_EXCESS_CONTEXT_PROTOCOL,LONGER_BUDGET_CONTEXT_PROTOCOL)
     full_outward=declared.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL
     active=declared.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     context=declared.get("trial_protocol") in CONTEXT_PROTOCOLS
     if context:
         validate_task_context_plan(declared)
+        if longer:
+            from v11_parent_custody import COMPLETE_V13_PROTECTED_FILES, COMPLETE_V13_PARENT_SHA
+            require([declared.get(k) for k in ("expected_final_iteration", "expected_total_timesteps")]
+                    == [2999, 73728000]
+                    and Path(declared["initial_policy"]).resolve(strict=True)
+                        == ROOT / "logs/rsl_rl/h2_main_policy_manager_based/2026-11-01_21-08-43_guarded_flat_balance_7093dca0/model_999.pt"
+                    and declared["initial_policy_sha256"] == COMPLETE_V13_PARENT_SHA
+                    and set(declared.get("protected_network_input_native_source_sha256", {})) == set(COMPLETE_V13_PROTECTED_FILES),
+                    "New longer-budget declaration has wrong final budget/canonical parent/protected keys before any parent model access")
         require(declared.get("source_commit")==git("rev-parse","HEAD"),
                 "Explicit context launch is not the reviewed unified source commit")
         reviewed_roots=declared.get("reviewed_root_source_sha256",{})
@@ -198,7 +285,7 @@ def preflight(args):
     reserved = resource or declared.get("trial_protocol") == RESERVED_PROTOCOL
     projected = reserved or declared.get("trial_protocol") == PROPOSAL_PROTOCOL
     transfer = projected or declared.get("trial_protocol") == "overspeed_credit_action_margin_v1"
-    expected_initial_sha = "f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83" if forward_excess else "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else VELOCITY_COST_SHA if natural_parent else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
+    expected_initial_sha = "756d623374ec9770ab3472e82587af8106f157129c8ab9a29e2a1f58f2714b32" if longer else "f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83" if forward_excess else "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else VELOCITY_COST_SHA if natural_parent else PRECISION_SHA if precision else RESOURCE_SHA if resource else RESERVED_SHA if reserved else RESTORED_SHA if projected else TRANSFER_SHA if transfer else INIT_SHA
     require(digest(initial) == declared["initial_policy_sha256"] == expected_initial_sha, "Wrong reviewed actual initialization")
     receipt_path = inside(declared["initial_policy_CPU_receipt"]) if transfer else initial.with_suffix(".validation.json")
     receipt = read(receipt_path)
@@ -224,10 +311,10 @@ def preflight(args):
     if context:
         frozen.update(hashes(ROOT/"artifacts/flat_forward"))
     if transfer:
-        require(declared.get("initial_parent_kind") == ("saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer" if active else "saved_complete_PPO_v6_context_extension_transfer" if context else "saved_complete_PPO_v6_policy_transfer" if natural_parent else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
-                and declared.get("initialization_mode") == ("transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else "extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization" if context else "transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if natural_parent else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
+        require(declared.get("initial_parent_kind") == ("saved_complete_PPO_v13_context_policy_transfer" if longer else "saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer" if active else "saved_complete_PPO_v6_context_extension_transfer" if context else "saved_complete_PPO_v6_policy_transfer" if natural_parent else "saved_restored_PPO_v5_policy_transfer" if precision else "saved_restored_PPO_v4_policy_transfer" if resource else "saved_restored_PPO_v3_policy_transfer" if reserved else "saved_restored_PPO_v2_policy_transfer" if projected else "saved_pre_guard_PPO_v1_policy_transfer")
+                and declared.get("initialization_mode") == ("transfer_completed_v13_policy_and_frozen_dualnorm_fresh_optimization" if longer else "transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else "extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization" if context else "transfer_completed_v6_policy_and_dualnorm_fresh_optimization" if natural_parent else "transfer_restored_v5_policy_and_dualnorm_fresh_optimization" if precision else "transfer_restored_v4_policy_and_dualnorm_fresh_optimization" if resource else "transfer_restored_v3_policy_and_dualnorm_fresh_optimization" if reserved else "transfer_restored_policy_and_dualnorm_fresh_optimization" if projected else "transfer_pre_guard_policy_and_dualnorm_fresh_optimization"),
                 "New trial must explicitly transfer model/norm only and start fresh optimization")
-        require(receipt.get("checkpoint_format") == (FULL_OUTWARD_CONTEXT_FORMAT if forward_excess else CONTEXT_FORMAT if active else "h2_guarded_flat_ppo_v6" if natural_parent else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
+        require(receipt.get("checkpoint_format") == (FORWARD_EXCESS_CONTEXT_FORMAT if longer else FULL_OUTWARD_CONTEXT_FORMAT if forward_excess else CONTEXT_FORMAT if active else "h2_guarded_flat_ppo_v6" if natural_parent else "h2_guarded_flat_ppo_v5" if precision else "h2_guarded_flat_ppo_v4" if resource else "h2_guarded_flat_ppo_v3" if reserved else "h2_guarded_flat_ppo_v2" if projected else "h2_guarded_flat_ppo_v1")
                 and receipt.get("cpu_only") is True and receipt.get("committed_updates") == (1000 if forward_excess else 372 if active else 1000 if natural_parent else 183 if precision else 613 if resource else 105 if reserved else 101 if projected else 165)
                 and digest(receipt_path) == declared["initial_policy_CPU_receipt_sha256"], "Wrong typed parent checkpoint receipt")
         parent_run = inside(declared["initial_parent_run"])
@@ -256,8 +343,10 @@ def preflight(args):
             else:
                 validate_outward_reward_plan(declared)
         if active:
-            from v11_parent_custody import verify_parent_files, verify_complete_v12_parent_files
-            active_parent=(verify_complete_v12_parent_files(declared,ROOT) if forward_excess
+            from v11_parent_custody import (verify_parent_files, verify_complete_v12_parent_files,
+                                             verify_complete_v13_parent_files)
+            active_parent=(verify_complete_v13_parent_files(declared,ROOT) if longer
+                           else verify_complete_v12_parent_files(declared,ROOT) if forward_excess
                            else verify_parent_files(declared,ROOT))
             frozen.update(active_parent["frozen_files"])
             validate_episode_force_reward_plan(declared)
@@ -323,22 +412,60 @@ def preflight(args):
         require(parent_state.get("status") == "completed", "This validation requires natural completed training")
         run = inside(parent_state["run_dir"])
         metadata = read(run / "run.json")
-        require(metadata["status"] == "completed" and metadata["completed_iterations"] == 1000,
-                "Training did not finish the bounded1000 iterations")
-        checkpoint = inside(run / "model_999.pt")
+        require(metadata["status"] == "completed" and metadata["completed_iterations"] == budget,
+                "Training did not finish its typed iteration budget")
+        checkpoint = inside(run / f"model_{budget-1}.pt")
         source = inside(run / "training_source/source")
         entry, kind = ROOT / "tools/evaluate_flat_balance_policy.py", EVAL_KIND
         require(not check_inputs(parent_request), "Training frozen inputs changed before validation")
+        claim = None
+        if longer:
+            require(args.start, "New longer-budget final CPU is allowed only within --validate --start")
+            ended = read(parent / "manager_state.json")
+            actual_births = identities(parent)
+            require(ended.get("status") == "finished" and ended.get("outcome") == "completed"
+                    and ended.get("exit_code") == 0 and ended.get("error") is None
+                    and len(actual_births) == 2 and all(not owned(row)["identity_matches"] for row in actual_births)
+                    and not gpu_snapshot()["compute_processes"] and not active_simulators(),
+                    "New final CPU requires the actual cleanly ended manager/both births/GPUempty")
+            claim = longer_final_cpu_claim(parent, parent_request, parent_state, metadata,
+                run, checkpoint, source, pointer, plan, declared,
+                dispatch_guard(kind, root_hashes(), source, expected_initial_sha, checkpoint, plan))
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": ""}
-        checked = subprocess.run(["bash", str(entry.with_suffix(".sh")), "--cpu-check-only",
-                                  "--checkpoint", str(checkpoint), "--source_root", str(source)],
-                                 cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, timeout=180)
-        require(checked.returncode == 0, "Strict split-optimizer CPU checkpoint check failed: " + checked.stdout[-4000:])
+        checked = None
         validation = checkpoint.with_suffix(".validation.json")
-        data = read(validation)
-        require(data.get("status") == "passed" and data.get("cpu_only") is True
-                and data["sha256"] == digest(checkpoint), "Actual final CPU receipt is incomplete")
+        try:
+            checked = subprocess.run(["bash", str(entry.with_suffix(".sh")), "--cpu-check-only",
+                                      "--checkpoint", str(checkpoint), "--source_root", str(source)],
+                                     cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, timeout=180)
+            require(checked.returncode == 0, "Strict split-optimizer CPU checkpoint check failed: " + checked.stdout[-4000:])
+            data = read(validation)
+            require(data.get("status") == "passed" and data.get("cpu_only") is True
+                    and data["sha256"] == digest(checkpoint), "Actual final CPU receipt is incomplete")
+            if longer:
+                require(data.get("checkpoint_format") == LONGER_BUDGET_CONTEXT_FORMAT
+                        and data.get("committed_updates") == budget
+                        and data.get("learning_budget", {}).get("max_iterations") == budget,
+                        "Actual longer-budget final CPU did not validate its new type/budget")
+        except BaseException as error:
+            if claim is not None:
+                failed_stdout = checked.stdout if checked else getattr(error, "stdout", None)
+                if isinstance(failed_stdout, bytes):
+                    failed_stdout = failed_stdout.decode("utf-8", errors="replace")
+                immutable(parent / "final_CPU_and_formal_start_v14.result.json",
+                    dict(status="failed_CPU_claim_consumed", at=now(), claim=str(claim),
+                         error=repr(error), returncode=checked.returncode if checked else None,
+                         stdout=failed_stdout,
+                         receipt=str(validation) if validation.exists() else None,
+                         receipt_sha256=digest(validation) if validation.exists() else None,
+                         automatic_retry_allowed=False))
+            raise
+        if claim is not None:
+            immutable(parent / "final_CPU_and_formal_start_v14.result.json",
+                dict(status="passed_CPU_before_unique_formal_dispatch", at=now(), claim=str(claim),
+                     returncode=checked.returncode, stdout=checked.stdout, receipt=str(validation),
+                     receipt_sha256=digest(validation), formal_completed=False, automatic_retry_allowed=False))
         frozen.update({str(checkpoint): digest(checkpoint), str(validation): digest(validation),
                        str(run / "run.json"): digest(run / "run.json")})
         if context:
@@ -350,10 +477,7 @@ def preflight(args):
     review = inside(declared["reward_review_path"])
     frozen[str(review)] = digest(review)
     roots = root_hashes()
-    key = hashlib.sha256(json.dumps(dict(kind=kind, root=roots, source=hashes(source),
-        initial=expected_initial_sha, checkpoint=digest(checkpoint) if checkpoint else None,
-        plan=digest(plan)), sort_keys=True).encode()).hexdigest()[:20]
-    guard = ROOT / "logs/stair_learning" / ("flat_balance_" + key + ".launch.lock")
+    guard = dispatch_guard(kind, roots, source, expected_initial_sha, checkpoint, plan)
     require(not guard.exists(), "Identical inputs/protocol already dispatched; no blind retry")
     return dict(checked_at=now(), previous=previous, previous_pointer=pointer,
                 source_branch=BRANCH, source_commit=git("rev-parse", "HEAD"),
@@ -365,6 +489,8 @@ def preflight(args):
                 **({"parent_excluded_prior_active_ROOT_hashes":active_parent["excluded_prior_active_ROOT_hashes"]} if active else {}),
                 plan_path=str(plan), plan_sha256=digest(plan), duplicate_guard=str(guard),
                 parent_case=str(parent) if parent else None,
+                **(dict(producer_completed_iterations=budget,
+                        final_CPU_once_claim=str(claim) if claim else None) if args.validate and longer else {}),
                 checkpoint=str(checkpoint) if checkpoint else None,
                 dataset=str(dataset) if dataset else None,
                 dataset_role="historical_frozen_not_new_width_bank" if context else "fixed_real_audit_source",
@@ -751,9 +877,14 @@ def startup_contract(metadata, request):
     expect(metadata.get("git_commit") == request["source_commit"], "Wrong runtime source commit")
     expect(metadata.get("checkpoint") is None and metadata.get("starting_iteration") == 0, "Unexpected PPO resume")
     expect(metadata.get("initial_policy_sha256") == request["initial_policy_sha256"], "Wrong actual initializer")
+    budget=request_learning_budget(request)
     expect([metadata.get(k) for k in ("num_envs", "num_steps_per_env", "max_iterations", "save_interval", "num_actions")]
-           == [1024, 24, 1000, 500, 12], "Wrong sampling/action/iteration budget")
-    forward_excess=request.get("trial_protocol")==FORWARD_EXCESS_CONTEXT_PROTOCOL
+           == [1024, 24, budget, 500, 12], "Wrong sampling/action/iteration budget")
+    longer=request.get("trial_protocol")==LONGER_BUDGET_CONTEXT_PROTOCOL
+    forward_excess=request.get("trial_protocol") in (FORWARD_EXCESS_CONTEXT_PROTOCOL,LONGER_BUDGET_CONTEXT_PROTOCOL)
+    if longer:
+        expect(metadata.get("target_total_iterations")==budget,
+               "Runtime longer-budget final iteration target differs from its immutable request")
     full_outward=request.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL
     active=request.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     context=request.get("trial_protocol") in CONTEXT_PROTOCOLS
@@ -800,7 +931,7 @@ def startup_contract(metadata, request):
     if transfer:
         expect(metadata.get("initial_critic_prefix_and_zero_columns_verified" if context and not active else "initial_critic_weights_match_parent_exactly") is True,
                "Transferred critic weights do not match the declared parent")
-        expect(guarded.get("optimizer_format") == (FORWARD_EXCESS_CONTEXT_FORMAT if forward_excess else FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
+        expect(guarded.get("optimizer_format") == (LONGER_BUDGET_CONTEXT_FORMAT if longer else FORWARD_EXCESS_CONTEXT_FORMAT if forward_excess else FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT if context else "h2_guarded_flat_ppo_v9" if clean_force else "h2_guarded_flat_ppo_v8" if outward_tilt else "h2_guarded_flat_ppo_v7" if velocity_cost else "h2_guarded_flat_ppo_v6" if precision else "h2_guarded_flat_ppo_v5" if resource else "h2_guarded_flat_ppo_v4" if reserved else "h2_guarded_flat_ppo_v3" if projected else "h2_guarded_flat_ppo_v2"), "Typed optimizer format differs from its declared protocol")
         margin = learning.get("action_margin", {})
         expect(margin.get("weight") == (0. if projected else .01) and margin.get("epsilon") == 1e-6,
                "Actual actor target-margin coefficient differs from reviewed fixed protocol")
@@ -863,8 +994,8 @@ def startup_contract(metadata, request):
         transfer_record=metadata.get("initial_policy_transfer",{})
         expect(guarded.get("trial_protocol")==learning.get("trial_protocol")==request.get("trial_protocol") and request.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS,
                "v11 runtime state protocol differs")
-        expect(transfer_record.get("kind")==("saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer")
-               and transfer_record.get("mode")==("transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization")
+        expect(transfer_record.get("kind")==("saved_complete_PPO_v13_context_policy_transfer" if longer else "saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer")
+               and transfer_record.get("mode")==("transfer_completed_v13_policy_and_frozen_dualnorm_fresh_optimization" if longer else "transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization")
                and transfer_record.get("parent_accepted_updates")== (1000 if forward_excess else 372)
                and transfer_record.get("parent_last_complete_iteration")== (999 if forward_excess else 371)
                and transfer_record.get("parent_uncommitted_rollout") is (not forward_excess)
@@ -883,7 +1014,7 @@ def startup_contract(metadata, request):
                and transfer_record.get("new_starting_iteration")==0
                and transfer_record.get("new_checkpoint") is None
                and transfer_record.get("normalizer_prefix_counts")=={"actor":24576000,"critic":24576000},
-               "Actual same-width initializer must match its explicit restored372 or naturalv12 protocol")
+               "Actual same-width initializer must match its explicit restored372 or natural completed-parent protocol")
     if outward_tilt:
         try:
             if clean_force:
@@ -985,8 +1116,8 @@ def sample(case, commit=False, reviewed_pending=None):
                                      {x["iteration"] for x in files})
             if due is not None:
                 reasons.append("expected500-iteration checkpoint missing for over250 iterations")
-            if latest > 999:
-                reasons.append("bounded1000 iteration budget exceeded")
+            if latest > request_learning_budget(request) - 1:
+                reasons.append("typed iteration budget exceeded")
         if (active_job and state.get("status") not in TERMINAL and time.time() - advanced >= 600
                 and log.exists() and time.time() - log.stat().st_mtime >= 600):
             reasons.append("log and iteration jointly stalled10min")
@@ -1182,9 +1313,14 @@ def manage(case, slot_fd):
             run = Path(state["run_dir"]) if state.get("run_dir") else None
             metadata = read(run / "run.json") if run and (run / "run.json").exists() else {}
             if state.get("status") == "completed":
-                if not (metadata.get("status") == "completed" and metadata.get("completed_iterations") == 1000
-                        and metadata.get("total_timesteps") == 24576000 and state.get("iteration") == 999
-                        and state.get("completed_iterations") == 1000 and (run / "model_999.pt").is_file()):
+                budget = request_learning_budget(request)
+                if not (metadata.get("status") == "completed" and metadata.get("completed_iterations") == budget
+                        and metadata.get("total_timesteps") == 1024 * 24 * budget and state.get("iteration") == budget - 1
+                        and state.get("completed_iterations") == budget and (run / f"model_{budget-1}.pt").is_file()
+                        and (request.get("trial_protocol") != LONGER_BUDGET_CONTEXT_PROTOCOL
+                             or (metadata.get("max_iterations") == metadata.get("target_total_iterations") == budget
+                                 and metadata.get("actual_sampled_environment_steps") == 1024 * 24 * budget
+                                 and metadata.get("discarded_uncommitted_rollout_steps") == 0))):
                     error = (error + "; " if error else "") + "Incomplete final training metadata/checkpoint"
             if state.get("status") not in TERMINAL:
                 error = (error + "; " if error else "") + "Process exited before a recorded terminal status"
@@ -1245,13 +1381,16 @@ def launch(args):
         previous = checked.pop("previous_pointer")
         write(case / "previous_pointer.json", previous)
         policy = stop_policy()
-        policy.update(bounded_run_note="The flat1000 cap ends before full original patience; never infer convergence or extend automatically.",
+        budget = learning_budget(checked.get("trial_protocol"))
+        policy.update(bounded_run_note=("The flat3000 cap contains the original2000 baseline and one later assessment only; never infer convergence/full patience or extend automatically."
+                                       if checked.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL else
+                                       "The flat1000 cap ends before full original patience; never infer convergence or extend automatically."),
             acceptance="Independent own-source1024 first20s, >=922 joint physical survival,4.8..7.2m,eachfoot>=2valid alternating landings and matched ground/raw footforce evidence. Separate stair90s acceptance is unchanged.")
         immutable(case / "stop_policy.json", policy)
         state_path = case / "supervision.json"
         if checked["job_kind"] == KIND:
             command = ["bash", str(ROOT / "tools/train.sh"), "--task", TASK, "--headless", "--device", "cuda:0",
-                "--num_envs", "1024", "--max_iterations", "1000", "--save_interval", "500", "--seed", "42",
+                "--num_envs", "1024", "--max_iterations", str(budget), "--save_interval", "500", "--seed", "42",
                 "--run_name", "guarded_flat_balance_" + case.name[-8:], "--initial_policy", checked["initial_policy"],
                 "--guarded_flat_plan", checked["plan_path"], "--supervision_state", str(state_path),
                 "--stop_policy", str(case / "stop_policy.json"), "--expected_git_commit", checked["source_commit"]]
@@ -1268,10 +1407,10 @@ def launch(args):
                        monitor_snapshot_tool=str(SELF), monitor_snapshot_command=[sys.executable, str(SELF), "--monitor", str(case)],
                        parent_launcher_pid=os.getpid(), num_envs=1024,
                        num_steps_per_env=24 if checked["job_kind"] == KIND else 0,
-                       max_iterations=1000 if checked["job_kind"] == KIND else 0,
+                       max_iterations=budget if checked["job_kind"] == KIND else 0,
                        starting_iteration=0, save_interval=500 if checked["job_kind"] == KIND else None,
-                       expected_final_iteration=999 if checked["job_kind"] == KIND else -1,
-                       expected_total_timesteps=24576000 if checked["job_kind"] == KIND else 0,
+                       expected_final_iteration=budget-1 if checked["job_kind"] == KIND else -1,
+                       expected_total_timesteps=1024*24*budget if checked["job_kind"] == KIND else 0,
                        automatic_restart_allowed=False)
         immutable(case / "request.json", request)
         seal = dict(request_sha256=digest(case / "request.json"), case=str(case), at=now())
@@ -1292,7 +1431,7 @@ def launch(args):
             checkpoint_sha256=digest(request["checkpoint"]) if request["checkpoint"] else None,
             source_snapshot=None, final_checkpoint_validation=None,
             checkpoint_validation_tool=str(ROOT / "tools/evaluate_flat_balance_policy.py"),
-            max_iterations=1000 if request["job_kind"] == KIND else 0,
+            max_iterations=request["max_iterations"],
             starting_iteration=0, completed_iterations=0, last_monitor_iteration=-1,
             expected_final_iteration=request["expected_final_iteration"],
             expected_total_timesteps=request["expected_total_timesteps"], last_monitor_ETA=None,

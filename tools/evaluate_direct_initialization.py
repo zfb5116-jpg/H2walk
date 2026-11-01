@@ -385,6 +385,10 @@ def evaluate(args, app, source, receipt, metadata):
     metadata["footfall_tracker_ast_sha256"] = class_hash(tracker_path)
     spec = gym.spec(TASK); module,name = spec.kwargs["env_cfg_entry_point"].split(":")
     cfg = getattr(importlib.import_module(module), name)()
+    if receipt.get("checkpoint_format") == "h2_guarded_flat_ppo_v14":
+        require(receipt.get("trial_protocol") == "explicit_task_context_longer_budget_v1",
+                "New bounded-budget checkpoint has another environment protocol")
+        cfg.flat_trial_protocol = "explicit_task_context_longer_budget_v1"
     cfg.scene.num_envs, cfg.seed, cfg.sim.device = args.num_envs, args.seed, args.device or "cuda:0"
     cfg.io_descriptors_output_dir = str(args.output)
     require(cfg.episode_length_s == 20 and not cfg.observations.policy.enable_corruption, "Candidate direct-flat config changed")
@@ -428,7 +432,7 @@ def evaluate(args, app, source, receipt, metadata):
         require(covered==set(qids), "Missing native leg actuator coverage")
         metadata["native_actuator_certificate"]=actuator_certificate
         obs, extras = wrapped.get_observations()
-        context=saved.get("format") in ("h2_guarded_flat_ppo_v10","h2_guarded_flat_ppo_v11","h2_guarded_flat_ppo_v12", "h2_guarded_flat_ppo_v13")
+        context=saved.get("format") in ("h2_guarded_flat_ppo_v10","h2_guarded_flat_ppo_v11","h2_guarded_flat_ppo_v12", "h2_guarded_flat_ppo_v13", "h2_guarded_flat_ppo_v14")
         require(tuple(obs.shape)==(n,1034 if context else 1029)
                 and tuple(extras["observations"]["critic"].shape)==(n,871 if context else 866), "Observation layout mismatch")
         require(bool((raw.episode_length_buf==0).all()) and bool((raw.action_manager.action==0).all()), "First episodes do not start at actual reset")

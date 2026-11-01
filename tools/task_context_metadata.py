@@ -20,9 +20,17 @@ FULL_OUTWARD_CONTEXT_PROTOCOL = "explicit_task_context_full_outward_growth_v1"
 FULL_OUTWARD_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v12"
 FORWARD_EXCESS_CONTEXT_PROTOCOL = "explicit_task_context_forward_excess_cost_v1"
 FORWARD_EXCESS_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v13"
+LONGER_BUDGET_CONTEXT_PROTOCOL = "explicit_task_context_longer_budget_v1"
+LONGER_BUDGET_CONTEXT_FORMAT = "h2_guarded_flat_ppo_v14"
 RESTORED_CONTEXT_PROTOCOLS = (ACTIVE_CONTEXT_PROTOCOL, FULL_OUTWARD_CONTEXT_PROTOCOL)
-ACTIVE_CONTEXT_PROTOCOLS = (*RESTORED_CONTEXT_PROTOCOLS, FORWARD_EXCESS_CONTEXT_PROTOCOL)
-ACTIVE_CONTEXT_FORMATS = (ACTIVE_CONTEXT_FORMAT, FULL_OUTWARD_CONTEXT_FORMAT, FORWARD_EXCESS_CONTEXT_FORMAT)
+ACTIVE_CONTEXT_PROTOCOLS = (*RESTORED_CONTEXT_PROTOCOLS, FORWARD_EXCESS_CONTEXT_PROTOCOL, LONGER_BUDGET_CONTEXT_PROTOCOL)
+ACTIVE_CONTEXT_FORMATS = (ACTIVE_CONTEXT_FORMAT, FULL_OUTWARD_CONTEXT_FORMAT, FORWARD_EXCESS_CONTEXT_FORMAT, LONGER_BUDGET_CONTEXT_FORMAT)
+SAME_WIDTH_CONTEXT_PROTOCOLS = ACTIVE_CONTEXT_PROTOCOLS
+SAME_WIDTH_CONTEXT_FORMATS = ACTIVE_CONTEXT_FORMATS
+FULL_OUTWARD_CONTEXT_PROTOCOLS = (FULL_OUTWARD_CONTEXT_PROTOCOL, FORWARD_EXCESS_CONTEXT_PROTOCOL, LONGER_BUDGET_CONTEXT_PROTOCOL)
+FULL_OUTWARD_CONTEXT_FORMATS = (FULL_OUTWARD_CONTEXT_FORMAT, FORWARD_EXCESS_CONTEXT_FORMAT, LONGER_BUDGET_CONTEXT_FORMAT)
+FORWARD_EXCESS_CONTEXT_PROTOCOLS = (FORWARD_EXCESS_CONTEXT_PROTOCOL, LONGER_BUDGET_CONTEXT_PROTOCOL)
+FORWARD_EXCESS_CONTEXT_FORMATS = (FORWARD_EXCESS_CONTEXT_FORMAT, LONGER_BUDGET_CONTEXT_FORMAT)
 CONTEXT_PROTOCOLS = (CONTEXT_PROTOCOL, *ACTIVE_CONTEXT_PROTOCOLS)
 CONTEXT_FORMATS = (CONTEXT_FORMAT, *ACTIVE_CONTEXT_FORMATS)
 FORMAT = CONTEXT_FORMAT
@@ -72,6 +80,13 @@ def require(condition, message):
     """Use a local error type so metadata readers have no evaluator dependency."""
     if not condition:
         raise RuntimeError(message)
+
+
+def context_learning_budget(protocol):
+    """Learning iterations only; not parent counters or20s episode length."""
+    require(isinstance(protocol, str) and protocol in CONTEXT_PROTOCOLS,
+            "Unknown explicit-context learning-budget protocol")
+    return 3000 if protocol == LONGER_BUDGET_CONTEXT_PROTOCOL else 1000
 
 
 def _mapping(value, path):
@@ -133,31 +148,37 @@ def validate_task_context_plan(plan):
     provenance and the actual acquisition receipt remain caller obligations.
     """
     plan = _mapping(plan, "plan")
+    longer = plan.get("trial_protocol") == LONGER_BUDGET_CONTEXT_PROTOCOL
     forward_excess = plan.get("trial_protocol") == FORWARD_EXCESS_CONTEXT_PROTOCOL
     full_outward = plan.get("trial_protocol") == FULL_OUTWARD_CONTEXT_PROTOCOL
     active = plan.get("trial_protocol") in ACTIVE_CONTEXT_PROTOCOLS
     _expect(plan, {
-        "trial_protocol": FORWARD_EXCESS_CONTEXT_PROTOCOL if forward_excess else FULL_OUTWARD_CONTEXT_PROTOCOL if full_outward else ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL,
-        "checkpoint_format": FORWARD_EXCESS_CONTEXT_FORMAT if forward_excess else FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT,
+        "trial_protocol": LONGER_BUDGET_CONTEXT_PROTOCOL if longer else FORWARD_EXCESS_CONTEXT_PROTOCOL if forward_excess else FULL_OUTWARD_CONTEXT_PROTOCOL if full_outward else ACTIVE_CONTEXT_PROTOCOL if active else CONTEXT_PROTOCOL,
+        "checkpoint_format": LONGER_BUDGET_CONTEXT_FORMAT if longer else FORWARD_EXCESS_CONTEXT_FORMAT if forward_excess else FULL_OUTWARD_CONTEXT_FORMAT if full_outward else ACTIVE_CONTEXT_FORMAT if active else CONTEXT_FORMAT,
         "network_or_input_structure_change": not active,
         "network_dimensions": CONTEXT_DIMS,
-        "initialization_mode": ("transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else CONTEXT_INITIALIZATION_MODE),
-        "initial_parent_kind": "saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer" if active else CONTEXT_PARENT_KIND,
-        "initial_policy_sha256": "f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83" if forward_excess else "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else CONTEXT_PARENT_SHA256,
-        "parent_natural_completion": forward_excess or not active,
-        "parent_runtime_rollback_completed": active and not forward_excess,
-        "parent_accepted_updates": 1000 if forward_excess else 372 if active else 1000,
-        "parent_last_complete_iteration": 999 if forward_excess else 371 if active else 999,
+        "initialization_mode": ("transfer_completed_v13_policy_and_frozen_dualnorm_fresh_optimization" if longer else "transfer_completed_v12_policy_and_frozen_dualnorm_fresh_optimization" if forward_excess else "transfer_verified_guard_restored_v10_policy_and_frozen_dualnorm_fresh_optimization" if active else CONTEXT_INITIALIZATION_MODE),
+        "initial_parent_kind": "saved_complete_PPO_v13_context_policy_transfer" if longer else "saved_complete_PPO_v12_context_policy_transfer" if forward_excess else "saved_guard_restored_v10_context_policy_transfer" if active else CONTEXT_PARENT_KIND,
+        "initial_policy_sha256": "756d623374ec9770ab3472e82587af8106f157129c8ab9a29e2a1f58f2714b32" if longer else "f27165c7c3ed0f1033e2ef02b1cfbd4d6120af3d4eac070d8fda7c720d53eb83" if forward_excess else "b7bb6198f67b033dd6c65842bafdee29666f757236e069e501a9e1ab32a2bdce" if active else CONTEXT_PARENT_SHA256,
+        "parent_natural_completion": longer or forward_excess or not active,
+        "parent_runtime_rollback_completed": active and not (longer or forward_excess),
+        "parent_accepted_updates": 1000 if longer or forward_excess else 372 if active else 1000,
+        "parent_last_complete_iteration": 999 if longer or forward_excess else 371 if active else 999,
         "starting_iteration": 0,
         "checkpoint": None,
         "num_steps_per_env": 24,
         "fixed_real_audit_dataset": None,
     }, "plan")
+    if longer:
+        _expect(plan, {"max_iterations": context_learning_budget(plan["trial_protocol"]),
+            "save_interval": 500, "parent_uncommitted_rollout": False,
+            "parent_rollback_evidence": None, "parent_rollback_evidence_sha256": None,
+            "parent_complete_state_digest": None}, "plan")
     if active:
         shape = _mapping(_field(plan, "guard_input_shape_adaptation", "plan"), "plan.guard_input_shape_adaptation")
         _expect(shape, {"shape_admission_unchanged_from_v10": True,
             "original_geometry_Gram_JVP_eta_hard_gate_unchanged": True,
-            "support_polish_changed": not forward_excess}, "plan.guard_input_shape_adaptation")
+            "support_polish_changed": not (longer or forward_excess)}, "plan.guard_input_shape_adaptation")
         require("all_projection_math_and_hard_gate_unchanged" not in shape,
                 "v11 must explicitly declare the changed support refinement method")
     labels = _mapping(_field(plan, "network_dimension_labels", "plan"), "plan.network_dimension_labels")
@@ -233,7 +254,7 @@ def validate_task_context_metadata(runtime_flat_geometry, plan=None):
         if plan is not None:
             _exact(runtime["trial_protocol"], plan["trial_protocol"], "runtime_flat_geometry.trial_protocol")
     if "reward_profile" in runtime:
-        _exact(runtime["reward_profile"], FORWARD_EXCESS_REWARD_PROFILE if runtime.get("trial_protocol")==FORWARD_EXCESS_CONTEXT_PROTOCOL else FULL_OUTWARD_REWARD_PROFILE if runtime.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL else CONTEXT_REWARD_PROFILE, "runtime_flat_geometry.reward_profile")
+        _exact(runtime["reward_profile"], FORWARD_EXCESS_REWARD_PROFILE if runtime.get("trial_protocol") in FORWARD_EXCESS_CONTEXT_PROTOCOLS else FULL_OUTWARD_REWARD_PROFILE if runtime.get("trial_protocol")==FULL_OUTWARD_CONTEXT_PROTOCOL else CONTEXT_REWARD_PROFILE, "runtime_flat_geometry.reward_profile")
     context = _mapping(_field(runtime, "task_context", "runtime_flat_geometry"),
                        "runtime_flat_geometry.task_context")
     path = "runtime_flat_geometry.task_context"
