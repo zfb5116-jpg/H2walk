@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import resource
@@ -38,6 +39,8 @@ OUTWARD_FORMAT = "h2_guarded_flat_ppo_v8"
 OUTWARD_TRIAL = "outward_tilt_growth_v1"
 CLEAN_FORCE_FORMAT = "h2_guarded_flat_ppo_v9"
 CLEAN_FORCE_TRIAL = "episode_clean_force_eligibility_v1"
+CONTEXT_FORMAT = "h2_guarded_flat_ppo_v10"
+CONTEXT_TRIAL = "explicit_task_context_v1"
 COST_PARENT_SHA = "fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa"
 COST_PARENT_RECEIPT_SHA = "e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b"
 COST_PARENT_RUN_SHA = "797aecdb0c137d57f396fd7705940921b0ea9624c7b75323f8bcde58caf9e33c"
@@ -156,14 +159,17 @@ def create_fixed_real_bank(dataset_path, output, seed=42):
 def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     """A saved PPO policy may seed a new trial; no parent optimizer is resumed."""
     checkpoint,root=Path(checkpoint).resolve(strict=True),Path(root).resolve(strict=True)
-    natural=plan.get("trial_protocol") in (COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
+    context=plan.get("trial_protocol")==CONTEXT_TRIAL
+    natural=plan.get("trial_protocol") in (COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
     strict=plan.get("trial_protocol")==STRICT_TRIAL
-    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
+    resource=plan.get("trial_protocol") in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
     reserved=resource or plan.get("trial_protocol")==RESERVED_TRIAL
-    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
+    projection=plan.get("trial_protocol") in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
     restored=projection and not natural
     if natural:
-        kind,mode="saved_complete_PPO_v6_policy_transfer","transfer_completed_v6_policy_and_dualnorm_fresh_optimization"
+        kind,mode=("saved_complete_PPO_v6_context_extension_transfer",
+                   "extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization") if context else (
+                   "saved_complete_PPO_v6_policy_transfer","transfer_completed_v6_policy_and_dualnorm_fresh_optimization")
         parent_sha,parent_format,parent_iteration,parent_updates=COST_PARENT_SHA,STRICT_FORMAT,999,1000
         parent_trial=STRICT_TRIAL
         require(plan.get("initial_parent_kind")==kind and plan.get("initialization_mode")==mode
@@ -270,8 +276,18 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
     require(actual==receipt["source_sha256"],"Typed parent production source changed")
     protected=plan["protected_network_input_native_source_sha256"]
     require(len(protected)==14,"The reviewed14 protected network/input/native sources must be explicit")
+    context_deltas={"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/actor_critic_our.py",
+                    "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/direct_initialization.py"}
+    if context:
+        reported=plan.get("reported_source_delta_sha256",{})
+        require(set(reported)==context_deltas|{"tools/functional_proposal.py"}
+                and all(sha(root/key)==value for key,value in reported.items())
+                and plan.get("network_dimensions")==[1034,871,73,12]
+                and plan.get("network_or_input_structure_change") is True,
+                "Context extension lacks its exact reported source/dimension admission")
     for key,digest in protected.items():
-        require(key.startswith("source/") and actual.get(key)==digest and sha(root/key)==digest,
+        child_digest=reported[key] if context and key in context_deltas else digest
+        require(key.startswith("source/") and actual.get(key)==digest and sha(root/key)==child_digest,
                 "Protected model/input/native source differs across transfer: "+key)
     for path,digest in receipt["external_dependency_sha256"].items():
         require(sha(Path(path).resolve(strict=True))==digest,"Typed parent's physical external dependency changed")
@@ -290,11 +306,19 @@ def validate_typed_policy_transfer(saved, checkpoint, plan, root):
         norm_counts={"actor":24576000,"critic":24576000})
     if rollback_evidence is not None:result["parent_rollback_evidence"]=rollback_evidence
     if natural:result.update(parent_natural_completion=True,parent_rollback_evidence=None)
+    if context:
+        result.pop("norm_counts");result.pop("model_and_dualnorm_only")
+        result.update(model_prefix_and_dualnorm_prefix_only=True,extra_context_dim=5,
+            parent_network_dimensions=[1029,866,73,12],network_dimensions=[1034,871,73,12],
+            normalizer_prefix_counts={"actor":24576000,"critic":24576000},
+            reported_source_delta_sha256=copy.deepcopy(reported))
     return result
 
 
 def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     """Load only parameters/own norms; prove that no learning/RNG state moved."""
+    if algorithm.trial_protocol==CONTEXT_TRIAL:
+        return apply_typed_context_policy_transfer(algorithm,normalizers,saved,provenance)
     require(algorithm.trial_protocol in (MARGIN_TRIAL,PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL) and algorithm.completed_updates==0
             and algorithm.actor_optimizer_steps==algorithm.critic_optimizer_steps==algorithm.rnd_optimizer_steps==0,
             "Typed transfer attempted after fresh optimization started")
@@ -336,6 +360,81 @@ def apply_typed_policy_transfer(algorithm, normalizers, saved, provenance):
     return provenance
 
 
+def apply_typed_context_policy_transfer(algorithm, normalizers, saved, provenance):
+    """Explicitly extend three input matrices; all optimization stays fresh."""
+    from task_context_normalization import normalization_metadata
+    require(algorithm.trial_protocol==CONTEXT_TRIAL
+            and provenance.get("kind")=="saved_complete_PPO_v6_context_extension_transfer"
+            and provenance.get("mode")=="extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization"
+            and provenance.get("parent_natural_completion") is True
+            and provenance.get("parent_uncommitted_rollout") is False
+            and provenance.get("parent_runtime_rollback_completed") is False
+            and provenance.get("parent_rollback_evidence") is None,
+            "Context transfer is not the reviewed natural-v6 extension")
+    require(algorithm.completed_updates==0 and algorithm.actor_optimizer_steps==0
+            and algorithm.critic_optimizer_steps==0 and algorithm.rnd_optimizer_steps==0
+            and not algorithm.actor_optimizer.state and not algorithm.critic_optimizer.state
+            and not algorithm.rnd_optimizer.state and algorithm.rnd.update_counter==0,
+            "Context transfer requires fresh PPO/Adam/RND state")
+    require(algorithm.policy.actor.extra_context_dim==5 and algorithm.policy.actor.obs_dim==1034,
+            "Context transfer requires the explicitly declared extended actor")
+    rnd_before=state_digest(algorithm.rnd.state_dict())
+    rng_before=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    original=saved["model_state_dict"];current=algorithm.policy.state_dict()
+    require(set(original)==set(current),"Context extension may not add parameter names")
+    columns={"actor.fusion.net.0.weight":(256,224),"actor.actor.net.0.weight":(256,224),
+             "critic.net.0.weight":(512,866)}
+    extended={}
+    for key,value in current.items():
+        parent=original[key]
+        if key in columns:
+            rows,width=columns[key]
+            require(tuple(parent.shape)==(rows,width) and tuple(value.shape)==(rows,width+5),
+                    "Unexpected context extension shape: "+key)
+            target=torch.zeros_like(value)
+            target[:,:width].copy_(parent.to(device=target.device,dtype=target.dtype))
+            extended[key]=target
+        else:
+            require(tuple(value.shape)==tuple(parent.shape),"An undeclared model tensor changed: "+key)
+            extended[key]=parent
+    algorithm.policy.load_state_dict(extended,strict=True)
+    for key,value in algorithm.policy.state_dict().items():
+        if key in columns:
+            width=columns[key][1]
+            require(torch.equal(value[:,:width].detach().cpu(),original[key].detach().cpu())
+                    and bool((value[:,width:]==0).all()),"Copied context prefix/new zero columns differ: "+key)
+        else:
+            require(torch.equal(value.detach().cpu(),original[key].detach().cpu()),
+                    "Copied nonextended model differs: "+key)
+    for name,key in (("actor","obs_norm_state_dict"),("critic","privileged_obs_norm_state_dict")):
+        normalizers[name].load_prefix_state_dict(saved[key])
+        require(state_digest(normalizers[name].prefix.state_dict())==state_digest(saved[key]),
+                "Copied empirical prefix normalization differs")
+    abi=normalization_metadata(normalizers)
+    require(abi["prefix_empirical_counts"]=={"actor":24576000,"critic":24576000}
+            and abi["context_empirical_count"] is None and abi["context_statistics_fitted"] is False
+            and abi["frozen"] is True,"Context normalization is not a real frozen prefix plus fixed block")
+    require(rnd_before==state_digest(algorithm.rnd.state_dict()),"Context transfer imported parent RND")
+    rng_after=state_digest(dict(torch=torch.get_rng_state(),python=random.getstate(),numpy=np.random.get_state(),
+        cuda=torch.cuda.get_rng_state_all() if str(algorithm.device).startswith("cuda") else None))
+    require(rng_before==rng_after,"Context transfer changed/imported the fresh RNG")
+    result=copy.deepcopy(provenance)
+    result.update(actor_and_critic_prefix_loaded_bitwise=True,dualnorm_prefix_loaded_bitwise=True,
+        new_context_columns_zero=True,normalizer_prefix_counts=abi["prefix_empirical_counts"],
+        normalization_abi=abi,context_extension_columns={key:dict(prefix_columns=shape[1],new_zero_columns=5)
+            for key,shape in columns.items()},fresh_RND_digest=rnd_before,loading_did_not_change_fresh_RNG=True)
+    algorithm.initialization_transfer=result
+    return result
+
+
+class ActualInputBankAcquisitionRejected(RuntimeError):
+    def __init__(self,evidence,reason):
+        super().__init__("First-rollout actual input bank rejected before optimization: "+reason)
+        self.evidence=str(evidence)
+        self.reason_kind="actual_input_bank_acquisition"
+
+
 class FunctionalUpdateRejected(RuntimeError):
     def __init__(self, evidence, restored_checkpoint, discarded_environment_steps, *, reason_kind="nonlinear_target_budget"):
         super().__init__("Whole PPO update rejected by finite-real-input "+reason_kind+"; all update state restored")
@@ -345,25 +444,70 @@ class FunctionalUpdateRejected(RuntimeError):
 
 
 class RealInputFunctionalGuard:
-    def __init__(self, algorithm, normalizers, exploration, fixed_bank, directory, maximum_angle=MAX_ANGLE):
+    def __init__(self, algorithm, normalizers, exploration, fixed_bank, directory, maximum_angle=MAX_ANGLE,
+                 *, acquisition_spec=None, on_bank_sealed=None):
         self.algorithm, self.normalizers, self.exploration = algorithm, normalizers, exploration
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
-        with np.load(fixed_bank,allow_pickle=False) as saved: self.fixed={key:saved[key].copy() for key in saved.files}
-        require(len(self.fixed["obs"])==FIXED_BANK_ROWS,"Expected4096 actual fixed guard inputs")
+        self.context_mode=getattr(algorithm,"trial_protocol",None)==CONTEXT_TRIAL
+        self.fixed=None;self.fixed_digest=None;self._sealed_file_hashes={}
+        if not self.context_mode:
+            with np.load(fixed_bank,allow_pickle=False) as saved: self.fixed={key:saved[key].copy() for key in saved.files}
+            require(len(self.fixed["obs"])==FIXED_BANK_ROWS,"Expected4096 actual fixed guard inputs")
+            self.fixed_digest=state_digest(self.fixed)
         self.maximum=np.asarray(maximum_angle,dtype="float32")
         require(np.array_equal(self.maximum,np.asarray(MAX_ANGLE,dtype="float32")),"Functional angular budget changed")
         self.normalizer_reference={name:cpu_state(norm.state_dict()) for name,norm in normalizers.items()}
-        self.fixed_digest=state_digest(self.fixed)
+        self.normalization_abi_reference=None
+        if self.context_mode:
+            from task_context_normalization import normalization_metadata
+            require(fixed_bank is None and isinstance(acquisition_spec,dict) and callable(on_bank_sealed),
+                    "New context bank must be acquired once from this run, with a seal callback")
+            require(acquisition_spec.get("kind")=="new_run_first_rollout_actual_preaction_v1"
+                    and acquisition_spec.get("fixed_rows")==4096 and acquisition_spec.get("current_rows")==1024
+                    and acquisition_spec.get("wrapper_clip_actions")==100.
+                    and isinstance(acquisition_spec.get("bindings"),dict) and acquisition_spec["bindings"],
+                    "Actual bank acquisition lacks its declared real-window/source binding")
+            require(algorithm.completed_updates==0 and algorithm.actor_optimizer_steps==0
+                    and algorithm.critic_optimizer_steps==0 and algorithm.rnd_optimizer_steps==0,
+                    "Real bank acquisition cannot start after optimization")
+            self.normalization_abi_reference=normalization_metadata(normalizers)
+            require(self.normalization_abi_reference["prefix_empirical_counts"]=={"actor":24576000,"critic":24576000}
+                    and self.normalization_abi_reference["frozen"] is True,
+                    "Actual context acquisition requires the loaded frozen normalization ABI")
+            self.acquisition_spec=copy.deepcopy(acquisition_spec);self.on_bank_sealed=on_bank_sealed
+            self._fixed_path=self.directory/"fixed_real_bank.npz"
+            self._receipt_path=self.directory/"fixed_real_bank.receipt.json"
+            self._acquisition_log=self.directory/"fixed_bank_acquisition.jsonl"
+            require(not any(path.exists() for path in (self._fixed_path,self._receipt_path,self._acquisition_log)),
+                    "Actual bank acquisition would reuse an existing output")
+            self._acquisition_rows=[];self._acquisition_controls=[]
+            self._initial_actor_digest=state_digest(algorithm.policy.actor.state_dict())
+            self._initial_std_digest=state_digest(algorithm.policy.std)
+            self.bank_receipt=dict(status="collecting_first_rollout",rows=0,target_rows=4096,
+                bank_path=str(self._fixed_path.resolve()),bank_sha256=None,
+                receipt_path=str(self._receipt_path.resolve()),receipt_sha256=None,completed_controls=0,
+                stratum_counts=[0,0,0,0])
+            with self._acquisition_log.open("x") as stream:
+                stream.write(json.dumps(dict(event="acquisition_started",kind=acquisition_spec["kind"],
+                    bindings=acquisition_spec["bindings"],quotas_per_stratum=[171,171,171,171,170,170]))+"\n")
         self.pending=None;self.current=[];self.last_consumed=None
         self.last_summary={};self.first_actor_baseline_saved=False
         self._bank=None;self._baseline_q=None
 
-    def prepare_actual_raw(self, obs, lower, upper, stiffness, caps, control_step):
+    def prepare_actual_raw(self, obs, lower, upper, stiffness, caps, control_step,
+                           *, reset_generation=None, episode_length_buf=None):
         # Called on the actual VecEnv raw output, before RSL normalization.
-        require(obs.shape==(1024,1029) and lower.shape==upper.shape==stiffness.shape==caps.shape==(1024,12),
+        require(obs.shape==(1024,1034 if self.context_mode else 1029)
+                and lower.shape==upper.shape==stiffness.shape==caps.shape==(1024,12),
                 "Actual rollout guard dimensions changed")
         self.pending=dict(obs=obs.detach().clone(),lower=lower.detach().clone(),upper=upper.detach().clone(),
                           stiffness=stiffness.detach().clone(),caps=caps.detach().clone(),control_step=int(control_step))
+        if self.context_mode:
+            require(reset_generation is not None and episode_length_buf is not None
+                    and reset_generation.shape==episode_length_buf.shape==(1024,),
+                    "Actual context input lacks real reset-generation/episode-age metadata")
+            self.pending.update(reset_generation=reset_generation.detach().clone(),
+                                episode_length_buf=episode_length_buf.detach().clone())
 
     def consume_actual_raw(self, normalized_obs, rollout_step):
         require(self.pending is not None,"PPO act did not receive an actual raw-input packet")
@@ -379,15 +523,178 @@ class RealInputFunctionalGuard:
         entry={name:p[name][ids].detach().cpu().numpy().copy() for name in ("obs","lower","upper","stiffness","caps")}
         entry.update(env_id=ids.cpu().numpy().astype("int32"),control_step=np.full(amount,p["control_step"],dtype="int64"),
                      rollout_step=np.full(amount,rollout_step,dtype="int16"))
+        if self.context_mode:
+            for name in ("reset_generation","episode_length_buf"):
+                entry[name]=p[name][ids].detach().cpu().numpy().astype("int64",copy=True)
         self.current.append(entry);self.last_consumed=clock;self.pending=None
+        if self.context_mode and self.bank_receipt["status"]=="collecting_first_rollout":
+            return dict(packet=p,rollout_step=int(rollout_step),clock=clock,normalization_verified=True)
+
+    def acquisition_state(self):
+        require(self.context_mode,"Only the explicit-context profile acquires a new fixed bank")
+        return copy.deepcopy(self.bank_receipt)
+
+    def acquire_after_act(self, token, actual_actions, *, action_mean, action_sigma):
+        """Use the already sampled command; do not query the actor a second time."""
+        require(self.context_mode and self.bank_receipt["status"]=="collecting_first_rollout",
+                "Actual bank acquisition is not active")
+        step=token["rollout_step"];p=token["packet"]
+        require(token["normalization_verified"] is True and token["clock"]==self.last_consumed
+                and step==len(self._acquisition_controls)==self.algorithm.storage.step
+                and self.algorithm.completed_updates==0 and self.algorithm.actor_optimizer_steps==0
+                and actual_actions.shape==action_mean.shape==action_sigma.shape==(1024,12),
+                "Actual bank action/input/clock does not match the original PPO act")
+        stratum,within=divmod(step,6);quotas=(171,171,171,171,170,170)
+        begin=sum(quotas[:within]);amount=quotas[within]
+        ids=(torch.arange(begin,begin+amount,device=p["obs"].device)+stratum*73)%1024
+        native_finite=torch.stack([torch.isfinite(p[key]).all(-1) for key in
+            ("lower","upper","stiffness","caps")]).all(0)
+        input_valid=(torch.isfinite(p["obs"]).all(-1) & native_finite
+            & (p["lower"]<p["upper"]).all(-1) & (p["stiffness"]>0).all(-1) & (p["caps"]>0).all(-1))
+        eligible_bit=p["obs"][:,-1]
+        input_valid &= (eligible_bit==0)|(eligible_bit==1)
+        finite_action=torch.isfinite(actual_actions).all(-1)
+        unclipped=finite_action & (actual_actions==actual_actions.clamp(-100,100)).all(-1)
+        midpoint=torch.stack((p["lower"],p["upper"]),dim=-1).mean(-1)
+        decoded=midpoint+(p["upper"]-p["lower"])*.5*torch.tanh(actual_actions)
+        decode_valid=(torch.isfinite(decoded).all(-1) & (decoded>=p["lower"]).all(-1)
+                      & (decoded<=p["upper"]).all(-1))
+        stats_valid=torch.isfinite(action_mean).all(-1)&torch.isfinite(action_sigma).all(-1)&(action_sigma>0).all(-1)
+        valid=input_valid&unclipped&decode_valid&stats_valid
+        accepted=ids[valid[ids]]
+        entry={key:p[key][accepted].detach().cpu().numpy().copy() for key in
+               ("obs","lower","upper","stiffness","caps")}
+        for key,value in (("actual_raw_action",actual_actions),("action_mean",action_mean),
+                          ("action_sigma",action_sigma),("native_q_request",decoded)):
+            entry[key]=value[accepted].detach().cpu().numpy().copy()
+        count=int(accepted.numel())
+        entry.update(env_id=accepted.cpu().numpy().astype("int32"),
+            sample_uid=(p["control_step"]*1024+accepted).cpu().numpy().astype("int64"),
+            source_row=(stratum*1024+torch.arange(begin,begin+amount,device=ids.device)[valid[ids]])
+                .cpu().numpy().astype("int64"),
+            control_step=np.full(count,p["control_step"],dtype="int64"),
+            rollout_step=np.full(count,step,dtype="int16"),stratum_index=np.full(count,stratum,dtype="int16"),
+            valid_input=input_valid[accepted].cpu().numpy().copy(),
+            action_unclipped=unclipped[accepted].cpu().numpy().copy())
+        for key in ("reset_generation","episode_length_buf"):
+            entry[key]=p[key][accepted].detach().cpu().numpy().astype("int64",copy=True)
+        self._acquisition_rows.append(entry)
+        record=dict(event="actual_control_action",rollout_step=step,stratum_index=stratum,
+            control_step=p["control_step"],planned_rows=amount,admitted_rows=count,
+            planned_env_ids=ids.cpu().tolist(),
+            rejected_input=int((~input_valid[ids]).sum()),rejected_nonfinite_action=int((~finite_action[ids]).sum()),
+            rejected_raw_wrapper_clip=int((finite_action[ids]&~unclipped[ids]).sum()),
+            rejected_native_decode=int((~decode_valid[ids]).sum()),
+            rejected_action_statistics=int((~stats_valid[ids]).sum()),
+            actor_optimizer_steps=self.algorithm.actor_optimizer_steps,extra_NN_forward=False)
+        self._acquisition_controls.append(record)
+        with self._acquisition_log.open("a") as stream:stream.write(json.dumps(record,allow_nan=False)+"\n")
+        self.bank_receipt["rows"]+=count;self.bank_receipt["completed_controls"]+=1
+        self.bank_receipt["stratum_counts"][stratum]+=count
+
+    def _acquisition_reject(self,reason):
+        partial={key:np.concatenate([entry[key] for entry in self._acquisition_rows])
+                 for key in self._acquisition_rows[0]} if self._acquisition_rows else {}
+        partial_path=self.directory/"fixed_bank_acquisition_partial.npz"
+        with partial_path.open("xb") as stream:np.savez_compressed(stream,**partial)
+        self.bank_receipt.update(status="rejected",reason=reason,partial_path=str(partial_path.resolve()),
+                                 partial_sha256=sha(partial_path))
+        evidence=self.directory/"fixed_bank_acquisition_rejected.json"
+        write(evidence,dict(self.bank_receipt,controls=self._acquisition_controls,
+            completed_updates=self.algorithm.completed_updates,actor_optimizer_steps=self.algorithm.actor_optimizer_steps,
+            bindings=self.acquisition_spec["bindings"],retry_allowed=False,physical_acceptance_claimed=False))
+        raise ActualInputBankAcquisitionRejected(evidence,reason)
+
+    @staticmethod
+    def _publish_new(temporary,final):
+        # The hard link publishes finished bytes without overwriting a prior
+        # output; only this task's temporary filename is removed afterwards.
+        os.link(temporary,final)
+        temporary.unlink()
+
+    def seal_first_rollout(self,storage_step,completed_updates):
+        require(self.context_mode,"Only the new context profile seals a rollout bank")
+        if self.bank_receipt["status"]=="sealed":return self.acquisition_state()
+        require(self.bank_receipt["status"]=="collecting_first_rollout","Actual bank is no longer collecting")
+        if storage_step!=24 or completed_updates!=0 or len(self._acquisition_controls)!=24:
+            self._acquisition_reject("The first real24-control rollout did not complete before sealing")
+        counters=[entry["control_step"] for entry in self._acquisition_controls]
+        if counters!=list(range(counters[0],counters[0]+24)) or self.bank_receipt["rows"]!=4096 \
+                or self.bank_receipt["stratum_counts"]!=[1024]*4:
+            self._acquisition_reject("Real input admission/counter/stratum quota shortfall; no replacement or extension")
+        self.assert_frozen()
+        require(self.algorithm.completed_updates==0 and self.algorithm.actor_optimizer_steps==0
+                and self.algorithm.critic_optimizer_steps==0 and self.algorithm.rnd_optimizer_steps==0
+                and not self.algorithm.actor_optimizer.state and not self.algorithm.critic_optimizer.state
+                and not self.algorithm.rnd_optimizer.state
+                and self._initial_actor_digest==state_digest(self.algorithm.policy.actor.state_dict())
+                and self._initial_std_digest==state_digest(self.algorithm.policy.std),
+                "Fixed bank was not captured with the unchanged preoptimization policy/std")
+        fixed={key:np.concatenate([entry[key] for entry in self._acquisition_rows]) for key in self._acquisition_rows[0]}
+        require(fixed["obs"].shape==(4096,1034) and len(np.unique(fixed["sample_uid"]))==4096
+                and np.array_equal(fixed["source_row"],np.arange(4096))
+                and all(np.array_equal(np.sort(fixed["env_id"][fixed["stratum_index"]==s]),np.arange(1024)) for s in range(4)),
+                "Fixed bank UID/env/row schema is not the exact planned real collection")
+        temporary=self._fixed_path.with_name(self._fixed_path.name+".pending")
+        with temporary.open("xb") as stream:
+            np.savez_compressed(stream,**fixed);stream.flush();os.fsync(stream.fileno())
+        self._publish_new(temporary,self._fixed_path)
+        with self._acquisition_log.open("a") as stream:
+            stream.write(json.dumps(dict(event="collection_closed",rows=4096,controls=24,bank_sha256=sha(self._fixed_path)))+"\n")
+            stream.flush();os.fsync(stream.fileno())
+        receipt=dict(status="sealed",kind="new_run_first_rollout_actual_preaction_v1",rows=4096,
+            bank_path=str(self._fixed_path.resolve()),bank_sha256=sha(self._fixed_path),
+            acquisition_log_path=str(self._acquisition_log.resolve()),acquisition_log_sha256=sha(self._acquisition_log),
+            arrays={key:dict(shape=list(value.shape),dtype=str(value.dtype),
+                    array_sha256=hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()) for key,value in fixed.items()},
+            bindings=copy.deepcopy(self.acquisition_spec["bindings"]),normalization_abi=copy.deepcopy(self.normalization_abi_reference),
+            normalizer_prefix_counts=copy.deepcopy(self.normalization_abi_reference["prefix_empirical_counts"]),
+            completed_controls=24,control_steps=counters,rows_per_stratum=[1024]*4,
+            quotas_per_stratum=[171,171,171,171,170,170],source_actor_optimizer_steps=0,
+            source_critic_optimizer_steps=0,source_rnd_optimizer_steps=0,
+            rnd_rollout_update_counter=int(self.algorithm.rnd.update_counter),
+            source_actor_digest=self._initial_actor_digest,source_std_digest=self._initial_std_digest,
+            actor_and_std_unchanged=True,all_rows_valid_input=True,all_rows_action_unclipped=True,
+            action_semantics="actual sampled12raw and native full_soft_tanh position request; not a teacher label or measured torque",
+            selection="four chronological6-control strata; deterministic disjoint env partitions; no replacement",
+            initial_partial_is_input_not_completed_episode=True,qualification_zero_allowed=True,
+            extra_NN_forward=False,formal_or_heldout_data_used=False,physical_acceptance_claimed=False)
+        temp_receipt=self._receipt_path.with_name(self._receipt_path.name+".pending")
+        with temp_receipt.open("x") as stream:
+            stream.write(json.dumps(receipt,ensure_ascii=False,indent=2,allow_nan=False)+"\n")
+            stream.flush();os.fsync(stream.fileno())
+        self._publish_new(temp_receipt,self._receipt_path)
+        self.fixed=fixed;self.fixed_digest=state_digest(fixed)
+        self._sealed_file_hashes={self._fixed_path:receipt["bank_sha256"],self._receipt_path:sha(self._receipt_path),
+                                 self._acquisition_log:receipt["acquisition_log_sha256"]}
+        self.bank_receipt=dict(receipt,receipt_path=str(self._receipt_path.resolve()),
+                              receipt_sha256=self._sealed_file_hashes[self._receipt_path])
+        self._acquisition_rows=[]
+        self.on_bank_sealed(copy.deepcopy(self.bank_receipt))
+        self.assert_frozen()
+        return self.acquisition_state()
 
     def assert_frozen(self):
         for name,norm in self.normalizers.items():
             require(not norm.training,"Guarded-flat inherited dual normalization must remain eval")
             require(state_digest(norm.state_dict())==state_digest(self.normalizer_reference[name]),"Inherited dualnorm changed")
+        if self.context_mode:
+            from task_context_normalization import normalization_metadata
+            require(state_digest(normalization_metadata(self.normalizers))==state_digest(self.normalization_abi_reference),
+                    "Frozen context normalization ABI changed")
+            if self.bank_receipt["status"]=="sealed":
+                require(state_digest(self.fixed)==self.fixed_digest
+                        and all(path.is_file() and sha(path)==digest for path,digest in self._sealed_file_hashes.items()),
+                        "Sealed actual bank/receipt/acquisition bytes changed")
+            else:
+                require(self.bank_receipt["status"]=="collecting_first_rollout"
+                        and self.algorithm.completed_updates==0 and self.algorithm.actor_optimizer_steps==0
+                        and self.algorithm.critic_optimizer_steps==0 and self.algorithm.rnd_optimizer_steps==0,
+                        "Unsealed actual bank may exist only before the first real24-control optimization")
         self.exploration.assert_valid()
 
     def _assemble(self):
+        if self.context_mode:require(self.bank_receipt["status"]=="sealed","Actual bank was not sealed before actor update")
         require(len(self.current)==ROLLOUT_STEPS,"Guard missed an actual rollout control step")
         current={name:np.concatenate([part[name] for part in self.current]) for name in self.current[0]}
         require(len(current["obs"])==CURRENT_BANK_ROWS,"Expected1024 time-stratified real current inputs")
@@ -398,6 +705,10 @@ class RealInputFunctionalGuard:
         self._bank["env_id"]=np.r_[self.fixed["env_id"],current["env_id"]]
         self._bank["control_step"]=np.r_[np.full(FIXED_BANK_ROWS,-1,dtype="int64"),current["control_step"]]
         self._bank["rollout_step"]=np.r_[np.full(FIXED_BANK_ROWS,-1,dtype="int16"),current["rollout_step"]]
+        if self.context_mode:
+            for key in ("control_step","rollout_step","reset_generation","episode_length_buf"):
+                self._bank[key]=np.r_[self.fixed[key],current[key]]
+            self._bank["stratum_index"]=np.r_[self.fixed["stratum_index"],np.full(CURRENT_BANK_ROWS,-1,dtype="int16")]
         require(all(np.isfinite(self._bank[k]).all() for k in ("obs","lower","upper","stiffness","caps")),"Nonfinite actual guard data")
         require(np.all(self._bank["stiffness"]>0) and np.all(self._bank["caps"]>0)
                 and np.all(self._bank["lower"]<self._bank["upper"]),"Invalid actual guard gain/cap/soft range")
@@ -500,17 +811,17 @@ class H2GuardedPPO(PPO):
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
-                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL) and actor_action_budget_penalty_weight==0.
+                or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
-        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
+        self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)
                 or (not self.strict_primal_enabled and actor_proposal_primal_precision_policy is None),
                 "Direct FP64 primal certification belongs only to the reviewed strict-primal profile")
         self.projection_primal_precision_policy=actor_proposal_primal_precision_policy
-        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
-        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
-        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL)
+        self.resource_projection_enabled=trial_protocol in (RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
+        self.reserved_projection_enabled=trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
+        self.projection_enabled=trial_protocol in (PROJECTION_TRIAL,RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL)
         self.projection_kind=RESERVED_KIND if self.reserved_projection_enabled else PROJECTION_KIND
         require((self.projection_enabled and actor_proposal_projection==self.projection_kind
                  and actor_proposal_interior_fraction==.5
@@ -538,7 +849,7 @@ class H2GuardedPPO(PPO):
         self.trial_protocol=trial_protocol
         self.action_margin_weight=float(actor_action_budget_penalty_weight)
         self.action_margin_epsilon=float(actor_action_budget_penalty_epsilon)
-        self.checkpoint_format=(CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
+        self.checkpoint_format=(CONTEXT_FORMAT if trial_protocol==CONTEXT_TRIAL else CLEAN_FORCE_FORMAT if trial_protocol==CLEAN_FORCE_TRIAL else OUTWARD_FORMAT if trial_protocol==OUTWARD_TRIAL else COST_FORMAT if trial_protocol==COST_TRIAL else STRICT_FORMAT if self.strict_primal_enabled else RESOURCE_FORMAT if self.resource_projection_enabled else RESERVED_FORMAT if self.reserved_projection_enabled else
             (PROJECTION_FORMAT if self.projection_enabled else (MARGIN_FORMAT if self.action_margin_weight>0 else FORMAT)))
         self.last_margin_summary={};self.initialization_transfer=None
         require(self.num_learning_epochs==5 and self.num_mini_batches==4 and self.entropy_coef==1e-4,
@@ -566,17 +877,38 @@ class H2GuardedPPO(PPO):
         self.completed_updates=self.actor_optimizer_steps=self.critic_optimizer_steps=self.rnd_optimizer_steps=0
         self.actor_updates_accepted=0;self.guard=None;self.normalizers=None;self.exploration=None
         self.uncommitted_rollout=False;self.last_guard_summary={};self.initial_policy_sha256=None
+        if trial_protocol==CONTEXT_TRIAL:
+            require(policy.actor.extra_context_dim==5 and policy.actor.obs_dim==1034
+                    and self.projection_mean_elements==782988 and self.projection_bytes_per_row==37583424
+                    and self.projection_max_active_rows==28,
+                    "New context policy/resource declaration differs from the reviewed actual layout")
 
-    def attach_guard(self, normalizers, exploration, fixed_bank, directory, initial_policy_sha256):
+    def attach_guard(self, normalizers, exploration, fixed_bank, directory, initial_policy_sha256,
+                     *, acquisition_spec=None,on_bank_sealed=None):
         self.normalizers,self.exploration=normalizers,exploration
         for norm in normalizers.values():norm.eval()
-        self.guard=RealInputFunctionalGuard(self,normalizers,exploration,fixed_bank,directory)
         self.initial_policy_sha256=initial_policy_sha256
+        self.guard=RealInputFunctionalGuard(self,normalizers,exploration,fixed_bank,directory,
+            acquisition_spec=acquisition_spec,on_bank_sealed=on_bank_sealed)
 
     def act(self,obs,critic_obs):
         require(self.guard is not None,"New flat PPO is missing its actual-raw functional guard")
-        self.guard.consume_actual_raw(obs,self.storage.step)
-        return super().act(obs,critic_obs)
+        token=self.guard.consume_actual_raw(obs,self.storage.step)
+        actions=super().act(obs,critic_obs)
+        if token is not None:
+            self.guard.acquire_after_act(token,actions,action_mean=self.transition.action_mean,
+                                         action_sigma=self.transition.action_sigma)
+        return actions
+
+    def compute_returns(self,last_critic_obs):
+        # The original RSL loop reaches here only after24real env.step and
+        # process_env_step returns. Seal before its ordinary critic bootstrap.
+        if self.trial_protocol==CONTEXT_TRIAL:
+            require(self.guard is not None,"Context rollout has no real-input bank guard")
+            if self.guard.bank_receipt["status"]=="collecting_first_rollout":
+                self.guard.seal_first_rollout(self.storage.step,self.completed_updates)
+            require(self.guard.bank_receipt["status"]=="sealed","Context bank did not seal before PPO update0")
+        return super().compute_returns(last_critic_obs)
 
     def learning_state(self):
         state=dict(completed_updates=self.completed_updates,actor_optimizer_steps=self.actor_optimizer_steps,
@@ -589,7 +921,8 @@ class H2GuardedPPO(PPO):
             rnd_update_counter=int(self.rnd.update_counter),RND_predictor_updates_enabled=True,
             RND_predictor_actually_updated=self.rnd_optimizer_steps>0,
             rnd_optimizer_steps_per_accepted_iteration=20,rnd_initialization="fresh independent RND and Adam, never BC/imitation state",
-            normalizers_frozen=True,normalizer_counts={k:int(v.count) for k,v in self.normalizers.items()} if self.normalizers else {},
+            normalizers_frozen=True,normalizer_counts={k:int(v.count) for k,v in self.normalizers.items()}
+                if self.normalizers and self.trial_protocol!=CONTEXT_TRIAL else {},
             initial_policy_sha256=self.initial_policy_sha256,uncommitted_rollout=self.uncommitted_rollout,
             trial_protocol=self.trial_protocol,action_margin=dict(kind="worst_actual_input_log_barrier" if self.action_margin_weight else "disabled",
                 weight=self.action_margin_weight,epsilon=self.action_margin_epsilon,whole_update_reference=True,
@@ -598,6 +931,13 @@ class H2GuardedPPO(PPO):
                 latest_summary=self.last_margin_summary),
             finite_guard_limitation="5120 actual inputs; update-change bound is not unseen-state or physical-stability proof",
             last_guard=self.last_guard_summary)
+        if self.trial_protocol==CONTEXT_TRIAL:
+            from task_context_normalization import normalization_metadata
+            state.pop("normalizer_counts")
+            abi=normalization_metadata(self.normalizers) if self.normalizers else None
+            state.update(normalization_abi=abi,
+                normalizer_prefix_counts=abi["prefix_empirical_counts"] if abi else {},
+                audit_bank_acquisition=self.guard.acquisition_state() if self.guard else None)
         if self.projection_enabled:
             state["proposal_projection"]=dict(kind=self.projection_kind,protocol=self.trial_protocol,
                 interior_fraction=self.projection_interior_fraction,max_active_rows=self.projection_max_active_rows,
@@ -635,6 +975,12 @@ class H2GuardedPPO(PPO):
 
     def packet(self,iteration,infos=None):
         self.guard.assert_frozen()
+        normalization_fields={}
+        if self.trial_protocol==CONTEXT_TRIAL:
+            from task_context_normalization import normalization_metadata
+            require(self.guard.bank_receipt["status"]=="sealed","An unsealed input bank cannot produce a deployable PPO packet")
+            abi=normalization_metadata(self.normalizers)
+            normalization_fields=dict(normalization_abi=abi,normalizer_prefix_counts=abi["prefix_empirical_counts"])
         np_rng=np.random.get_state()
         return dict(format=self.checkpoint_format,trial_protocol=self.trial_protocol,
             initialization_transfer=copy.deepcopy(self.initialization_transfer),model_state_dict=cpu_state(self.policy.state_dict()),
@@ -652,7 +998,7 @@ class H2GuardedPPO(PPO):
                 torch_cuda=torch.cuda.get_rng_state_all() if str(self.device).startswith("cuda") else None,
                 python=random.getstate(),numpy=dict(generator=np_rng[0],keys=torch.from_numpy(np_rng[1].astype("int64")),
                     position=int(np_rng[2]),has_gauss=int(np_rng[3]),cached_gaussian=float(np_rng[4]))),
-            iter=int(iteration),infos=infos)
+            iter=int(iteration),infos=infos,**normalization_fields)
 
     def _snapshot(self):
         packet=self.packet(self.completed_updates-1,{"kind":"pre_whole_actor_update","uncommitted_rollout":True})

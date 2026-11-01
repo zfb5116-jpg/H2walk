@@ -5,6 +5,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.utils import configclass
 
 from .direct_initialization import DirectInitializationEnvCfg
+from .flat_task_context import TASK_CONTEXT_DIM, append_flat_task_context
 from . import flat_balance_env as rewards
 
 
@@ -30,9 +31,11 @@ class FlatBalanceRewardsCfg:
 class FlatBalanceEnvCfg(DirectInitializationEnvCfg):
     flat_trial_protocol: str = rewards.TRIAL_PROTOCOL
     flat_reward_profile: str = rewards.POSITIVE_CREDIT_PROFILE
+    flat_task_context_dim: int = TASK_CONTEXT_DIM
 
     def __post_init__(self):
         super().__post_init__()
+        append_flat_task_context(self.observations)
         self.rewards=FlatBalanceRewardsCfg()
         self.episode_length_s=20.
         command=self.commands.base_velocity

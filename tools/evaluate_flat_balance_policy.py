@@ -34,7 +34,9 @@ VELOCITY_COST_PROTOCOL='command_scaled_velocity_cost_v1'
 VELOCITY_COST_INITIAL_SHA='fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa'
 OUTWARD_TILT_PROTOCOL='outward_tilt_growth_v1'
 CLEAN_FORCE_PROTOCOL='episode_clean_force_eligibility_v1'
-OUTWARD_REWARD_PROTOCOLS=(OUTWARD_TILT_PROTOCOL,CLEAN_FORCE_PROTOCOL)
+from task_context_metadata import (CONTEXT_PROTOCOL, CONTEXT_FORMAT, CONTEXT_DIMS,
+    validate_task_context_plan, validate_task_context_metadata, validate_normalization_metadata)
+OUTWARD_REWARD_PROTOCOLS=(OUTWARD_TILT_PROTOCOL,CLEAN_FORCE_PROTOCOL,CONTEXT_PROTOCOL)
 NATURAL_PARENT_PROTOCOLS=(VELOCITY_COST_PROTOCOL,*OUTWARD_REWARD_PROTOCOLS)
 NEW_REWARD_PROFILE='overspeed_positive_credit_v1'
 OUTWARD_REWARD_PROFILE='overspeed_outward_tilt_growth_v1'
@@ -81,7 +83,7 @@ def validate_outward_reward_metadata(runtime,plan=None):
     cost=runtime.get('outward_tilt_growth_cost',{})
     speed=runtime.get('velocity_cost_scaling',{})
     interval=math.cos(.35)-math.cos(.75)
-    expected_profile=(CLEAN_FORCE_REWARD_PROFILE if runtime.get('trial_protocol')==CLEAN_FORCE_PROTOCOL
+    expected_profile=(CLEAN_FORCE_REWARD_PROFILE if runtime.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,CONTEXT_PROTOCOL)
                       else OUTWARD_REWARD_PROFILE)
     require(runtime.get('reward_profile')==expected_profile
             and cost.get('kind')=='existing_body_gravity_gyro_outward_potential_rate_v1'
@@ -112,9 +114,9 @@ def validate_outward_reward_metadata(runtime,plan=None):
     return cost
 
 
-def episode_force_policy_expectations():
+def episode_force_policy_expectations(context=False):
     """Fixed goal-alignment metadata; no model, sensor query, or reward execution."""
-    return dict(kind='whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
+    result=dict(kind='whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
         agreement_absolute_tolerance_N=1.,agreement_relative_raw_norm_tolerance=.02,
         relevant_norm_threshold_N=5.,positive_control_Fz_threshold_N=5.,
         original_force_predicate_unchanged=True,
@@ -130,7 +132,10 @@ def episode_force_policy_expectations():
         record_before_reset=True,reset_only_real_env_ids=True,
         positive_credit_never_reactivated_after_force_failure=True,
         all_other_reward_weights_and_kernels_unchanged_relative_v8=True,
-        no_new_term_sensor_controller_or_policy_input=True,no_fixed_foot_width_target=True)
+        no_new_term_sensor_controller_or_policy_input=not context,no_fixed_foot_width_target=True)
+    if context:
+        result.update(no_new_reward_term_sensor_or_controller=True,global_policy_input_changed_by_explicit_context=True)
+    return result
 
 
 def validate_episode_force_reward_plan(plan):
@@ -138,10 +143,13 @@ def validate_episode_force_reward_plan(plan):
     validate_outward_reward_plan(plan)
     policy=plan.get('episode_force_credit_policy',{})
     require(isinstance(policy,dict),'Episode force-credit plan metadata must be a mapping')
-    require(plan.get('trial_protocol')==CLEAN_FORCE_PROTOCOL
-            and plan.get('network_or_input_structure_change') is False,
+    context=plan.get('trial_protocol')==CONTEXT_PROTOCOL
+    if context:
+        validate_task_context_plan(plan)
+    require(plan.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,CONTEXT_PROTOCOL)
+            and plan.get('network_or_input_structure_change') is context,
             'Episode force-credit plan must declare its unchanged input layout and exact protocol')
-    for key,expected in episode_force_policy_expectations().items():
+    for key,expected in episode_force_policy_expectations(context).items():
         actual=policy.get(key)
         require(actual is expected if isinstance(expected,bool) else actual==expected,
                 'Episode force-credit plan differs: '+key)
@@ -153,12 +161,15 @@ def validate_episode_force_reward_metadata(runtime,plan=None):
     if plan is not None:
         validate_episode_force_reward_plan(plan)
     validate_outward_reward_metadata(runtime,plan)
+    context=runtime.get('trial_protocol')==CONTEXT_PROTOCOL
+    if context:
+        validate_task_context_metadata(runtime,plan)
     policy=runtime.get('episode_force_credit_policy',{})
     require(isinstance(policy,dict),'Episode force-credit runtime metadata must be a mapping')
-    require(runtime.get('trial_protocol')==CLEAN_FORCE_PROTOCOL
+    require(runtime.get('trial_protocol') in (CLEAN_FORCE_PROTOCOL,CONTEXT_PROTOCOL)
             and runtime.get('reward_profile')==CLEAN_FORCE_REWARD_PROFILE,
             'Episode force-credit runtime profile differs')
-    for key,expected in episode_force_policy_expectations().items():
+    for key,expected in episode_force_policy_expectations(context).items():
         actual=policy.get(key)
         require(actual is expected if isinstance(expected,bool) else actual==expected,
                 'Episode force-credit runtime differs: '+key)
@@ -169,6 +180,10 @@ def validate_episode_force_reward_metadata(runtime,plan=None):
 
 
 def reviewed_parent(protocol):
+    if protocol==CONTEXT_PROTOCOL:
+        parent=reviewed_parent(CLEAN_FORCE_PROTOCOL)
+        return dict(parent,kind='saved_complete_PPO_v6_context_extension_transfer',
+                    mode='extend_completed_v6_policy_and_frozen_prefix_norm_fresh_optimization')
     if protocol in NATURAL_PARENT_PROTOCOLS:
         return dict(sha=VELOCITY_COST_INITIAL_SHA,
             receipt='e7016cd9f64cf81e7eb9562bbde371caf44c0d63b8e6bc308ae882bf2d77ee4b',
@@ -228,7 +243,8 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
         require(transfer is None,'Legacyv1 must not claim a typedPPO transfer')
         return dict(trial_protocol='guarded_flat_balance_v1',initial_sha256=LEGACY_INITIAL_SHA,
                     checkpoint_format=fmt,typed_policy_transfer=False)
-    clean_force=fmt=='h2_guarded_flat_ppo_v9'
+    context=fmt==CONTEXT_FORMAT
+    clean_force=context or fmt=='h2_guarded_flat_ppo_v9'
     outward_tilt=clean_force or fmt=='h2_guarded_flat_ppo_v8'
     velocity_cost=fmt=='h2_guarded_flat_ppo_v7'
     natural_parent=outward_tilt or velocity_cost
@@ -237,7 +253,7 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
     reserved=resource or fmt=='h2_guarded_flat_ppo_v4'
     projected=reserved or fmt=='h2_guarded_flat_ppo_v3'
     require(projected or fmt=='h2_guarded_flat_ppo_v2','Unrecognized PPO checkpoint format')
-    protocol=CLEAN_FORCE_PROTOCOL if clean_force else OUTWARD_TILT_PROTOCOL if outward_tilt else VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
+    protocol=CONTEXT_PROTOCOL if context else CLEAN_FORCE_PROTOCOL if clean_force else OUTWARD_TILT_PROTOCOL if outward_tilt else VELOCITY_COST_PROTOCOL if velocity_cost else PRECISION_PROTOCOL if precision else RESOURCE_PROTOCOL if resource else RESERVED_PROTOCOL if reserved else PROPOSAL_PROTOCOL if projected else NEW_PROTOCOL
     parent=reviewed_parent(protocol)
     require(packet_protocol==algorithm.get('trial_protocol')==state.get('trial_protocol')
             ==plan.get('trial_protocol')==protocol,'Declared typed profiles disagree')
@@ -265,9 +281,9 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
             require(algorithm.get('actor_proposal_jacobian_arena_budget_bytes')==1073741824
                     and projection.get('jacobian_arena_budget_bytes')==1073741824
                     and projection.get('configured_max_active_rows','missing') is None
-                    and projection.get('jacobian_mean_parameter_elements')==780428
-                    and projection.get('jacobian_bytes_per_row')==37460544
-                    and projection.get('jacobian_arena_capacity_bytes')==1048895232
+                    and projection.get('jacobian_mean_parameter_elements')==(782988 if context else 780428)
+                    and projection.get('jacobian_bytes_per_row')==(37583424 if context else 37460544)
+                    and projection.get('jacobian_arena_capacity_bytes')==(1052335872 if context else 1048895232)
                     and projection.get('resource_kind')=='single_cpu_float32_jacobian_arena_v1',
                     'Saved compute coverage is not the fixed CPU-byte-derived arena protocol')
         if precision:
@@ -298,12 +314,19 @@ def declared_checkpoint_profile(fmt, algorithm, state, run, plan, transfer=None,
             and transfer['parent_uncommitted_rollout'] is (not natural_parent)
             and transfer.get('parent_natural_completion',False) is natural_parent
             and transfer['parent_runtime_rollback_completed'] is parent['restored'],'Parent transfer identity/history differs')
-    require(all(transfer[k] is True for k in ('model_and_dualnorm_only','fresh_actor_optimizer',
-            'fresh_critic_optimizer','fresh_RND','fresh_RND_optimizer','actor_and_critic_loaded_bitwise',
-            'dualnorm_loaded_bitwise','loading_did_not_change_fresh_RNG'))
+    require(all(transfer[k] is True for k in (
+            ('model_prefix_and_dualnorm_prefix_only' if context else 'model_and_dualnorm_only'),'fresh_actor_optimizer',
+            'fresh_critic_optimizer','fresh_RND','fresh_RND_optimizer',
+            ('actor_and_critic_prefix_loaded_bitwise' if context else 'actor_and_critic_loaded_bitwise'),
+            ('dualnorm_prefix_loaded_bitwise' if context else 'dualnorm_loaded_bitwise'),'loading_did_not_change_fresh_RNG'))
             and transfer['parent_RNG_loaded'] is False and transfer['new_starting_iteration']==0
-            and transfer['new_checkpoint'] is None and transfer['norm_counts']=={'actor':24576000,'critic':24576000},
+            and transfer['new_checkpoint'] is None
+            and transfer['normalizer_prefix_counts' if context else 'norm_counts']=={'actor':24576000,'critic':24576000},
             'Typed policy transfer must not resume parent optimization/RND/RNG')
+    if context:
+        validate_task_context_plan(plan)
+        validate_normalization_metadata(state.get('normalization_abi'),state.get('normalizer_prefix_counts'))
+        require(transfer.get('new_context_columns_zero') is True, 'Context extension columns were not initialized to zero')
     runtime=run['runtime_flat_geometry']
     require(runtime['trial_protocol']==protocol and runtime['reward_profile']==(CLEAN_FORCE_REWARD_PROFILE if clean_force else OUTWARD_REWARD_PROFILE if outward_tilt else NEW_REWARD_PROFILE),
             'Actual environment reward profile differs from the declared optimization')
@@ -388,14 +411,25 @@ def verify_transfer_files(plan, transfer, child_source):
     require(isinstance(transfer['fresh_RND_digest'],str) and len(transfer['fresh_RND_digest'])==64,
             'Typed transfer lacks the freshRND state digest')
     protected=plan['protected_network_input_native_source_sha256']
+    if plan['trial_protocol']==CONTEXT_PROTOCOL:
+        expected_deltas={'source/'+str(PACKAGE/'networks/actor_critic_our.py'),
+                         'source/'+str(PACKAGE/'direct_initialization.py'),'tools/functional_proposal.py'}
+        require(set(plan.get('reported_source_delta_sha256',{}))==expected_deltas,
+                'Context source admission may alter only the two reported source adapters and projector input shape')
+        require(sha(Path(child_source).parent/'functional_proposal.py')==plan['reported_source_delta_sha256']['tools/functional_proposal.py'],
+                'Actual producer projector source differs from the reviewed input adapter')
     expected_keys={'source/'+str(PACKAGE/name) for name in PROTECTED_RELATIVE_FILES}
     require(set(protected)==expected_keys and transfer['protected_network_input_native_source_sha256']==protected,
             'Protected network/input/native file declaration changed')
     for key,digest in protected.items():
         require(key.startswith('source/') and '..' not in Path(key).parts,'Invalid protected source key')
         relative=key.removeprefix('source/')
-        require(parent_receipt['source_sha256'][key]==sha(parent_source/relative)==sha(Path(child_source)/relative)==digest,
-                'Protected parent/child network/input/native source changed: '+key)
+        require(parent_receipt['source_sha256'][key]==sha(parent_source/relative)==digest,
+                'Protected parent network/input/native source changed: '+key)
+        child_expected=(plan['reported_source_delta_sha256'].get(key,digest)
+                        if plan['trial_protocol']==CONTEXT_PROTOCOL else digest)
+        require(sha(Path(child_source)/relative)==child_expected,
+                'Protected child source is not the exact reviewed input adapter: '+key)
     return dict(parent_checkpoint=str(Path(plan['initial_policy'])),parent_checkpoint_sha256=expected['sha'],parent_CPU_receipt=str(Path(plan['initial_policy_CPU_receipt'])),
         parent_CPU_receipt_sha256=plan['initial_policy_CPU_receipt_sha256'],
         parent_run=str(Path(plan['initial_parent_run'])),parent_run_sha256=plan['initial_parent_run_sha256'],
@@ -403,7 +437,9 @@ def verify_transfer_files(plan, transfer, child_source):
         parent_rollback_evidence=transfer.get('parent_rollback_evidence'),
         parent_external_dependency_sha256=transfer['parent_external_dependency_sha256'],
         parent_accepted_updates=expected['updates'],parent_last_complete_iteration=expected['iteration'],protected_file_count=14,
-        model_and_dualnorm_only=True,parent_optimization_and_RND_and_RNG_not_resumed=True)
+        model_and_dualnorm_only=plan['trial_protocol']!=CONTEXT_PROTOCOL,
+        model_prefix_and_dualnorm_prefix_only=plan['trial_protocol']==CONTEXT_PROTOCOL,
+        parent_optimization_and_RND_and_RNG_not_resumed=True)
 
 
 def transfer_provenance_unchanged(receipt):
@@ -414,6 +450,15 @@ def transfer_provenance_unchanged(receipt):
         and (transfer.get('parent_rollback_evidence') is None or
              sha(Path(transfer['parent_rollback_evidence']['path']))==transfer['parent_rollback_evidence']['sha256'])
         and source_hashes(Path(transfer['parent_source_root']))==transfer['parent_source_sha256'])
+
+
+def context_bank_provenance_unchanged(receipt):
+    bank=receipt.get("fixed_context_bank_custody")
+    if bank is None:
+        return receipt.get("checkpoint_format")!=CONTEXT_FORMAT
+    return all(Path(bank[key]).is_file() and sha(Path(bank[key]))==bank[sha_key]
+               for key,sha_key in (("bank_path","bank_sha256"),("receipt_path","receipt_sha256"),
+                                   ("seal_path","seal_sha256"),("acquisition_log_path","acquisition_log_sha256")))
 
 
 def check_adam(torch, state, names, parameters, expected_step, expected_lr, label):
@@ -439,6 +484,37 @@ def check_adam(torch, state, names, parameters, expected_step, expected_lr, labe
     return dict(parameter_count=len(names),steps=expected_step,learning_rate=expected_lr,names=names)
 
 
+def verify_context_bank_custody(run, plan):
+    """Verify the new bank's once-sealed files and request binding, without replay."""
+    bank=run["guarded_flat_learning"]["fixed_real_bank"]
+    require(bank.get("status")=="sealed" and bank.get("rows")==4096,
+            "Context PPO must seal the real first-rollout bank before update0")
+    directory=Path(run["source_snapshot"]).resolve(strict=True).parent.parent/"functional_guard"
+    for key,sha_key in (("bank_path","bank_sha256"),("receipt_path","receipt_sha256"),
+                        ("acquisition_log_path","acquisition_log_sha256")):
+        path=Path(bank[key]).resolve(strict=True)
+        require(path.is_relative_to(directory) and sha(path)==bank[sha_key],"New bank custody differs: "+key)
+    actual=json.loads(Path(bank["receipt_path"]).read_text())
+    require(all(actual.get(k)==v for k,v in bank.items() if k not in ("receipt_path","receipt_sha256")),
+            "Actual bank receipt and producer binding differ")
+    bindings=actual["bindings"]
+    case=Path(bindings["case"]).resolve(strict=True)
+    request=case/"request.json"
+    seal=json.loads((case/"actual_bank.sealed.json").read_text())
+    require(seal["case"]==str(case) and seal["fixed_real_bank"]==bank
+            and seal["request_sha256"]==sha(request)==bindings["request_sha256"]
+            and seal["plan_sha256"]==bindings["plan_sha256"]==run["guarded_flat_learning"]["plan_sha256"]
+            and bindings["initial_policy_sha256"]==plan["initial_policy_sha256"]
+            and bindings["source_commit"]==run["git_commit"]
+            and bindings["training_tool_sha256"]==run["training_tool_sha256"],
+            "Actual bank was not bound to this request/source/plan before update0")
+    return dict(bank_path=bank["bank_path"],bank_sha256=bank["bank_sha256"],
+                receipt_path=bank["receipt_path"],receipt_sha256=bank["receipt_sha256"],
+                acquisition_log_path=bank["acquisition_log_path"],acquisition_log_sha256=bank["acquisition_log_sha256"],
+                seal_path=str(case/"actual_bank.sealed.json"),seal_sha256=sha(case/"actual_bank.sealed.json"),
+                raw_width=1034,rows=4096,finite_bank_not_physical_acceptance=True)
+
+
 def validate_cpu(args):
     os.environ['CUDA_VISIBLE_DEVICES']=''
     import torch
@@ -452,8 +528,9 @@ def validate_cpu(args):
         'rnd_state_dict','rnd_optimizer_state_dict','rnd_optimizer_parameter_names','rnd_runtime',
         'guarded_ppo_state','exploration_state','rng_state'}
     require(isinstance(saved,dict) and required.issubset(saved),'Not a complete guarded split-PPO checkpoint')
-    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'),'Unrecognized PPO checkpoint format')
+    require(saved['format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'),'Unrecognized PPO checkpoint format')
     require('optimizer_state_dict' not in saved,'A shared optimizer must not masquerade as the split optimizers')
+    context=saved['format']==CONTEXT_FORMAT
     iteration=int(saved['iter'])
     require(0<=iteration<1000,'Checkpoint exceeds the bounded flat experiment')
     run_dir=args.checkpoint.parent
@@ -469,12 +546,17 @@ def validate_cpu(args):
     training_tools=run['training_tool_sha256']
     require({'train.py','training_supervision.py','guarded_flat_ppo.py','stair_exploration.py'}.issubset(training_tools),
             'Guarded optimizer producer tool fingerprints are incomplete')
-    if saved['format']=='h2_guarded_flat_ppo_v9':
+    if context:
+        require({'task_context_normalization.py','task_context_metadata.py'}.issubset(training_tools),
+                'Producer omitted the explicit normalization/metadata tool dependencies')
+        require(training_tools['task_context_metadata.py']==sha(Path(__file__).with_name('task_context_metadata.py')),
+                'Active metadata admission helper differs from the producer own-source copy')
+    if saved['format'] in ('h2_guarded_flat_ppo_v9',CONTEXT_FORMAT):
         require({'evaluate_flat_balance_policy.py','evaluate_direct_initialization.py'}.issubset(training_tools),
                 'Episode force-credit admission source dependencies are not frozen in the producer snapshot')
     for name,digest in training_tools.items():
         require(sha(args.source_root.parent/name)==digest,'Recorded producer tool changed: '+name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'):
         require('functional_proposal.py' in training_tools,'Producer omitted simultaneous projection implementation')
     agent=yaml.safe_load((run_dir/'params/agent.yaml').read_text())
     algo=agent['algorithm']
@@ -493,7 +575,8 @@ def validate_cpu(args):
     policy_cfg=dict(agent['policy'])
     require(policy_cfg.pop('class_name')=='H2ActorCriticOur','Original H2 network class changed')
     cls=physical.load_module(args.source_root/PACKAGE/'networks/actor_critic_our.py','flat_cpu_original_network').H2ActorCriticOur
-    model=cls(1029,866,12,**policy_cfg).eval()
+    require(policy_cfg.get('extra_context_dim',0)==(5 if context else 0), 'Network context declaration differs')
+    model=cls(1034 if context else 1029,871 if context else 866,12,**policy_cfg).eval()
     model.load_state_dict(saved['model_state_dict'],strict=True)
     require(tuple(model.std.shape)==(12,) and bool((model.std>0).all()),'Original exploration std missing or invalid')
     actor_named=[('actor.'+name,p) for name,p in model.actor.named_parameters()]+[('std',model.std)]
@@ -518,10 +601,10 @@ def validate_cpu(args):
             require(gs['action_margin']['committed_minibatches']==expected['actor'],
                     'Action-margin committed-minibatch counter differs from actorAdam')
         require(plan.get('status')=='reviewed_ready','New profile plan has not completed its prelaunch review')
-    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'):
         projection=gs['proposal_projection']
         width=sum(p.numel() for _,p in actor_named[:-1]);row_bytes=12*width*4
-        require(projection['jacobian_mean_parameter_elements']==width==780428
+        require(projection['jacobian_mean_parameter_elements']==width==(782988 if context else 780428)
                 and projection['jacobian_bytes_per_row']==row_bytes
                 and projection['max_active_rows']==min(5120,1073741824//row_bytes),
                 'Actual actor parameter layout differs from byte-derived compute coverage')
@@ -531,12 +614,12 @@ def validate_cpu(args):
                     and summary['jacobian_arena_budget_bytes']==1073741824
                     and summary['jacobian_bytes_per_row']==row_bytes
                     and summary['jacobian_derived_max_active_rows']==28
-                    and summary['jacobian_arena_capacity_bytes']==1048895232
+                    and summary['jacobian_arena_capacity_bytes']==(1052335872 if context else 1048895232)
                     and 0<=used<=28 and summary['jacobian_used_bytes']==used*row_bytes
                     and summary['signed_midpoint_bounds_verified_coordinates']==61440
                     and summary['nonlinear_hard_check_passed'] is True,
                     'Actual last committed actor update lacks its full-bank resource and nonlinear certificate')
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'):
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'):
                 precision=summary.get('primal_precision_summary',{})
                 require(summary.get('primal_precision_policy')=='direct_fp64_primal_envelope_v1'
                         and precision.get('direct_primal_certified') is True
@@ -552,7 +635,7 @@ def validate_cpu(args):
             and gs['critic_warmup_complete']==(count>=40),'Critic warm/accepted actor counters disagree')
     require(gs['actor_learning_rate']==1e-5 and gs['critic_learning_rate']==.001
             and gs['normalizers_frozen'] is True and
-            gs['normalizer_counts']=={'actor':24576000,'critic':24576000},'Frozen normalization/fixed LR runtime contract differs')
+            gs['normalizer_prefix_counts' if context else 'normalizer_counts']=={'actor':24576000,'critic':24576000},'Frozen normalization/fixed LR runtime contract differs')
     require(type(gs['uncommitted_rollout']) is bool,'Uncommitted rollout state is not explicit')
     sampled_rollouts=count+int(gs['uncommitted_rollout'])
     require(int(gs['rnd_update_counter'])==sampled_rollouts*24 and
@@ -568,7 +651,7 @@ def validate_cpu(args):
     for name,parameters,lr in (('actor',actor_named,1e-5),('critic',critic_named,.001)):
         optimizers[name]=check_adam(torch,saved[name+'_optimizer_state_dict'],[n for n,_ in parameters],
             [p for _,p in parameters],expected[name],lr,name)
-    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'):
+    if saved['format'] in ('h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'):
         require(all(g.get('foreach') is False and g.get('fused') in (None,False)
                     for g in saved['actor_optimizer_state_dict']['param_groups']),
                 'Prospective Adam must declare its single-tensor execution path')
@@ -610,21 +693,48 @@ def validate_cpu(args):
                 'New trial did not explicitly reset std to the same half exploration budget')
         require(run['external_dependency_sha256']==saved['initialization_transfer']['parent_external_dependency_sha256'],
                 'New typed transfer changed native USD or frozen LiDAR dependencies')
-        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') and count<=40:
-            require(all(torch.equal(saved['model_state_dict'][name],initial_saved['model_state_dict'][name])
-                        for name,_ in actor_named[:-1]), 'Actual warm actor differs from the transferred parent')
+        if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') and count<=40:
+            for name,_ in actor_named[:-1]:
+                actual,parent_value=saved['model_state_dict'][name],initial_saved['model_state_dict'][name]
+                if context and name in ('actor.fusion.net.0.weight','actor.actor.net.0.weight'):
+                    require(actual.shape==(parent_value.shape[0],parent_value.shape[1]+5)
+                            and torch.equal(actual[:,:-5],parent_value) and not bool(actual[:,-5:].any()),
+                            'Warm actor context columns/prefix differ: '+name)
+                else:
+                    require(torch.equal(actual,parent_value),'Actual warm actor differs from parent: '+name)
             require(torch.equal(saved['model_state_dict']['std'],torch.tensor(start['policy_std'],dtype=model.std.dtype)),
                     'Warm std differs from the explicitly reset half budget')
             warm_actor_transfer_checked=True
     for key,width in (('obs_norm_state_dict',1029),('privileged_obs_norm_state_dict',866)):
         norm=saved[key]
-        require(set(norm)=={'_mean','_var','_std','count'},'Normalizer state layout differs')
-        require(all(tuple(norm[n].shape)==(1,width) for n in ('_mean','_var','_std')),'Normalizer shape differs')
-        require(norm['count'].numel()==1 and int(norm['count'])==24576000
-                and bool((norm['_std']>=0).all()),'Frozen inherited normalization is invalid')
-        require(norm.keys()==initial_saved[key].keys() and
-                all(torch.equal(value,initial_saved[key][name]) for name,value in norm.items()),
-                'Frozen own normalizer changed during the new PPO')
+        if context:
+            require(set(norm)=={'prefix._mean','prefix._var','prefix._std','prefix.count','fixed_context_scale'},
+                    'Explicit context normalization state layout differs')
+            prefix={name.removeprefix('prefix.'):value for name,value in norm.items() if name.startswith('prefix.')}
+            require(torch.equal(norm['fixed_context_scale'],torch.tensor([1/.3,1/.3,1.,1.,1.],dtype=norm['fixed_context_scale'].dtype)),
+                    'Fixed context scale changed')
+        else:
+            prefix=norm
+            require(set(prefix)=={'_mean','_var','_std','count'},'Normalizer state layout differs')
+        require(all(tuple(prefix[n].shape)==(1,width) for n in ('_mean','_var','_std')),'Normalizer prefix shape differs')
+        require(prefix['count'].numel()==1 and int(prefix['count'])==24576000
+                and bool((prefix['_std']>=0).all()),'Frozen inherited normalization prefix is invalid')
+        require(prefix.keys()==initial_saved[key].keys() and
+                all(torch.equal(value,initial_saved[key][name]) for name,value in prefix.items()),
+                'Frozen own normalizer prefix changed during the new PPO')
+    context_bank=None
+    if context:
+        norm_module=physical.load_module(args.source_root.parent/'task_context_normalization.py','flat_cpu_own_context_normalization')
+        actual_norms=norm_module.make_task_context_normalizers('cpu')
+        for label,key in (('actor','obs_norm_state_dict'),('critic','privileged_obs_norm_state_dict')):
+            actual_norms[label].load_state_dict(saved[key],strict=True)
+            actual_norms[label].eval()
+        actual_abi=norm_module.normalization_metadata(actual_norms)
+        validate_normalization_metadata(actual_abi,gs['normalizer_prefix_counts'])
+        require(actual_abi==gs['normalization_abi']==saved.get('normalization_abi')
+                ==run['guarded_flat_learning']['normalization_abi'],
+                'Actual saved block normalization ABI differs from its declaration')
+        context_bank=verify_context_bank_custody(run,plan)
     dependencies=run['external_dependency_sha256']
     require(dependencies and all(sha(Path(path).resolve(strict=True))==digest for path,digest in dependencies.items()),
             'Recorded external USD/LiDAR dependency changed')
@@ -669,27 +779,33 @@ def validate_cpu(args):
             if profile.get('proposal_projection') is not None else None),
         actor_whole_update_working_reserve=({key:gs['proposal_projection'][key] for key in
             ('working_budget_fraction','whole_update_fixed_working_bound','solver_tolerance_reserved_inward')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') else None),
         actor_compute_resource_coverage=({key:gs['proposal_projection'][key] for key in
             ('resource_kind','configured_max_active_rows','max_active_rows','jacobian_arena_budget_bytes',
              'jacobian_mean_parameter_elements','jacobian_bytes_per_row','jacobian_arena_capacity_bytes')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') else None),
         actor_primal_precision=({key:gs['proposal_projection'][key] for key in
             ('primal_precision_policy','max_polish_per_QP','max_support_pivots','max_polish_per_projection',
              'solver_optimality_and_direct_primal_separate','primal_envelope_is_machine_derived',
              'final_same_direction_cast_JVP_required','primal_precision_summary')}
-            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') else None),
         world_xy_velocity_cost_scaling=(run['runtime_flat_geometry'].get('velocity_cost_scaling')
-            if saved['format'] in ('h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') else None),
         outward_tilt_growth_cost=(run['runtime_flat_geometry'].get('outward_tilt_growth_cost')
-            if saved['format'] in ('h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9') else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10') else None),
         episode_force_credit_policy=(run['runtime_flat_geometry'].get('episode_force_credit_policy')
-            if saved['format']=='h2_guarded_flat_ppo_v9' else None),
+            if saved['format'] in ('h2_guarded_flat_ppo_v9',CONTEXT_FORMAT) else None),
         actual_warm_actor44_and_reset_std_checked=warm_actor_transfer_checked,
         uncommitted_rollout=gs['uncommitted_rollout'],rnd_rollout_update_counter=int(gs['rnd_update_counter']),
         source_root=str(args.source_root),source_sha256=hashes,producer_run=str(run_path),producer_run_sha256=sha(run_path),
         producer_training_tool_sha256=training_tools,
-        external_dependency_sha256=dependencies,normalizers_frozen_and_parent_bitwise_equal=True,
+        external_dependency_sha256=dependencies,normalizers_frozen_and_parent_bitwise_equal=not context,
+        normalizer_prefix_frozen_and_parent_bitwise_equal=context,
+        task_context=(run['runtime_flat_geometry'].get('task_context') if context else None),
+        normalization_abi=(gs.get('normalization_abi') if context else None),
+        normalizer_prefix_counts=(gs.get('normalizer_prefix_counts') if context else None),
+        network_dimensions=CONTEXT_DIMS if context else [1029,866,73,12],
+        fixed_context_bank_custody=context_bank,
         initial_policy=str(initial),initial_policy_sha256=initial_sha,
         plan_path=str(plan_path),plan_sha256=protocol['plan_sha256'],
         optimizer_path=str(args.checkpoint),optimizer_sha256=sha(args.checkpoint),
@@ -707,7 +823,7 @@ def validate_cpu(args):
 def prepare_physical(args):
     receipt=json.loads(args.validation_output.read_text())
     require(receipt.get('status')=='passed' and receipt.get('cpu_only') is True,'Run complete split-PPO CPU validation first')
-    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9'),'Wrong CPU receipt format')
+    require(receipt['checkpoint_format'] in ('h2_guarded_flat_ppo_v1','h2_guarded_flat_ppo_v2','h2_guarded_flat_ppo_v3','h2_guarded_flat_ppo_v4','h2_guarded_flat_ppo_v5','h2_guarded_flat_ppo_v6','h2_guarded_flat_ppo_v7','h2_guarded_flat_ppo_v8','h2_guarded_flat_ppo_v9','h2_guarded_flat_ppo_v10'),'Wrong CPU receipt format')
     require(receipt['sha256']==sha(args.checkpoint) and receipt['source_root']==str(args.source_root)
             and receipt['source_sha256']==source_hashes(args.source_root),'Checkpoint/source changed after CPU validation')
     require(receipt['validator_sha256']==sha(Path(__file__)) and
@@ -715,6 +831,7 @@ def prepare_physical(args):
     require(sha(Path(receipt['producer_run']))==receipt['producer_run_sha256'],'Producer run evidence changed')
     require(sha(Path(receipt['plan_path']))==receipt['plan_sha256'],'Producer plan changed after CPU validation')
     require(transfer_provenance_unchanged(receipt),'Typed parent provenance changed after CPU validation')
+    require(context_bank_provenance_unchanged(receipt),'Sealed real context bank evidence changed after CPU validation')
     for name,digest in receipt['producer_training_tool_sha256'].items():
         require(sha(args.source_root.parent/name)==digest,'Producer tool changed after CPU validation: '+name)
     for path,digest in receipt['external_dependency_sha256'].items():
@@ -728,7 +845,8 @@ def prepare_physical(args):
     shutil.copy2(Path(receipt['producer_run']),args.output/'checkpoint_run.json')
     (args.output/'tools_snapshot').mkdir()
     for name in ('evaluate_flat_balance_policy.py','evaluate_flat_balance_policy.sh',
-                 'evaluate_direct_initialization.py','evaluate_direct_initialization.sh'):
+                 'evaluate_direct_initialization.py','evaluate_direct_initialization.sh',
+                 *(['task_context_metadata.py','task_context_normalization.py'] if receipt['checkpoint_format']==CONTEXT_FORMAT else [])):
         shutil.copy2(Path(__file__).parent/name,args.output/'tools_snapshot'/name)
     deps=receipt['external_dependency_sha256']
     usd=[p for p in deps if Path(p).suffix=='.usd']
@@ -751,12 +869,12 @@ def main():
     source,receipt=prepare_physical(args)
     metadata=dict(status='initializing',task=TASK,started_at_epoch=time.time(),checkpoint=str(args.checkpoint),
         checkpoint_sha256=receipt['sha256'],source_root=str(args.source_root),imported_source_root=str(source),
-        num_envs=1024,duration_s=20.,speed_m_s=.3,seed=42,network_dimensions=[1029,866,73,12],
+        num_envs=1024,duration_s=20.,speed_m_s=.3,seed=42,network_dimensions=receipt.get('network_dimensions',[1029,866,73,12]),
         training_updates=0,teacher_constructed=False,teacher_interventions=0,initialization_ready=False,
         flat_balance_ready=False,formal_acceptance_passed=False,stairs_acceptance_passed=False,
         validator_sha256=sha(Path(__file__)),checkpoint_format=receipt['checkpoint_format'],
         trial_protocol=receipt.get('trial_protocol','guarded_flat_balance_v1'),
-        optimizer_loaded_for_control=False,physical_procedure='Unmodified evaluate_direct_initialization.evaluate with new independent TASK only')
+        optimizer_loaded_for_control=False,physical_procedure='Original first-episode physical loop/gates; versioned input/model/normalizer construction for explicit context only')
     app=None
     try:
         write(args.output/'run.json',metadata)
@@ -768,6 +886,7 @@ def main():
             and sha(Path(receipt['producer_run']))==receipt['producer_run_sha256']
             and sha(Path(receipt['plan_path']))==receipt['plan_sha256']
             and transfer_provenance_unchanged(receipt)
+            and context_bank_provenance_unchanged(receipt)
             and all(sha(args.source_root.parent/name)==digest
                     for name,digest in receipt['producer_training_tool_sha256'].items()))
         result.update(flat_balance_ready=bool(result['initialization_ready']),

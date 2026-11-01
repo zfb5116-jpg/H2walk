@@ -11,12 +11,13 @@ import numpy as np
 import torch
 
 from .direct_initialization import DirectInitializationEnv
+from .flat_task_context import task_context_runtime_contract
 from .locomotion_progress import FootfallTracker
 from .stair_ascent_evidence import StairEpisodeEvidence
 from .stair_ascent_progress import signed_forward_ledger
 from .stair_ascent_safety import physical_validity
 
-TRIAL_PROTOCOL='episode_clean_force_eligibility_v1'
+TRIAL_PROTOCOL='explicit_task_context_v1'
 POSITIVE_CREDIT_PROFILE='overspeed_outward_tilt_growth_clean_force_v1'
 EPISODE_FORCE_CREDIT_POLICY={
     'kind':'whole_episode_clean_force_positive_credit_and_first_union_failure_v1',
@@ -37,7 +38,9 @@ EPISODE_FORCE_CREDIT_POLICY={
     'record_before_reset':True,'reset_only_real_env_ids':True,
     'positive_credit_never_reactivated_after_force_failure':True,
     'all_other_reward_weights_and_kernels_unchanged_relative_v8':True,
-    'no_new_term_sensor_controller_or_policy_input':True,'no_fixed_foot_width_target':True,
+    'no_new_term_sensor_controller_or_policy_input':False,
+    'no_new_reward_term_sensor_or_controller':True,
+    'global_policy_input_changed_by_explicit_context':True,'no_fixed_foot_width_target':True,
     'scope':'Bounded fixedworld+.3directflat; independent firstepisode gate unchanged, not automatic stairs reuse.',
 }
 
@@ -296,7 +299,11 @@ class FlatBalanceProgress:
 class FlatBalanceEnv(DirectInitializationEnv):
     """Direct policy physics, physical reward bookkeeping and pre-reset evidence."""
     def __init__(self, cfg, render_mode=None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
+        self._flat_task_context_schema_bootstrap = True
+        try:
+            super().__init__(cfg, render_mode, **kwargs)
+        finally:
+            self._flat_task_context_schema_bootstrap = False
         directory = getattr(cfg,'io_descriptors_output_dir',None)
         directory = str(Path(directory)/'flat_episode_evidence') if directory else None
         self.flat_balance_progress = FlatBalanceProgress(self.num_envs,self.device,self.masses,
@@ -323,6 +330,7 @@ class FlatBalanceEnv(DirectInitializationEnv):
         growth_interval=cos(growth_margin)-cos(growth_limit)
         self.runtime_contract={
             'trial_protocol':cfg.flat_trial_protocol,'reward_profile':cfg.flat_reward_profile,
+            'task_context':task_context_runtime_contract(self),
             'episode_force_credit_policy':dict(EPISODE_FORCE_CREDIT_POLICY,
                 actual_failure_weight=failure_weight,actual_failure_function=failure_cfg.func.__name__),
             'positive_credit_speed_weight':{'command_m_s':.3,'full_at_or_below_m_s':.3,
@@ -353,7 +361,9 @@ class FlatBalanceEnv(DirectInitializationEnv):
                 'actual_world_xy_velocity_error_weight':velocity_error_weight,
                 'command_m_s':command_speed,
                 'uses_existing_body_gravity_and_gyro':True,'same_reward_endpoint':True,
-                'no_new_policy_input':True,'reward_dt_multiplications':1,
+                'no_new_policy_input':True,
+                'no_new_policy_input_scope':'Only this auxiliary reward still uses existing body gravity/gyro; the explicit task context changes the global policy input.',
+                'reward_dt_multiplications':1,
                 'discrete_total_not_exact_failure_charge':True},
             'generator_size_m':list(map(float,generator.size)),
             'terrain_rows':int(generator.num_rows),'terrain_columns':int(generator.num_cols),

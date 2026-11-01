@@ -606,7 +606,12 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     lo, hi = tensor(bank["lower"]), tensor(bank["upper"])
     reference = tensor(baseline_q)
     limits = tensor(budget)
-    if raw.shape != (MAX_BANK_ROWS, 1029) or lo.shape != hi.shape or lo.shape != (MAX_BANK_ROWS, NUM_OUTPUTS) \
+    context_width = getattr(actor_module, "extra_context_dim", 0)
+    if type(context_width) is not int or context_width not in (0, 5):
+        fail("Actor must declare the legacy or explicit five-value context ABI")
+    if context_width == 5 and getattr(actor_module, "obs_dim", None) != 1034:
+        fail("Explicit task context requires the declared1034 actor input")
+    if raw.shape != (MAX_BANK_ROWS, 1029 + context_width) or lo.shape != hi.shape or lo.shape != (MAX_BANK_ROWS, NUM_OUTPUTS) \
             or reference.shape != limits.shape or reference.shape != lo.shape:
         fail("Actual bank dimensions changed")
     if not all(_finite(x) for x in (raw, lo, hi, reference, limits)) or not bool((lo < hi).all()) \

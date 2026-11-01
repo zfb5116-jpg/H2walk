@@ -124,7 +124,11 @@ class DirectInitializationEnv(RobotEnv):
         self._stair_unfiltered_ids, _ = self.scene["contact_forces"].find_bodies(cfg.feet_body_names, preserve_order=True)
         self._stair_sensors = [self.scene["stair_ascent_left_ground"], self.scene["stair_ascent_right_ground"]]
         self._stair_sole_offset, _ = foot_geometry(self.device)
-        for group, expected in (("policy", (1029,)), ("critic", (866,)), ("rnd_state", (73,))):
+        context_dim = getattr(cfg, "flat_task_context_dim", 0)
+        if type(context_dim) is not int or context_dim not in (0, 5):
+            raise RuntimeError("Initialization admits only the original or explicit five-value context ABI")
+        for group, expected in (("policy", (1029+context_dim,)),
+                                ("critic", (866+context_dim,)), ("rnd_state", (73,))):
             if tuple(self.observation_manager.group_obs_dim[group]) != expected:
                 raise RuntimeError(f"Initialization changed the existing{group} observation layout")
 

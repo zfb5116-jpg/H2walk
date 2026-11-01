@@ -1,9 +1,11 @@
 """Train the H2 tasks using this checkout's task and robot assets."""
 
 import argparse
+import fcntl
 import hashlib
 import importlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -89,10 +91,12 @@ def main():
     guarded_flat = args.task == "Unitree-H2-Flat-Balance-Policy"
     guarded_plan = None
     typed_flat_transfer = False
+    context_flat = False
     if guarded_flat:
         guarded_plan = json.loads(args.guarded_flat_plan.resolve(strict=True).read_text())
         trial_protocol = guarded_plan.get("trial_protocol", "guarded_flat_balance_v1")
-        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1")
+        context_flat = trial_protocol == "explicit_task_context_v1"
+        typed_flat_transfer = trial_protocol in ("overspeed_credit_action_margin_v1", "simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1")
         expected_initial_sha = {
             "guarded_flat_balance_v1":"ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688",
             "overspeed_credit_action_margin_v1":"01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68",
@@ -103,13 +107,14 @@ def main():
             "command_scaled_velocity_cost_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
             "outward_tilt_growth_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
             "episode_clean_force_eligibility_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
+            "explicit_task_context_v1":"fe7a82e0dd9a00a6ae4551ab8b254c840d5c50b1c907cd8f2798c717456135fa",
         }.get(trial_protocol)
-        if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != [1029,866,73,12]
+        if (guarded_plan["task"] != args.task or guarded_plan["network_dimensions"] != ([1034,871,73,12] if context_flat else [1029,866,73,12])
                 or guarded_plan["initial_policy_sha256"] != expected_initial_sha
                 or expected_initial_sha is None
                 or args.num_envs != 1024 or args.seed != 42):
             raise ValueError("Guarded-flat reviewed initialization/task/layout differs")
-        if trial_protocol == "episode_clean_force_eligibility_v1":
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
             from evaluate_flat_balance_policy import (validate_episode_force_reward_plan,
                                                      validate_episode_force_reward_metadata)
             validate_episode_force_reward_plan(guarded_plan)
@@ -164,10 +169,12 @@ def main():
         training_tool_names.append("stair_exploration.py")
     if guarded_flat:
         training_tool_names.append("guarded_flat_ppo.py")
-        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1"):
+        if trial_protocol in ("simultaneous_output_proposal_v1", "reserved_simultaneous_output_proposal_v1", "resource_bounded_reserved_output_proposal_v1", "strict_primal_resource_output_proposal_v1", "command_scaled_velocity_cost_v1", "outward_tilt_growth_v1", "episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
             training_tool_names.append("functional_proposal.py")
-        if trial_protocol == "episode_clean_force_eligibility_v1":
+        if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
             training_tool_names.extend(["evaluate_flat_balance_policy.py", "evaluate_direct_initialization.py"])
+        if context_flat:
+            training_tool_names.extend(["task_context_normalization.py", "task_context_metadata.py"])
     for name in training_tool_names:
         shutil.copy2(ROOT / "tools" / name, source_dir / name)
     shutil.copy2(args.stop_policy, source_dir / "stop_policy.json")
@@ -300,7 +307,7 @@ def main():
                 raise ValueError(f"Non-finite initial observations in {name}")
         if guarded_flat:
             metadata["runtime_flat_geometry"] = env.unwrapped.runtime_contract
-            if trial_protocol == "episode_clean_force_eligibility_v1":
+            if trial_protocol in ("episode_clean_force_eligibility_v1", "explicit_task_context_v1"):
                 validate_episode_force_reward_metadata(metadata["runtime_flat_geometry"], guarded_plan)
         (log_dir / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"[H2] Runtime dimensions: {json.dumps(metadata['observation_shapes'])}; "
@@ -310,6 +317,11 @@ def main():
                                   normalize_initial_observations=args.task in ("Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy"),
                                   guarded_flat=guarded_flat)
         runner.add_git_repo_to_log(__file__)
+        if context_flat:
+            from task_context_normalization import make_task_context_normalizers, normalization_metadata
+            context_normalizers=make_task_context_normalizers(runner.device)
+            runner.obs_normalizer=context_normalizers["actor"]
+            runner.privileged_obs_normalizer=context_normalizers["critic"]
         if initial_policy:
             boot = torch.load(initial_policy, map_location="cpu" if typed_flat_transfer else agent_cfg.device, weights_only=True)
             if typed_flat_transfer:
@@ -346,24 +358,38 @@ def main():
                 metadata["guarded_flat_initial_policy_not_ready"] = True
             metadata["initial_policy_sha256"] = hashlib.sha256(initial_policy.read_bytes()).hexdigest()
             if guarded_flat:
-                if any(not torch.equal(value.detach().cpu(), boot["model_state_dict"]["actor."+name].detach().cpu())
-                       for name,value in runner.alg.policy.actor.state_dict().items()):
-                    raise RuntimeError("Initial guarded-flat actor is not bitwise the reviewed candidate")
-                metadata["initial_actor_weights_match_parent_exactly"] = True
-                metadata["initial_critic_weights_match_parent_exactly"] = all(
-                    torch.equal(value.detach().cpu(),boot["model_state_dict"]["critic."+name].detach().cpu())
-                    for name,value in runner.alg.policy.critic.state_dict().items())
-                if not metadata["initial_critic_weights_match_parent_exactly"]:
-                    raise RuntimeError("Initial guarded-flat critic differs from the reviewed transferred model")
-                for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
-                    if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
-                        key = str(path.relative_to(ROOT))
-                        if hashlib.sha256(path.read_bytes()).hexdigest() != parent_source_hashes.get(key):
-                            raise RuntimeError("Guarded-flat initialization network source differs from its parent")
-                metadata["initial_network_source_matches_parent_exactly"] = True
-                if not typed_flat_transfer:
-                    metadata["initial_actor_weights_match_ce822_exactly"] = True
-                    metadata["initial_network_source_matches_ce822_exactly"] = True
+                if context_flat:
+                    if not all(transfer.get(key) is True for key in (
+                        "actor_and_critic_prefix_loaded_bitwise","dualnorm_prefix_loaded_bitwise","new_context_columns_zero")):
+                        raise RuntimeError("Initial context transfer did not verify inherited prefixes and zero columns")
+                    metadata["initial_actor_prefix_and_zero_columns_verified"]=True
+                    metadata["initial_critic_prefix_and_zero_columns_verified"]=True
+                    deltas=guarded_plan["reported_source_delta_sha256"]
+                    for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
+                        if path.is_file() and "__pycache__" not in path.parts and path.suffix!=".pyc":
+                            key=str(path.relative_to(ROOT))
+                            if hashlib.sha256(path.read_bytes()).hexdigest()!=deltas.get(key,parent_source_hashes.get(key)):
+                                raise RuntimeError("Context network source is not the exact reviewed adapter")
+                    metadata["initial_context_source_matches_reviewed_delta"]=True
+                else:
+                    if any(not torch.equal(value.detach().cpu(), boot["model_state_dict"]["actor."+name].detach().cpu())
+                           for name,value in runner.alg.policy.actor.state_dict().items()):
+                        raise RuntimeError("Initial guarded-flat actor is not bitwise the reviewed candidate")
+                    metadata["initial_actor_weights_match_parent_exactly"] = True
+                    metadata["initial_critic_weights_match_parent_exactly"] = all(
+                        torch.equal(value.detach().cpu(),boot["model_state_dict"]["critic."+name].detach().cpu())
+                        for name,value in runner.alg.policy.critic.state_dict().items())
+                    if not metadata["initial_critic_weights_match_parent_exactly"]:
+                        raise RuntimeError("Initial guarded-flat critic differs from the reviewed transferred model")
+                    for path in (ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks").rglob("*"):
+                        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+                            key = str(path.relative_to(ROOT))
+                            if hashlib.sha256(path.read_bytes()).hexdigest() != parent_source_hashes.get(key):
+                                raise RuntimeError("Guarded-flat initialization network source differs from its parent")
+                    metadata["initial_network_source_matches_parent_exactly"] = True
+                    if not typed_flat_transfer:
+                        metadata["initial_actor_weights_match_ce822_exactly"] = True
+                        metadata["initial_network_source_matches_ce822_exactly"] = True
             del boot
         if checkpoint:
             runner.load(str(checkpoint), load_optimizer=True)
@@ -403,26 +429,73 @@ def main():
             from guarded_flat_ppo import create_fixed_real_bank
             guard_dir = log_dir / "functional_guard"
             fixed_bank = guard_dir / "fixed_real_bank.npz"
-            audit_dataset = Path(guarded_plan["fixed_real_audit_dataset"]).resolve(strict=True) if typed_flat_transfer else initial_policy.parent/"dataset"
-            bank_receipt = create_fixed_real_bank(audit_dataset, fixed_bank, seed=args.seed)
+            if context_flat:
+                fixed_bank=None
+                bank_receipt=dict(status="collecting_first_rollout",rows=0,target_rows=4096,sealed=False,
+                                  kind="new_run_first_rollout_actual_preaction_v1")
+            else:
+                audit_dataset = Path(guarded_plan["fixed_real_audit_dataset"]).resolve(strict=True) if typed_flat_transfer else initial_policy.parent/"dataset"
+                bank_receipt = create_fixed_real_bank(audit_dataset, fixed_bank, seed=args.seed)
             runner.obs_normalizer.eval();runner.privileged_obs_normalizer.eval()
+            attachment={}
+            if context_flat:
+                case=args.supervision_state.resolve(strict=True).parent
+                request_path=case/"request.json"
+                request_sha=hashlib.sha256(request_path.read_bytes()).hexdigest()
+                plan_sha=hashlib.sha256(args.guarded_flat_plan.read_bytes()).hexdigest()
+                def bank_sealed(receipt):
+                    # Only this declared acquisition artifact is created while source/parent inputs stay frozen.
+                    if hashlib.sha256(request_path.read_bytes()).hexdigest()!=request_sha:
+                        raise RuntimeError("Acquisition request identity changed")
+                    if receipt.get("status")!="sealed" or receipt.get("rows")!=4096:
+                        raise RuntimeError("Acquisition callback requires a complete real4096 bank")
+                    for key,sha_key in (("bank_path","bank_sha256"),("receipt_path","receipt_sha256"),("acquisition_log_path","acquisition_log_sha256")):
+                        path=Path(receipt[key]).resolve(strict=True)
+                        if not path.is_relative_to(guard_dir) or hashlib.sha256(path.read_bytes()).hexdigest()!=receipt[sha_key]:
+                            raise RuntimeError("Actual acquisition artifact binding differs: "+key)
+                    binding=dict(case=str(case),request_sha256=request_sha,plan_sha256=plan_sha,
+                                 fixed_real_bank=receipt,scope="One real first24-control bank, sealed before update0; no acceptance claim")
+                    # Share the monitor lock and publish its complete seal last:
+                    # a monitor must never observe half of collecting -> sealed.
+                    with (case/"monitor.write.lock").open("a") as lock:
+                        fcntl.flock(lock,fcntl.LOCK_EX)
+                        metadata["guarded_flat_learning"]["fixed_real_bank"]=receipt
+                        write_json(log_dir/"run.json",metadata)
+                        runner.update_state(guarded_flat_learning=metadata["guarded_flat_learning"],
+                                            fixed_bank_acquisition_status="sealed",actual_bank_seal=str(case/"actual_bank.sealed.json"))
+                        temporary=case/"actual_bank.sealed.pending"
+                        with temporary.open("x") as stream:
+                            json.dump(binding,stream,ensure_ascii=False,indent=2,allow_nan=False);stream.write("\n")
+                            stream.flush();os.fsync(stream.fileno())
+                        os.link(temporary,case/"actual_bank.sealed.json")
+                        temporary.unlink()
+                spec=dict(guarded_plan["audit_bank_source"],wrapper_clip_actions=float(agent_cfg.clip_actions),
+                    bindings=dict(case=str(case),request_sha256=request_sha,source_commit=metadata["git_commit"],
+                                  source_sha256=source_hashes,training_tool_sha256=metadata["training_tool_sha256"],
+                                  plan_path=str(args.guarded_flat_plan.resolve(strict=True)),plan_sha256=plan_sha,
+                                  initial_policy_sha256=metadata["initial_policy_sha256"]))
+                attachment=dict(acquisition_spec=spec,on_bank_sealed=bank_sealed)
             runner.alg.attach_guard({"actor":runner.obs_normalizer,"critic":runner.privileged_obs_normalizer},
-                runner.stair_exploration_budget,fixed_bank,guard_dir,metadata["initial_policy_sha256"])
+                runner.stair_exploration_budget,fixed_bank,guard_dir,metadata["initial_policy_sha256"],**attachment)
             robot = env.unwrapped.scene["robot"]
             action_ids = action_term._joint_ids
             def capture_actual_raw(observation):
                 limits = robot.data.soft_joint_pos_limits[:,action_ids]
                 runner.alg.guard.prepare_actual_raw(observation,limits[...,0],limits[...,1],
                     robot.data.joint_stiffness[:,action_ids],robot.data.joint_effort_limits[:,action_ids],
-                    int(env.unwrapped.common_step_counter))
+                    int(env.unwrapped.common_step_counter),
+                    **(dict(reset_generation=env.unwrapped.initialization_reset_generation,
+                            episode_length_buf=env.unwrapped.episode_length_buf) if context_flat else {}))
             env.actual_raw_guard_callback = capture_actual_raw
             metadata["guarded_flat_learning"] = {
                 "plan_path":str(args.guarded_flat_plan.resolve(strict=True)),
                 "plan_sha256":hashlib.sha256(args.guarded_flat_plan.read_bytes()).hexdigest(),
                 "initial_policy_sha256":metadata["initial_policy_sha256"],
                 "fixed_real_bank":bank_receipt,"current_rollout_real_rows":1024,"total_guard_rows":5120,
-                "normalizers_frozen":True,"normalizer_counts":{"actor":int(runner.obs_normalizer.count),
-                    "critic":int(runner.privileged_obs_normalizer.count)},
+                "normalizers_frozen":True,
+                **({"normalizer_prefix_counts":{name:int(norm.prefix_count) for name,norm in context_normalizers.items()},
+                    "normalization_abi":normalization_metadata(context_normalizers)} if context_flat else
+                   {"normalizer_counts":{"actor":int(runner.obs_normalizer.count),"critic":int(runner.privileged_obs_normalizer.count)}}),
                 "optimizer_format":runner.alg.checkpoint_format,"trial_protocol":runner.alg.trial_protocol,
                 "state":runner.alg.learning_state(),
                 "action_margin":runner.alg.learning_state()["action_margin"],
@@ -445,6 +518,11 @@ def main():
                                           ("critic", runner.privileged_obs_normalizer)]
             } if runner.empirical_normalization else {},
         }
+        if context_flat:
+            metadata["initial_learning_state"].pop("normalizer_counts",None)
+            metadata["initial_learning_state"].update(
+                normalizer_prefix_counts={name:int(norm.prefix_count) for name,norm in context_normalizers.items()},
+                normalization_abi=normalization_metadata(context_normalizers))
         if guarded_flat:
             metadata["initialization_mode"] = (guarded_plan["initialization_mode"]
                 if typed_flat_transfer else "guarded_flat_reward_repair_fresh_split_PPO")
@@ -506,6 +584,22 @@ def main():
             write_json(log_dir / "run.json", metadata)
             print("[H2] Stopped because physical movement metrics stagnated", flush=True)
             return
+        except BaseException as error:
+            if context_flat:
+                acquisition=runner.alg.guard.acquisition_state()
+                before_optimization=(runner.alg.completed_updates==0 and acquisition.get("status")!="sealed")
+                metadata.update(status="failed",completed_iterations=runner.alg.completed_updates,
+                    error_type=type(error).__name__,error=str(error),
+                    failure_scope="preoptimization_bank_acquisition" if before_optimization else "runtime_error",
+                    fixed_bank_acquisition=acquisition,
+                    fully_processed_rollout_transitions=int(runner.alg.storage.step),
+                    partial_physical_step_count_unknown=True,
+                    guarded_ppo_state=runner.alg.learning_state())
+                write_json(log_dir/"run.json",metadata)
+                runner.update_state(status="failed",error_type=type(error).__name__,error=str(error),
+                    failure_scope=metadata["failure_scope"],fixed_bank_acquisition=acquisition,
+                    completed_iterations=runner.alg.completed_updates,iteration=runner.alg.completed_updates-1)
+            raise
         metadata["status"] = "completed"
         metadata["completed_iterations"] = int(runner.current_learning_iteration) + 1
         metadata["total_timesteps"] = int(runner.tot_timesteps)

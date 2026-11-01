@@ -428,14 +428,29 @@ def evaluate(args, app, source, receipt, metadata):
         require(covered==set(qids), "Missing native leg actuator coverage")
         metadata["native_actuator_certificate"]=actuator_certificate
         obs, extras = wrapped.get_observations()
-        require(tuple(obs.shape)==(n,1029) and tuple(extras["observations"]["critic"].shape)==(n,866), "Observation layout mismatch")
+        context=saved.get("format")=="h2_guarded_flat_ppo_v10"
+        require(tuple(obs.shape)==(n,1034 if context else 1029)
+                and tuple(extras["observations"]["critic"].shape)==(n,871 if context else 866), "Observation layout mismatch")
         require(bool((raw.episode_length_buf==0).all()) and bool((raw.action_manager.action==0).all()), "First episodes do not start at actual reset")
         pcfg = dict(agent["policy"]);pcfg.pop("class_name")
-        actor = H2ActorCriticOur(1029,866,12,**pcfg).to(device)
-        norm = EmpiricalNormalization([1029],until=1e8).to(device)
-        cnorm = EmpiricalNormalization([866],until=1e8).to(device)
+        require(pcfg.get("extra_context_dim",0)==(5 if context else 0), "Policy context construction declaration differs")
+        actor = H2ActorCriticOur(1034 if context else 1029,871 if context else 866,12,**pcfg).to(device)
+        if context:
+            module=load_module(source.parent/"task_context_normalization.py","flat_frozen_context_normalization")
+            norms=module.make_task_context_normalizers(device)
+            norm,cnorm=norms["actor"],norms["critic"]
+        else:
+            norm = EmpiricalNormalization([1029],until=1e8).to(device)
+            cnorm = EmpiricalNormalization([866],until=1e8).to(device)
         for obj,key in ((actor,"model_state_dict"),(norm,"obs_norm_state_dict"),(cnorm,"privileged_obs_norm_state_dict")):
             obj.load_state_dict(saved[key],strict=True);obj.eval().requires_grad_(False)
+        if context:
+            require(module.normalization_metadata(norms)==receipt["normalization_abi"],
+                    "Actual own-source block normalization differs from the strict CPU receipt")
+            require(raw.runtime_contract["task_context"]==receipt["task_context"],
+                    "Actual resolved context ABI differs from its producer")
+            metadata["normalization_abi"]=module.normalization_metadata(norms)
+            metadata["task_context"]=raw.runtime_contract["task_context"]
         torch.save({key:saved[key] for key in ("obs_norm_state_dict","privileged_obs_norm_state_dict")}, args.output/"saved_observation_normalizers.pt")
         origins = raw.scene.terrain.env_origins.clone(); start = robot.data.root_pos_w.clone()
         sensors = raw._stair_sensors;raw_sensor = raw.scene["contact_forces"]

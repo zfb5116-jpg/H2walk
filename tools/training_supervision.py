@@ -277,13 +277,22 @@ class SupervisedRunner(OnPolicyRunner):
             # RND state or the later step normalization path.
             restore_act()
             normalizers = {"actor": self.obs_normalizer, "critic": self.privileged_obs_normalizer}
-            preprocessing["last_normalizer_counts_before"] = {
-                name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
+            context=getattr(self.alg,"trial_protocol",None)=="explicit_task_context_v1"
+            if context:
+                preprocessing["last_normalizer_prefix_counts_before"]={
+                    name:int(normalizer.prefix_count) for name,normalizer in normalizers.items()}
+            else:
+                preprocessing["last_normalizer_counts_before"] = {
+                    name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
             obs = self.obs_normalizer(obs)
             privileged_obs = (self.privileged_obs_normalizer(privileged_obs)
                               if self.privileged_obs_type is not None else obs)
-            preprocessing["last_normalizer_counts_after"] = {
-                name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
+            if context:
+                preprocessing["last_normalizer_prefix_counts_after"]={
+                    name:int(normalizer.prefix_count) for name,normalizer in normalizers.items()}
+            else:
+                preprocessing["last_normalizer_counts_after"] = {
+                    name: int(normalizer.count.item()) for name, normalizer in normalizers.items()}
             preprocessing["normalized_initial_batches"] += 1
             preprocessing["last_actor_shape"] = list(obs.shape)
             preprocessing["last_critic_shape"] = list(privileged_obs.shape)

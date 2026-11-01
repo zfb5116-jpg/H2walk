@@ -51,8 +51,12 @@ class H2TerrainEncoderActor(nn.Module):
         num_joints: int | None = None,
         height_scan_dim: int = HEIGHT_SCAN_DIM,
         detach_estimates: bool = False,
+        extra_context_dim: int = 0,
     ):
         super().__init__()
+        if type(extra_context_dim) is not int or extra_context_dim not in (0, 5):
+            raise ValueError("H2 actor supports only the original core or the declared five-value context")
+        self.extra_context_dim = extra_context_dim
         self.num_joints = actions if num_joints is None else num_joints
         if self.num_joints < actions:
             raise ValueError("Observed joint count cannot be smaller than controlled action count")
@@ -63,13 +67,17 @@ class H2TerrainEncoderActor(nn.Module):
         self.proprio_hist_dim = self.history_length * sum(self.term_widths)
         self.current_obs_dim = CMD_DIM + sum(self.term_widths)
         expected_obs_dim = CMD_DIM + self.proprio_hist_dim + self.height_scan_dim
-        if obs_dim != expected_obs_dim:
+        if self.extra_context_dim and expected_obs_dim != 1029:
+            raise ValueError("The declared context belongs only to the unchanged1029-value H2 core")
+        self.core_obs_dim = expected_obs_dim
+        if obs_dim != expected_obs_dim + self.extra_context_dim:
             raise ValueError(
-                f"H2 terrain actor observation layout mismatch: expected {expected_obs_dim} "
+                f"H2 terrain actor observation layout mismatch: expected {expected_obs_dim + self.extra_context_dim} "
                 f"(3 commands + {self.history_length}x proprio + {self.height_scan_dim} height samples), "
                 f"got {obs_dim}. Check the configured joint order, history length, and height scanner."
             )
         self.obs_dim = obs_dim
+        self.num_actor_obs = obs_dim
         self.proprio_start = CMD_DIM
         self.proprio_end = CMD_DIM + self.proprio_hist_dim
         self.scan_start = self.proprio_end
@@ -79,8 +87,8 @@ class H2TerrainEncoderActor(nn.Module):
         self.predict_encoder = MLP(self.proprio_hist_dim, 32, [256, 128, 64], activation)
         self.terrain_encoder = MLP(self.height_scan_dim, 32, [256, 128, 64], activation)
         fusion_in = self.current_obs_dim + 32 + 32 + 32 + 32
-        self.fusion = MLP(fusion_in, 64, [256, 128], activation)
-        self.actor = MLP(self.current_obs_dim + 32 + 64 + 32, actions, hidden, activation)
+        self.fusion = MLP(fusion_in + self.extra_context_dim, 64, [256, 128], activation)
+        self.actor = MLP(self.current_obs_dim + 32 + 64 + 32 + self.extra_context_dim, actions, hidden, activation)
 
     def _current_obs(self, obs: torch.Tensor) -> torch.Tensor:
         # ObservationManager appends each history with the newest frame last.
@@ -95,6 +103,8 @@ class H2TerrainEncoderActor(nn.Module):
         return torch.cat((obs[:, :CMD_DIM], *latest), dim=-1)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        if obs.ndim != 2 or obs.shape[-1] != self.obs_dim:
+            raise ValueError("H2 actor input width differs from its declared context ABI")
         proprio = obs[:, self.proprio_start : self.proprio_end]
         terrain = obs[:, self.scan_start : self.scan_end]
         current = self._current_obs(obs)
@@ -106,6 +116,10 @@ class H2TerrainEncoderActor(nn.Module):
             contact = contact.detach()
             prediction = prediction.detach()
         terrain_latent = self.terrain_encoder(terrain)
+        if self.extra_context_dim:
+            context = obs[:, self.core_obs_dim : self.obs_dim]
+            fusion = self.fusion(torch.cat((current, velocity, contact, prediction, terrain_latent, context), dim=-1))
+            return self.actor(torch.cat((current, velocity, fusion, terrain_latent, context), dim=-1))
         fusion = self.fusion(torch.cat((current, velocity, contact, prediction, terrain_latent), dim=-1))
         return self.actor(torch.cat((current, velocity, fusion, terrain_latent), dim=-1))
 
@@ -129,6 +143,7 @@ class H2ActorCriticOur(nn.Module):
         history_length: int = HISTORY_LENGTH,
         height_scan_dim: int = HEIGHT_SCAN_DIM,
         detach_estimates: bool = False,
+        extra_context_dim: int = 0,
         **_: object,
     ):
         super().__init__()
@@ -141,7 +156,10 @@ class H2ActorCriticOur(nn.Module):
             num_joints=num_joints,
             height_scan_dim=height_scan_dim,
             detach_estimates=detach_estimates,
+            extra_context_dim=extra_context_dim,
         )
+        if extra_context_dim == 5 and num_critic_obs != 871:
+            raise ValueError("The declared five-value H2 context requires critic width871")
         self.critic = MLP(num_critic_obs, 1, list(critic_hidden_dims), activation)
         self.noise_std_type = noise_std_type
         if noise_std_type == "scalar":
