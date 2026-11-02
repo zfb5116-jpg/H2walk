@@ -349,7 +349,7 @@ def main():
         runner = SupervisedRunner(env, agent_cfg.to_dict(), log_dir=str(log_dir), device=agent_cfg.device,
                                   supervision_path=args.supervision_state, policy=stop_policy,
                                   normalize_initial_observations=args.task in ("Unitree-H2-Stair-Ascent-Policy", "Unitree-H2-Flat-Balance-Policy"),
-                                  guarded_flat=guarded_flat)
+                                  guarded_flat=guarded_flat, effect_task_name=args.task)
         runner.add_git_repo_to_log(__file__)
         if context_flat:
             from task_context_normalization import make_task_context_normalizers, normalization_metadata

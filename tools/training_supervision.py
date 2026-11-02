@@ -24,6 +24,108 @@ class NoImprovementStop(RuntimeError):
     pass
 
 
+_EFFECT_COMMON_THRESHOLDS = (
+    "survival20s_fraction", "survival_and_progress_fraction", "locomotion_success_fraction",
+)
+_EFFECT_STAIR_THRESHOLDS = (
+    "mean_completed_levels", "first_level_bilateral_fraction", "all_levels_bilateral_fraction",
+    "stair_success_fraction", "mean_verified_feet", "mean_transferred_levels",
+)
+_EFFECT_CANONICAL_FIELDS = (
+    "window_episode_count", "completed_episode_count", "mean_episode_s", "median_episode_s",
+    "survival20s_fraction", "survival_horizon_fraction", "early_termination_fraction",
+    "command_progress_ratio", "bilateral_landings_fraction", "survival_and_progress_fraction",
+    "locomotion_success_fraction",
+)
+_EFFECT_FLAT_FIELDS = _EFFECT_CANONICAL_FIELDS + (
+    "raw_mean_episode_s", "mean_xy_velocity_error_m_s", "mean_stance_slip_m_s",
+    "physical_invalid_fraction", "contact_evidence_valid_fraction", "mean_net_world_x_m",
+    "mean_raw_net_world_x_m", "mean_left_valid_landings", "mean_right_valid_landings",
+    "moving_episode_count",
+)
+_EFFECT_STAIR_FIELDS = _EFFECT_CANONICAL_FIELDS + _EFFECT_STAIR_THRESHOLDS + (
+    "mean_valid_upward_root_rise_m", "invalid_physical_episode_fraction", "physical_valid_episode_count",
+)
+
+
+def training_effect_profile(task_name, guarded_flat, has_flat_tracker, has_stair_tracker):
+    """Bind the metric source to the declared task, never to available keys."""
+    if has_flat_tracker and has_stair_tracker:
+        raise RuntimeError("Effect monitoring cannot combine flat and stair trackers")
+    if task_name == "Unitree-H2-Flat-Balance-Policy":
+        if not guarded_flat or not has_flat_tracker or has_stair_tracker:
+            raise RuntimeError("Guarded-flat effect monitoring requires its flat tracker")
+        return "guarded_flat"
+    if task_name == "Unitree-H2-Stair-Ascent-Policy":
+        if guarded_flat or has_flat_tracker or not has_stair_tracker:
+            raise RuntimeError("Stair effect monitoring requires its stair tracker")
+        return "stairs"
+    if task_name in ("Unitree-H2-Velocity-Flat", "Unitree-H2-Velocity-Rough", "Unitree-H2-Velocity-Stairs"):
+        if guarded_flat or has_flat_tracker or has_stair_tracker:
+            raise RuntimeError("Velocity walking effect monitoring requires MotionProbe")
+        return "walking"
+    raise ValueError("Effect monitoring requires an explicit supported training task")
+
+
+def validate_training_effect_metrics(profile, summary, terrain_level, thresholds):
+    """Validate the selected source before it can be hidden by a merged probe."""
+    if (profile not in ("guarded_flat", "stairs", "walking") or not isinstance(summary, dict)
+            or not isinstance(thresholds, dict) or any(not isinstance(name, str) for name in thresholds)):
+        raise RuntimeError("Invalid training effect profile or source summary")
+    known = set(_EFFECT_COMMON_THRESHOLDS + _EFFECT_STAIR_THRESHOLDS + ("terrain_level",))
+    unknown = set(thresholds) - known
+    if unknown:
+        raise RuntimeError(f"Unknown training effect thresholds: {sorted(unknown)}")
+    names = _EFFECT_COMMON_THRESHOLDS
+    if terrain_level is not None:
+        if not math.isfinite(float(terrain_level)):
+            raise RuntimeError("Non-finite scene terrain level for effect monitoring")
+        if "terrain_level" in thresholds:
+            names += ("terrain_level",)
+    if profile == "stairs":
+        names += _EFFECT_STAIR_THRESHOLDS
+    missing = set(names) - set(thresholds)
+    if missing:
+        raise RuntimeError(f"Missing required training effect thresholds: {sorted(missing)}")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not math.isfinite(value) or value <= 0 for value in thresholds.values()):
+        raise RuntimeError("Training effect thresholds must be positive and finite")
+    # Preserve the policy's comparison order and all its threshold values.
+    names = tuple(name for name in thresholds if name in names)
+    if not summary and profile == "walking":
+        count = 0
+    else:
+        missing = {"window_episode_count", "completed_episode_count"} - set(summary)
+        if missing:
+            raise RuntimeError(f"Missing {profile} effect counters: {sorted(missing)}")
+        if any(isinstance(summary[name], bool) or not isinstance(summary[name], (int, float))
+               for name in ("window_episode_count", "completed_episode_count")):
+            raise RuntimeError("Effect episode counters must be numeric counts")
+        count = float(summary["window_episode_count"])
+        completed = float(summary["completed_episode_count"])
+        if (not math.isfinite(count) or not math.isfinite(completed) or count < 0
+                or completed < count or not count.is_integer() or not completed.is_integer()):
+            raise RuntimeError("Invalid complete-episode counters for effect monitoring")
+        if not all(math.isfinite(float(value)) for value in summary.values()):
+            raise RuntimeError("Non-finite authoritative training effect summary")
+        if count:
+            required = (_EFFECT_FLAT_FIELDS if profile == "guarded_flat" else
+                        _EFFECT_STAIR_FIELDS if profile == "stairs" else _EFFECT_CANONICAL_FIELDS)
+            missing = set(required) - set(summary)
+            if missing:
+                raise RuntimeError(f"Missing authoritative {profile} effect metrics: {sorted(missing)}")
+            if any(isinstance(summary[name], bool) or not isinstance(summary[name], (int, float))
+                   for name in required):
+                raise RuntimeError("Authoritative training effect metrics must be numeric")
+    return {"profile": profile, "threshold_metrics": list(names),
+            "not_applicable_threshold_metrics": [name for name in thresholds if name not in names],
+            "scene_terrain_level_available": terrain_level is not None,
+            "source": {"guarded_flat": "flat_balance_progress", "stairs": "stair_progress",
+                       "walking": "motion_probe"}[profile],
+            "complete_episode_evidence": count > 0,
+            "evidence_status": "complete_episode_window" if count else "no_complete_episode_evidence"}
+
+
 def configure_stair_learning_rates(algorithm, ppo_learning_rate, rnd_learning_rate, *, resumed=False):
     """Keep fresh PPO independent of RSL2.3.3's local RND-LR shadowing.
 
@@ -202,8 +304,14 @@ class ProbedVecEnv(RslRlVecEnvWrapper):
 
 
 class SupervisedRunner(OnPolicyRunner):
-    def __init__(self, *args, supervision_path, policy, normalize_initial_observations=False, guarded_flat=False, **kwargs):
+    def __init__(self, *args, supervision_path, policy, effect_task_name, normalize_initial_observations=False, guarded_flat=False, **kwargs):
         self.guarded_flat = bool(guarded_flat)
+        self.effect_task_name = effect_task_name
+        effect_env = (args[0] if args else kwargs["env"]).unwrapped
+        self.effect_metric_profile = training_effect_profile(
+            effect_task_name, self.guarded_flat,
+            getattr(effect_env, "flat_balance_progress", None) is not None,
+            getattr(effect_env, "stair_progress", None) is not None)
         if self.guarded_flat:
             # Installed RSL only recognizes the literal PPO training type. Keep
             # that constructor contract local and restore its module immediately.
@@ -338,21 +446,34 @@ class SupervisedRunner(OnPolicyRunner):
         if iteration != 0 and completed % 100:
             return
         motion = self.env.motion_probe.summary()
+        effect_source = motion
         stair_progress = getattr(self.env.unwrapped, "stair_progress", None)
-        if stair_progress is not None:
-            motion.update(stair_progress.summary())
         flat_progress = getattr(self.env.unwrapped, "flat_balance_progress", None)
-        if self.guarded_flat and flat_progress is not None:
-            motion.update(flat_progress.summary())
+        effect_profile = training_effect_profile(
+            self.effect_task_name, self.guarded_flat, flat_progress is not None, stair_progress is not None)
+        if effect_profile != self.effect_metric_profile:
+            raise RuntimeError("Training effect metric profile changed during the run")
+        if effect_profile == "stairs":
+            effect_source = stair_progress.summary()
+        elif effect_profile == "guarded_flat":
+            effect_source = flat_progress.summary()
+        motion = dict(motion)
+        motion.update(effect_source)
         terrain = self.env.unwrapped.scene.terrain
+        terrain_level = None
         if getattr(terrain, "terrain_levels", None) is not None:
-            motion["terrain_level"] = float(terrain.terrain_levels.float().mean())
+            terrain_level = float(terrain.terrain_levels.float().mean())
+            motion["terrain_level"] = terrain_level
+        effect_schema = validate_training_effect_metrics(
+            effect_profile, effect_source, terrain_level,
+            self.stop_policy["absolute_improvement_thresholds"])
         motion["command_upper_m_s"] = float(self.env.unwrapped.command_manager.get_term("base_velocity").cfg.ranges.lin_vel_x[1])
         motion["walking_curriculum_stage"] = int(getattr(self.env.unwrapped, "_h2_walking_curriculum_stage", 0))
         if not all(math.isfinite(float(value)) for value in motion.values()):
             raise RuntimeError("Non-finite physical episode metrics")
         point = {"iteration": iteration, "completed_iterations": completed, "checked_at_epoch": time.time(),
-                 "losses": {name: float(value) for name, value in locs["loss_dict"].items()}, "motion": motion}
+                 "losses": {name: float(value) for name, value in locs["loss_dict"].items()}, "motion": motion,
+                 "effect_metric_schema": effect_schema}
         if exploration_budget is not None:
             point["exploration"] = exploration_budget.snapshot()
         with self.telemetry_path.open("a") as stream:
@@ -369,27 +490,36 @@ class SupervisedRunner(OnPolicyRunner):
             return
         if motion.get("window_episode_count", 0) < 1000:
             raise RuntimeError("Insufficient complete episodes for the training effect monitor")
+        effect_names = effect_schema["threshold_metrics"]
+        effect_vector = {name: float(motion[name])
+                         for name in [*effect_names, "median_episode_s", "command_progress_ratio"]}
+        if self.best is not None:
+            if (set(self.best) != set(effect_vector)
+                    or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                           or not math.isfinite(value) for value in self.best.values())):
+                raise RuntimeError("Invalid or changed training effect metric vector")
         now = time.time()
         improvements = []
         if self.best is None:
             improvements = ["warmup_baseline"]
-            self.best = dict(motion)
+            self.best = dict(effect_vector)
         else:
-            for name, threshold in self.stop_policy["absolute_improvement_thresholds"].items():
-                if motion[name] >= self.best[name] + threshold:
+            for name in effect_names:
+                threshold = self.stop_policy["absolute_improvement_thresholds"][name]
+                if effect_vector[name] >= self.best[name] + threshold:
                     improvements.append(name)
-            if motion["median_episode_s"] >= self.best["median_episode_s"] + max(1.0, self.best["median_episode_s"] * 0.1):
+            if effect_vector["median_episode_s"] >= self.best["median_episode_s"] + max(1.0, self.best["median_episode_s"] * 0.1):
                 improvements.append("median_episode_s")
             # Progress gains must not be obtained by sacrificing episode stability.
-            if (motion["command_progress_ratio"] >= self.best["command_progress_ratio"] + 0.1
-                    and motion["median_episode_s"] >= self.best["median_episode_s"] * 0.9):
+            if (effect_vector["command_progress_ratio"] >= self.best["command_progress_ratio"] + 0.1
+                    and effect_vector["median_episode_s"] >= self.best["median_episode_s"] * 0.9):
                 improvements.append("command_progress_ratio")
         if improvements:
             self.last_improvement_completed = completed
             self.last_improvement_epoch = now
             self.stagnant_assessments = 0
-            for name in [*self.stop_policy["absolute_improvement_thresholds"], "median_episode_s", "command_progress_ratio"]:
-                self.best[name] = max(self.best[name], motion[name])
+            for name in effect_vector:
+                self.best[name] = max(self.best[name], effect_vector[name])
         else:
             self.stagnant_assessments += 1
         elapsed_iterations = completed - self.last_improvement_completed
