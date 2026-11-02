@@ -9,13 +9,13 @@ import torch
 from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require, sha, state_digest)
 from task_context_normalization import normalization_metadata
 
-PROTOCOL = "accepted_flat_context_stair_transfer_v1"
-FORMAT = "h2_guarded_stair_ppo_v1"
+PROTOCOL = "accepted_flat_context_stair_clearance_v2"
+FORMAT = "h2_guarded_stair_ppo_v2"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
 PARENT_CPU_SHA = "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1"
 FORMAL_SHA = "0516fa4f5b1a49f75b7a9f2ba4d60c38be18064018a45c7badbb1863552ce881"
-BUDGET = 5000
+BUDGET = 1000
 
 
 class H2GuardedStairPPO(H2GuardedPPO):

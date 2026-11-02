@@ -23,11 +23,11 @@ POINTER = ROOT/"logs/launches/current_main_training.json"
 SLOT = ROOT/"logs/stair_learning/stair_transfer.slot.lock"
 ENTRY = ROOT/"tools/train_stair_transfer.py"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
-PROTOCOL = "accepted_flat_context_stair_transfer_v1"
-FORMAT = "h2_guarded_stair_ppo_v1"
+PROTOCOL = "accepted_flat_context_stair_clearance_v2"
+FORMAT = "h2_guarded_stair_ppo_v2"
 KIND = "guarded_stair_transfer_ppo_learning"
 EVAL_KIND = "guarded_stair_transfer_frozen_validation"
-BUDGET = 5000
+BUDGET = 1000
 TERMINAL = {"completed","failed","stopped_functional_guard","stopped_no_improvement"}
 
 
@@ -368,7 +368,7 @@ def dispatch(plan_path,start,validation_parent=None):
         for label in ("implementation_review","pre_change_custody_review","custody_input_manifest"):
             frozen[plan[label]]=digest(plan[label])
         frozen[str(guard)]=digest(guard)
-        policy=stop_policy();policy["bounded_run_note"]="Independent5000-update cap; never extend automatically."
+        policy=stop_policy();policy["bounded_run_note"]="Independent1000-update clearance/stability repair cap; never extend automatically."
         immutable(case/"stop_policy.json",policy)
         frozen[str(case/"stop_policy.json")]=digest(case/"stop_policy.json")
         entry=str(ROOT/"tools/evaluate_stair_policy.py") if validation_parent else str(ENTRY)
@@ -387,7 +387,7 @@ def dispatch(plan_path,start,validation_parent=None):
             expected_final_iteration=BUDGET-1,supervision_path=str(case/"supervision.json"),launch_record=str(case/"launch.json"),
             monitor_record=str(case/"supervision.monitor.json"),stop_policy_path=str(case/"stop_policy.json"),
             single_launch_guard=str(guard),parent_launcher_pid=os.getpid(),automatic_restart_allowed=False,
-            authorization="用户明确要求开始上楼梯实现；单一已报告5000轮方案，独立六级90s原922验收")
+            authorization="用户明确要求测试与修复直到完成上楼；已报告独立1000轮稳定与抬脚训练方案，六级90s原922验收")
         if validation_parent:
             request.update(checkpoint=str(validation_parent),checkpoint_sha256=digest(validation_parent),producer_case=read(validation_parent.parent/"run.json").get("case"))
         immutable(case/"request.json",request)

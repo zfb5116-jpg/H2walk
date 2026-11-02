@@ -143,8 +143,11 @@ def validate_cpu(checkpoint, plan_path, scope):
             and geometry["scripted_gait_installed"] is False and len(geometry["termination_terms"]) == 7,
             "Actual staircase or native terminations changed")
     rewards = run["reward_contract"]
-    require(len(rewards) == 16 and rewards["failure"] == {"weight":-20.0,"function":"stair_first_qualified_failure"}
-            and rewards["world_forward_excess_speed"]["weight"] == -33.333333333333336,
+    require(len(rewards) == 19 and rewards["failure"] == {"weight":-20.0,"function":"stair_first_qualified_failure"}
+            and rewards["world_forward_excess_speed"]["weight"] == -33.333333333333336
+            and rewards["outward_tilt_growth"] == {"weight":-20.0/(1.0-math.cos(.75)),"function":"stair_outward_tilt_growth"}
+            and rewards["body_angular_rate"] == {"weight":-.025,"function":"stair_body_angular_rate"}
+            and rewards["swing_clearance_deficit"] == {"weight":-4.0,"function":"stair_swing_clearance_deficit"},
             "Declared staircase reward/force contract changed")
     with torch.inference_mode():
         zero = torch.zeros(2,1034)

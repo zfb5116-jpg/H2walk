@@ -113,7 +113,7 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    stair_transfer = saved.get("format") == "h2_guarded_stair_ppo_v1"
+    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2")
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
     if stair_transfer:
@@ -121,10 +121,16 @@ def finite_checkpoint(torch, checkpoint):
         required.update(("actor_optimizer_state_dict", "critic_optimizer_state_dict", "normalization_abi"))
         receipt_path = checkpoint.with_suffix(".validation.json")
         receipt = json.loads(receipt_path.read_text())
+        clearance = saved.get("format") == "h2_guarded_stair_ppo_v2"
+        expected_protocol = ("accepted_flat_context_stair_clearance_v2" if clearance
+                             else "accepted_flat_context_stair_transfer_v1")
+        expected_budget = 1000 if clearance else 5000
         if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
                 or receipt.get("checkpoint_sha256") != sha256(checkpoint)
-                or saved.get("trial_protocol") != "accepted_flat_context_stair_transfer_v1"
-                or saved.get("iter") != 4999 or saved["guarded_ppo_state"]["completed_updates"] != 5000):
+                or saved.get("trial_protocol") != expected_protocol
+                or saved.get("training_budget") != expected_budget
+                or saved.get("iter") != expected_budget-1
+                or saved["guarded_ppo_state"]["completed_updates"] != expected_budget):
             raise ValueError("Typed stair replay requires its new complete natural-final CPU receipt")
     if not isinstance(saved, dict) or not required.issubset(saved):
         raise ValueError("Require a complete PPO checkpoint, including both normalizers and RND state")
@@ -323,7 +329,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        stair_transfer = saved.get("format") == "h2_guarded_stair_ppo_v1"
+        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2")
         actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
         if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")
