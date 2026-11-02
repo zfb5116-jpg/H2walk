@@ -23,8 +23,8 @@ POINTER = ROOT/"logs/launches/current_main_training.json"
 SLOT = ROOT/"logs/stair_learning/stair_transfer.slot.lock"
 ENTRY = ROOT/"tools/train_stair_transfer.py"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
-PROTOCOL = "accepted_flat_world_goal_target_height_v3"
-FORMAT = "h2_guarded_stair_ppo_v3"
+PROTOCOL = "accepted_flat_full_footprint_stair_clearance_v4"
+FORMAT = "h2_guarded_stair_ppo_v4"
 KIND = "guarded_stair_transfer_ppo_learning"
 EVAL_KIND = "guarded_stair_transfer_frozen_validation"
 BUDGET = 1000
@@ -161,6 +161,11 @@ def startup(metadata,request):
           and command.get("world_linear_velocity_m_s") == [.3,0.,0.]
           and command.get("prefix_command_units_and_base_frame_preserved") is True
           and command.get("frozen_normalization_unchanged") is True, "incorrect world stair command")
+    clearance=metadata.get("stair_clearance_target",{})
+    check(clearance.get("kind") == "earliest_uncrossed_full_footprint_v1"
+          and clearance.get("real_riser_count") == 6 and clearance.get("rear_margin_m") == .008
+          and clearance.get("target_retained_until_whole_sole_crossed") is True
+          and clearance.get("observation_or_joint_controller") is False, "incorrect whole-sole clearance target")
     return dict(status="failed" if errors else "passed",errors=errors)
 
 
@@ -374,7 +379,7 @@ def dispatch(plan_path,start,validation_parent=None):
         for label in ("implementation_review","pre_change_custody_review","custody_input_manifest"):
             frozen[plan[label]]=digest(plan[label])
         frozen[str(guard)]=digest(guard)
-        policy=stop_policy();policy["bounded_run_note"]="Independent1000-update fixed-world target-height training cap; never extend automatically."
+        policy=stop_policy();policy["bounded_run_note"]="Independent1000-update whole-sole target training cap; never extend automatically."
         immutable(case/"stop_policy.json",policy)
         frozen[str(case/"stop_policy.json")]=digest(case/"stop_policy.json")
         entry=str(ROOT/"tools/evaluate_stair_policy.py") if validation_parent else str(ENTRY)
@@ -393,7 +398,7 @@ def dispatch(plan_path,start,validation_parent=None):
             expected_final_iteration=BUDGET-1,supervision_path=str(case/"supervision.json"),launch_record=str(case/"launch.json"),
             monitor_record=str(case/"supervision.monitor.json"),stop_policy_path=str(case/"stop_policy.json"),
             single_launch_guard=str(guard),parent_launcher_pid=os.getpid(),automatic_restart_allowed=False,
-            authorization="用户明确要求测试与修复直到完成上楼；已报告独立1000轮统一世界方向与十五厘米目标高度训练，六级90s原922验收")
+            authorization="用户明确要求测试与修复直到完成上楼；已报告独立1000轮整脚越立面前保持净空目标，六级十五厘米90s原922验收")
         if validation_parent:
             request.update(checkpoint=str(validation_parent),checkpoint_sha256=digest(validation_parent),producer_case=read(validation_parent.parent/"run.json").get("case"))
         immutable(case/"request.json",request)

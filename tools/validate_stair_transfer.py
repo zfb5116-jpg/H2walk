@@ -150,6 +150,11 @@ def validate_cpu(checkpoint, plan_path, scope):
             and command["joint_or_body_height_controller"] is False,
             "World direction or inherited observation units/frame changed")
     rewards = run["reward_contract"]
+    require(run["stair_clearance_target"] == dict(kind="earliest_uncrossed_full_footprint_v1",
+            real_riser_count=6, approach_m=1.4, depth_m=.35, rear_margin_m=.008,
+            lookahead_m=.20, extra_height_m=.02, distance_scale_m=.05,
+            deficit_square_cap=16.0, target_retained_until_whole_sole_crossed=True,
+            observation_or_joint_controller=False), "Whole-sole riser target contract changed")
     require(len(rewards) == 19 and rewards["failure"] == {"weight":-20.0,"function":"stair_first_qualified_failure"}
             and rewards["world_forward_excess_speed"]["weight"] == -33.333333333333336
             and rewards["outward_tilt_growth"] == {"weight":-20.0/(1.0-math.cos(.75)),"function":"stair_outward_tilt_growth"}

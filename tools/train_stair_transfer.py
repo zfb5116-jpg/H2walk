@@ -124,6 +124,10 @@ def main():
         if type(command).__name__ != "WorldStairVelocityCommand":
             raise RuntimeError("Target-height training requires its fixed world stair command")
         metadata["world_stair_command"] = command.runtime_contract()
+        from h2_task.stair_clearance_rewards import full_footprint_clearance_contract
+        metadata["stair_clearance_target"] = full_footprint_clearance_contract(
+            approach=raw.stair_progress.approach, depth=raw.stair_progress.depth,
+            steps=raw.stair_progress.steps)
         if (type(action).__name__ != "DirectLegPositionAction" or action.gait_reference is not None
                 or len(raw.action_manager.held_joint_ids) != 17 or not raw.stair_progress.strict_episode_force):
             raise RuntimeError("Stair action, upper hold or force contract changed")

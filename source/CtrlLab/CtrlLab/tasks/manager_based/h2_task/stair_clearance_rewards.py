@@ -15,11 +15,29 @@ def stair_body_angular_rate(env):
     return env.asset.data.root_ang_vel_w[:, :2].square().sum(-1)
 
 
+def full_footprint_riser_target(front, rear, *, approach=1.4, depth=0.35, steps=6,
+                               lookahead=0.20, footprint_margin=0.008):
+    """Keep the first real riser until the complete sole has crossed it."""
+    edges = approach + torch.arange(steps, device=front.device, dtype=front.dtype)*depth
+    crossed = (rear[..., None] >= edges + footprint_margin).sum(-1)
+    selected_edge = edges[crossed.clamp_max(steps-1)]
+    obstacle = (crossed < steps) & (front >= selected_edge-lookahead)
+    return (crossed+1).clamp_max(steps), obstacle
+
+
+def full_footprint_clearance_contract(*, approach=1.4, depth=0.35, steps=6):
+    return dict(kind="earliest_uncrossed_full_footprint_v1", real_riser_count=steps,
+                approach_m=approach, depth_m=depth, rear_margin_m=0.008,
+                lookahead_m=0.20, extra_height_m=0.02, distance_scale_m=0.05,
+                deficit_square_cap=16.0, target_retained_until_whole_sole_crossed=True,
+                observation_or_joint_controller=False)
+
+
 def swing_clearance_deficit(soles, rotations, origins, heights, corners, previous_soles,
                             filtered_force, weight, minimum_load, dt, *,
                             approach=1.4, depth=0.35, steps=6,
                             lookahead=0.20, clearance=0.02, distance_scale=0.05):
-    """Cost low forward-moving unloaded soles near the next real riser.
+    """Cost low forward-moving unloaded soles through the next real riser.
 
     The other foot must physically support at least70% body weight. Every sole
     corner must clear the terrain plane ahead. This emits only a nonnegative
@@ -29,11 +47,11 @@ def swing_clearance_deficit(soles, rotations, origins, heights, corners, previou
     local = soles-origins[:, None]
     world_corners = torch.einsum('nfij,fkj->nfki', rotations, corners)+local[:, :, None]
     front = world_corners[..., 0].amax(-1)
+    rear = world_corners[..., 0].amin(-1)
     bottom = world_corners[..., 2].amin(-1)
-    current_level = (torch.floor((front-approach)/depth)+1).clamp(0, steps)
-    ahead_level = (torch.floor((front+lookahead-approach)/depth)+1).clamp(0, steps)
-    obstacle = ahead_level > current_level
-    required_height = ahead_level*heights[:, None]+clearance
+    target_level, obstacle = full_footprint_riser_target(front, rear, approach=approach,
+        depth=depth, steps=steps, lookahead=lookahead)
+    required_height = target_level*heights[:, None]+clearance
     deficit = ((required_height-bottom).clamp_min(0)/distance_scale).clamp_max(4).square()
     fz = filtered_force[..., 2]
     unloaded = fz < minimum_load[:, None]
