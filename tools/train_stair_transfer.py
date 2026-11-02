@@ -120,6 +120,10 @@ def main():
                 or tuple(shapes["rnd_state"]) != (1024,73) or env.num_actions != 12):
             raise RuntimeError("Actual same-width stair ABI differs")
         action = raw.action_manager.get_term("JointPositionAction")
+        command = raw.command_manager.get_term("base_velocity")
+        if type(command).__name__ != "WorldStairVelocityCommand":
+            raise RuntimeError("Target-height training requires its fixed world stair command")
+        metadata["world_stair_command"] = command.runtime_contract()
         if (type(action).__name__ != "DirectLegPositionAction" or action.gait_reference is not None
                 or len(raw.action_manager.held_joint_ids) != 17 or not raw.stair_progress.strict_episode_force):
             raise RuntimeError("Stair action, upper hold or force contract changed")

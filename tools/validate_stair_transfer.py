@@ -137,11 +137,18 @@ def validate_cpu(checkpoint, plan_path, scope):
             and all(0<lo<=s<=hi for s,lo,hi in zip(ex["policy_std"],ex["minimum_raw_std"],ex["maximum_raw_std"])),
             "Physical exploration budget changed")
     geometry = run["runtime_stair_geometry"]
-    require(geometry["levels"] == 6 and geometry["riser_min_m"] == .03 and geometry["riser_max_m"] == .15
+    require(geometry["levels"] == 6 and geometry["riser_min_m"] == .15 and geometry["riser_max_m"] == .15
             and geometry["depth_m"] == .35 and geometry["width_m"] == 2.4 and geometry["approach_m"] == 1.4
-            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == 8
+            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == 2
             and geometry["scripted_gait_installed"] is False and len(geometry["termination_terms"]) == 7,
             "Actual staircase or native terminations changed")
+    command = run["world_stair_command"]
+    require(command["kind"] == "fixed_world_plusX_base_command_v1"
+            and command["world_linear_velocity_m_s"] == [.3,0.,0.]
+            and command["prefix_command_units_and_base_frame_preserved"] is True
+            and command["frozen_normalization_unchanged"] is True
+            and command["joint_or_body_height_controller"] is False,
+            "World direction or inherited observation units/frame changed")
     rewards = run["reward_contract"]
     require(len(rewards) == 19 and rewards["failure"] == {"weight":-20.0,"function":"stair_first_qualified_failure"}
             and rewards["world_forward_excess_speed"]["weight"] == -33.333333333333336

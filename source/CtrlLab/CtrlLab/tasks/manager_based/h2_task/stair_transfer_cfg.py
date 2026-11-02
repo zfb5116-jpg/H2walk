@@ -1,4 +1,4 @@
-"""Policy-only stair curriculum initialized from the accepted flat context policy."""
+"""Policy-owned target-height stairs initialized from the accepted flat policy."""
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.utils import configclass
 from math import cos
@@ -6,6 +6,7 @@ from .stair_ascent_cfg import StairAscentEnvCfg, StairAscentRewardsCfg
 from .stair_task_context import append_stair_task_context
 from . import stair_ascent_rewards as rewards
 from . import stair_clearance_rewards as clearance
+from .stair_world_command import WorldStairVelocityCommand
 
 
 @configclass
@@ -23,11 +24,16 @@ class StairTransferRewardsCfg(StairAscentRewardsCfg):
 class StairTransferEnvCfg(StairAscentEnvCfg):
     stair_task_context_dim: int = 5
     stair_strict_episode_force: bool = True
+    stair_minimum_height: float = 0.15
+    stair_maximum_height: float = 0.15
+    stair_height_levels: int = 2
 
     def __post_init__(self):
         super().__post_init__()
         append_stair_task_context(self.observations)
         self.rewards = StairTransferRewardsCfg()
+        self.curriculum.terrain_levels = None
+        self.commands.base_velocity.class_type = WorldStairVelocityCommand
 
 
 @configclass

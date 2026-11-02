@@ -11,4 +11,4 @@ class H2StairTransferPPORunnerCfg(H2FlatBalancePPORunnerCfg):
         self.max_iterations = 1000
         self.save_interval = 500
         self.algorithm.class_name = 'H2GuardedStairPPO'
-        self.algorithm.trial_protocol = 'accepted_flat_context_stair_clearance_v2'
+        self.algorithm.trial_protocol = 'accepted_flat_world_goal_target_height_v3'
