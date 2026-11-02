@@ -1479,6 +1479,8 @@ class H2GuardedPPO(PPO):
                 projection_options["primal_precision_policy"]=self.projection_primal_precision_policy
             if self.support_polish_enabled:
                 projection_options["support_polish_policy"]=self.projection_support_polish_policy
+            if getattr(self,"selected_row_evaluation_policy",None) is not None:
+                projection_options["selected_row_evaluation_policy"]=self.selected_row_evaluation_policy
             projected,metadata=project_actual_bank(self.policy.actor,self.normalizers["actor"],self.guard._bank,
                 self.guard._baseline_q,self.guard.budget,proposal.deltas[:44],
                 **projection_options)

@@ -1,4 +1,4 @@
-"""Same-width accepted-flat transfer and the unchanged bounded numeric executor."""
+"""Same-width accepted-flat transfer with guarded original-block row execution."""
 import copy
 import json
 import random
@@ -8,9 +8,10 @@ import numpy as np
 import torch
 from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require, sha, state_digest)
 from task_context_normalization import normalization_metadata
+from selected_row_block import SELECTED_ROW_BLOCK_POLICY
 
-PROTOCOL = "accepted_flat_full_footprint_stair_clearance_v4"
-FORMAT = "h2_guarded_stair_ppo_v4"
+PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
+FORMAT = "h2_guarded_stair_ppo_v5"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
 PARENT_CPU_SHA = "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1"
@@ -19,19 +20,21 @@ BUDGET = 1000
 
 
 class H2GuardedStairPPO(H2GuardedPPO):
-    """Only task/serialization metadata differs; all numerical methods inherit."""
+    """Keep original optimizer/constraints and select original-block row calls."""
     def __init__(self, *args, trial_protocol=PROTOCOL, **kwargs):
         require(trial_protocol == PROTOCOL, "Undeclared stair transfer profile")
         # This selects the existing 5D, reserved, resource bounded, strict FP64
         # executor. It does not select a task, reward, terrain or training cap.
         super().__init__(*args, trial_protocol=LONGER_BUDGET_CONTEXT_TRIAL, **kwargs)
         self.checkpoint_format = FORMAT
+        self.selected_row_evaluation_policy = SELECTED_ROW_BLOCK_POLICY
 
     def learning_state(self):
         result = super().learning_state()
         result.update(trial_protocol=PROTOCOL, task=TASK, training_budget=BUDGET,
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
         result["proposal_projection"]["protocol"] = PROTOCOL
+        result["proposal_projection"]["selected_row_evaluation_policy"] = SELECTED_ROW_BLOCK_POLICY
         return result
 
     def packet(self, iteration, infos=None):

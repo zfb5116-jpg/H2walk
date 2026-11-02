@@ -23,8 +23,8 @@ POINTER = ROOT/"logs/launches/current_main_training.json"
 SLOT = ROOT/"logs/stair_learning/stair_transfer.slot.lock"
 ENTRY = ROOT/"tools/train_stair_transfer.py"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
-PROTOCOL = "accepted_flat_full_footprint_stair_clearance_v4"
-FORMAT = "h2_guarded_stair_ppo_v4"
+PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
+FORMAT = "h2_guarded_stair_ppo_v5"
 KIND = "guarded_stair_transfer_ppo_learning"
 EVAL_KIND = "guarded_stair_transfer_frozen_validation"
 BUDGET = 1000
@@ -113,6 +113,15 @@ def preflight(plan_path):
     for label in ("implementation_review","pre_change_custody_review"):
         path=Path(plan[label])
         require(digest(path) == plan[label+"_sha256"] and read(path)["status"] == "passed", "Missing reviewed admission: "+label)
+    progress=read(plan["early_progress_policy"])
+    require(digest(plan["early_progress_policy"]) == plan["early_progress_policy_sha256"]
+            == "73fd9fd42ad787724b45d73c3244648ec7e2d3f7d88da8957e6d98d06d4f9b95"
+            and progress["status"] == "active_for_subsequent_training_decisions"
+            and progress["original_source_cap"] == progress["continue_upper_cap"] == BUDGET
+            and progress["decision_checkpoint_iteration"] == 500
+            and progress["required_native_window_iterations"] == [299,399,499]
+            and progress["required_complete_episodes_per_window"] == 5000,
+            "Missing user-authorized saved500 early-progress decision policy")
     require(digest(plan["initial_policy"]) == plan["initial_policy_sha256"] == "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f", "Wrong accepted flat parent")
     require(digest(plan["initial_policy_CPU_receipt"]) == "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1", "Wrong complete parent CPU receipt")
     formal=read(plan["initial_policy_formal_review"])
@@ -166,6 +175,17 @@ def startup(metadata,request):
           and clearance.get("real_riser_count") == 6 and clearance.get("rear_margin_m") == .008
           and clearance.get("target_retained_until_whole_sole_crossed") is True
           and clearance.get("observation_or_joint_controller") is False, "incorrect whole-sole clearance target")
+    selected=metadata.get("selected_row_evaluation",{})
+    check(selected.get("kind") == "original_1024_block_selected_output_v1"
+          and selected.get("decoder_block_rows") == 1024
+          and selected.get("select_after_decoder") is True
+          and selected.get("independent_block_jvp") is True
+          and selected.get("jacobian_forward_primal_aux") is True
+          and selected.get("jacrev_chunk_size") == 1
+          and selected.get("primal_tolerance_rad") == 5e-6
+          and selected.get("tangent_tolerance_rad") == 2e-7
+          and selected.get("full_block_Jacobian_materialized") is False,
+          "incorrect selected-row block execution contract")
     return dict(status="failed" if errors else "passed",errors=errors)
 
 
@@ -378,6 +398,7 @@ def dispatch(plan_path,start,validation_parent=None):
         frozen[str(plan_path)]=digest(plan_path)
         for label in ("implementation_review","pre_change_custody_review","custody_input_manifest"):
             frozen[plan[label]]=digest(plan[label])
+        frozen[plan["early_progress_policy"]]=digest(plan["early_progress_policy"])
         frozen[str(guard)]=digest(guard)
         policy=stop_policy();policy["bounded_run_note"]="Independent1000-update whole-sole target training cap; never extend automatically."
         immutable(case/"stop_policy.json",policy)
@@ -398,7 +419,10 @@ def dispatch(plan_path,start,validation_parent=None):
             expected_final_iteration=BUDGET-1,supervision_path=str(case/"supervision.json"),launch_record=str(case/"launch.json"),
             monitor_record=str(case/"supervision.monitor.json"),stop_policy_path=str(case/"stop_policy.json"),
             single_launch_guard=str(guard),parent_launcher_pid=os.getpid(),automatic_restart_allowed=False,
-            authorization="用户明确要求测试与修复直到完成上楼；已报告独立1000轮整脚越立面前保持净空目标，六级十五厘米90s原922验收")
+            early_progress_policy=plan["early_progress_policy"],
+            early_progress_policy_sha256=plan["early_progress_policy_sha256"],
+            early_progress_operator_required_before_iteration=299,
+            authorization="用户要求持续测试修复直到上楼，已批准保存500后三完整训练窗无有效上阶落脚则提前停止；新批次一致性实现，原1000上限及六级十五厘米90s原922验收")
         if validation_parent:
             request.update(checkpoint=str(validation_parent),checkpoint_sha256=digest(validation_parent),producer_case=read(validation_parent.parent/"run.json").get("case"))
         immutable(case/"request.json",request)

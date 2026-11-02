@@ -76,7 +76,7 @@ def main():
     snapshot.mkdir()
     shutil.copytree(ROOT/"source", snapshot/"source", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     tool_names = ["train_stair_transfer.py", "guarded_stair_transfer.py", "guarded_flat_ppo.py",
-                  "functional_proposal.py", "stair_exploration.py", "training_supervision.py",
+                  "functional_proposal.py", "selected_row_block.py", "stair_exploration.py", "training_supervision.py",
                   "task_context_normalization.py", "task_context_metadata.py", "v11_parent_custody.py",
                   "evaluate_stair_policy.py", "evaluate_stair_policy.sh", "validate_stair_transfer.py", "launch_stair_transfer.py",
                   "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py"]
@@ -103,8 +103,13 @@ def main():
         initialization_mode="accepted_flat_same_width_model_and_own_norm_only_fresh_stair_PPO",
         initial_policy=plan["initial_policy"], initial_policy_sha256=plan["initial_policy_sha256"],
         plan_path=str(args.plan.resolve()), plan_sha256=sha(args.plan), stop_policy=policy,
+        early_progress_policy=plan["early_progress_policy"],
+        early_progress_policy_sha256=plan["early_progress_policy_sha256"],
         policy_dimensions=[1034,871,73,12], inherited_numeric_execution_profile="explicit_task_context_longer_budget_v1",
         status="initializing", physical_acceptance_passed=False, stairs_acceptance_passed=False)
+    from selected_row_block import selected_row_block_contract, selected_row_backend_metadata
+    metadata["selected_row_evaluation"] = selected_row_block_contract()
+    metadata["selected_row_arithmetic_context"] = selected_row_backend_metadata()
     write_json(log_dir/"run.json", metadata)
     state.update(status="initializing", run_dir=str(log_dir), metadata=str(log_dir/"run.json"), source_hashes=source_hashes)
     write_json(args.supervision_state, state)

@@ -704,7 +704,8 @@ def _active_support_gram_and_direction(jacobian,proposed,upper,lower,sweeps,tole
 def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget, mean_deltas, *,
                         interior_fraction=.5, max_active_rows=8, max_solver_sweeps=2048,
                         working_budget_fraction=None, jacobian_arena_budget_bytes=None,
-                        primal_precision_policy=None, support_polish_policy=FIXED_SUPPORT_POLISH_POLICY):
+                        primal_precision_policy=None, support_polish_policy=FIXED_SUPPORT_POLISH_POLICY,
+                        selected_row_evaluation_policy=None):
     """Project44 Adam directions into simultaneous actual-output linear bounds.
 
     The fixed bounds are ``-(b+e)/2 <= Jd <= (b-e)/2``, where ``e=q-q0``.
@@ -740,6 +741,20 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         metadata.update(more)
         raise ProposalProjectionError(dict(metadata, reason=reason, feasible=False),
             diagnostic_evidence=precision_evidence if strict_primal else None)
+
+    block_selected = selected_row_evaluation_policy is not None
+    if block_selected:
+        from selected_row_block import SELECTED_ROW_BLOCK_POLICY
+        if selected_row_evaluation_policy != SELECTED_ROW_BLOCK_POLICY \
+                or not strict_primal or not resource_mode or not reserved or not bounded_support:
+            fail("Undeclared selected-row block execution policy")
+        metadata.update(selected_row_evaluation_policy=SELECTED_ROW_BLOCK_POLICY,
+            fullbank_jvp_block_calls=0, selected_block_jvp_calls=0,
+            selected_block_jacobian_calls=0, selected_reverse_seeds_expected=0,
+            decoder_forward_calls_total=0, decoder_forward_rows_total=0,
+            selected_primal_maxdiff_rad=0., jacobian_forward_primal_maxdiff_rad=0.,
+            selected_block_tangent_maxdiff_rad=0.,
+            logical_call_counts_not_independent_CUDA_kernel_IDs=True)
 
     if support_polish_policy not in (FIXED_SUPPORT_POLISH_POLICY,BOUNDED_SUPPORT_POLISH_POLICY):
         fail("Undeclared support polish policy")
@@ -859,6 +874,9 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
     limit_array = limits.cpu().numpy()
 
     def decoder(values, inputs, low, high):
+        if block_selected:
+            metadata["decoder_forward_calls_total"] += 1
+            metadata["decoder_forward_rows_total"] += int(inputs.shape[0])
         replacements = {name: value for (name, _), value in zip(named, values)}
         action = functional_call(actor_module, replacements, (inputs,), strict=True).clamp(-100, 100)
         return (low + high) * .5 + (high - low) * .5 * torch.tanh(action)
@@ -873,6 +891,8 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
             for start in range(0, MAX_BANK_ROWS, 1024):
                 stop = start + 1024
                 fn = lambda ps: decoder(ps, normalized[start:stop], lo[start:stop], hi[start:stop])
+                if block_selected:
+                    metadata["fullbank_jvp_block_calls"] += 1
                 value, tangent = jvp(fn, (param_values,), (ds,))
                 if value.shape != (1024, NUM_OUTPUTS) or tangent.shape != value.shape \
                         or not _finite(value) or not _finite(tangent):
@@ -966,15 +986,22 @@ def project_actual_bank(actor_module, actor_normalizer, bank, baseline_q, budget
         row = int(worst[0])
         if row in metadata["active_row_ids"]:
             fail("Active-row full-bank JVP certificate failed after QP")
-        one = lambda ps: decoder(ps, normalized[row:row+1], lo[row:row+1], hi[row:row+1])[0]
-        with torch.no_grad():
-            one_value = one(param_values).detach().cpu().numpy()
-        row_value_max = max(row_value_max, float(np.max(np.abs(one_value-qcur[row]))))
-        if row_value_max > ROW_VALUE_TOLERANCE_RAD:
-            fail("Single-row/full-bank primal disagreement", row=row,
-                 row_value_max_disagreement_rad=row_value_max)
-        row_derivatives = jacrev(one)(param_values)
-        metadata["row_jacobian_calls"] += 1
+        if block_selected:
+            from selected_row_block import selected_block_row_derivatives
+            row_derivatives = selected_block_row_derivatives(decoder, param_values, direction,
+                normalized, lo, hi, row, qcur[row], tangent[row], metadata, fail,
+                primal_tolerance=ROW_VALUE_TOLERANCE_RAD, tangent_tolerance=LINEAR_TOLERANCE_RAD)
+            row_value_max = max(row_value_max, metadata["row_value_max_disagreement_rad"])
+        else:
+            one = lambda ps: decoder(ps, normalized[row:row+1], lo[row:row+1], hi[row:row+1])[0]
+            with torch.no_grad():
+                one_value = one(param_values).detach().cpu().numpy()
+            row_value_max = max(row_value_max, float(np.max(np.abs(one_value-qcur[row]))))
+            if row_value_max > ROW_VALUE_TOLERANCE_RAD:
+                fail("Single-row/full-bank primal disagreement", row=row,
+                     row_value_max_disagreement_rad=row_value_max)
+            row_derivatives = jacrev(one)(param_values)
+            metadata["row_jacobian_calls"] += 1
         matrix = np.concatenate([d.detach().reshape(NUM_OUTPUTS,-1).cpu().numpy() for d in row_derivatives], axis=1)
         if matrix.shape != (NUM_OUTPUTS,len(proposed)) or not np.isfinite(matrix).all():
             fail("Invalid actual-row full Jacobian", row=row)

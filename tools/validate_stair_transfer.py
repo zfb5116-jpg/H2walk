@@ -155,6 +155,13 @@ def validate_cpu(checkpoint, plan_path, scope):
             lookahead_m=.20, extra_height_m=.02, distance_scale_m=.05,
             deficit_square_cap=16.0, target_retained_until_whole_sole_crossed=True,
             observation_or_joint_controller=False), "Whole-sole riser target contract changed")
+    from selected_row_block import SELECTED_ROW_BLOCK_POLICY, selected_row_block_contract
+    require(run["selected_row_evaluation"] == selected_row_block_contract()
+            and gs["proposal_projection"]["selected_row_evaluation_policy"] == SELECTED_ROW_BLOCK_POLICY,
+            "Original-block selected-row execution contract changed")
+    require(run["early_progress_policy"] == plan["early_progress_policy"]
+            and run["early_progress_policy_sha256"] == plan["early_progress_policy_sha256"]
+            == sha(plan["early_progress_policy"]), "User-authorized early-progress policy binding changed")
     require(len(rewards) == 19 and rewards["failure"] == {"weight":-20.0,"function":"stair_first_qualified_failure"}
             and rewards["world_forward_excess_speed"]["weight"] == -33.333333333333336
             and rewards["outward_tilt_growth"] == {"weight":-20.0/(1.0-math.cos(.75)),"function":"stair_outward_tilt_growth"}
