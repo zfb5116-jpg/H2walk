@@ -41,6 +41,7 @@ TASK = "Unitree-H2-Flat-Balance-Policy"
 KIND = "guarded_flat_balance_ppo_learning"
 EVAL_KIND = "guarded_flat_balance_frozen_validation"
 V10_RESTORED372_KIND = "single_frozen_validation_of_controlled_guard_restored_v10_context_372"
+V14_RESTORED2569_KIND = "single_frozen_validation_of_controlled_guard_restored_v14_context_2569"
 BRANCH = "codex/h2-stair-ascent-20261030"
 INIT_SHA = "ce822132385de7b9c70315087bbcc4da1739d0da8460cf656c39e14aa1424688"
 TRANSFER_SHA = "01e1584898c5313ae996ae3c3c57ce23d4cc06ba51d7ab8decbae01c59e88a68"
@@ -653,10 +654,198 @@ def v10_restored372_custody(review, parent, parent_request, state):
     return dict(checkpoint=checkpoint,source=source,source_hashes=actual,receipt=receipt,frozen_files=frozen)
 
 
+def v14_restored2569_custody(review, parent, parent_request, state):
+    """Admit only the reviewed stopped-v14 policy; never load a packet here."""
+    expected_case=ROOT/"logs/stair_learning/flat_balance_20261102_085834_d880d7b7"
+    expected_run=ROOT/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7"
+    implementation=ROOT/"logs/stairs_work/restored_policy_measurement_implementation_20261102_092322"
+    operator=expected_case/"restored_policy_measurement_20261102T092322Z"
+    model_commit="946742f45fc377718c9bb7710058e7457e5d2bb3"
+    model_sha="8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
+    state_sha="dd72e32ba0b7ab07346e558badbc5735780060eaf2baa1e8bf98f9ba7f5c1028"
+    plan_sha="76edfabc9799e2a1eb2ebb86ca487a0ea94e25a0b8b972b41021aede1514ed3d"
+    require(review.get("kind")==V14_RESTORED2569_KIND and review.get("status")=="reviewed_ready"
+            and parent==expected_case and parent_request.get("job_kind")==KIND
+            and parent_request.get("trial_protocol")==LONGER_BUDGET_CONTEXT_PROTOCOL
+            and parent_request.get("source_commit")==review.get("model_source_commit")==model_commit
+            and parent_request.get("plan_sha256")==review.get("producer_plan_sha256")==plan_sha
+            and state.get("status")=="stopped_functional_guard"
+            and state.get("completed_iterations")==review.get("committed_updates")==2569,
+            "Wrong singleton restored-v14 producer or review")
+    tools=review["postend_tool_sha256"]
+    require(set(tools)=={"tools/launch_flat_balance_learning.py"}
+            and tools["tools/launch_flat_balance_learning.py"]==digest(SELF),
+            "Only the reviewed launcher may change after this producer ended")
+    old=parent_request["root_hashes"];current=root_hashes()
+    require(set(current)==set(old) and len(old)==128
+            and all(value==current[name] for name,value in old.items() if name!=str(SELF)),
+            "A producer ROOT component changed outside the single launcher")
+    pre_path=implementation/"pre_change_custody_review.json"
+    require(digest(pre_path)=="c39784b9ff4fc328ad882fd446bc566fc839dcafb8ff16bd649d4f4c01ea911d",
+            "Pre-change producer custody review changed")
+    pre=read(pre_path);archive_path=inside(pre["ROOT_archive_manifest"])
+    require(archive_path==implementation/"producer_ROOT_archive_manifest.json"
+            and digest(archive_path)==pre["ROOT_archive_manifest_sha256"],"ROOT archive identity differs")
+    archived=read(archive_path)
+    require(archived["source_commit"]==model_commit and archived["count"]==128
+            and set(archived["entries"])==set(old),"Producer ROOT archive is incomplete")
+    frozen=dict(parent_request["frozen_files"])
+    for name,entry in archived["entries"].items():
+        require(entry["producer_commit"]==model_commit and entry["expected_sha256"]==old[name]
+                and digest(inside(entry["owncopy"]))==digest(inside(entry["Git_origin_copy"]))==old[name],
+                "Producer exact ROOT copy/Git origin changed")
+        frozen[entry["owncopy"]]=old[name];frozen[entry["Git_origin_copy"]]=old[name]
+    require(hashes(parent_request["source_root"])==parent_request["source_hashes"],
+            "Producer source changed")
+    for path,value in parent_request["frozen_files"].items():
+        require(digest(path)==value,"Original frozen producer input changed: "+path)
+    require(digest(parent/"launch.json")==read(parent/"launch.identity.sha256.json")["sha256"]
+            and all(not Path("/proc",str(x["pid"])).exists() for x in identities(parent)),
+            "Producer birth identity changed or a recorded process is present")
+    ended=read(parent/"manager_state.json")
+    require(ended.get("status")=="finished" and ended.get("outcome")=="stopped_functional_guard"
+            and ended.get("exit_code")==0 and ended.get("error") is None,
+            "Stopped-v14 manager is not finished")
+    run=inside(state["run_dir"]);checkpoint=inside(review["checkpoint"])
+    require(run==expected_run and checkpoint==run/"model_2568_guard_restored.pt"
+            and checkpoint==inside(state["final_checkpoint"])
+            and digest(checkpoint)==review["checkpoint_sha256"]==model_sha,
+            "Restored-v14 checkpoint identity differs")
+    terminal_path=parent/"guard_stop_20261102T080633Z/controlled_guard_stop_terminal_review.json"
+    require(digest(terminal_path)==review["terminal_review_sha256"]
+            =="d21068e9efb2cb2f5148beb8833bb6587a6570df203a84328a0b2180290dca5a",
+            "Closed terminal review changed")
+    terminal=read(terminal_path)
+    require(terminal["scope_closed"] is True and terminal["rejected_update"]==2569
+            and terminal["rejected_minibatch"]==17 and terminal["reason"]=="solver_sweep_cap"
+            and terminal["natural3000_complete"] is False
+            and terminal["manager_finished_and_actual_births_ended_GPUempty"] is True,
+            "Closed stopped-v14 terminal evidence differs")
+    closure_path=parent/"serialized_restore_20261102T083122Z/ROOT_serialized_restoration_closure.json"
+    require(digest(closure_path)==review["serialized_closure_sha256"]
+            =="0ea068c62f29c8e9b3f10f2470a25230dc67de5acdca73aa36a4c97820550290",
+            "Closed serialized restoration proof changed")
+    closure=read(closure_path);serialized_path=inside(closure["serialized_restoration_review"])
+    require(closure["scope_closed"] is True and closure["GPU_RNG_independently_compared_on_CPU"] is True
+            and digest(serialized_path)==closure["serialized_restoration_review_sha256"],
+            "Serialized restoration closure does not bind its actual result")
+    serialized=read(serialized_path)
+    require(serialized["status"]=="passed_narrow_serialized_restoration"
+            and serialized["all_serialized_learning_fields_equal"] is True
+            and serialized["baseline_state_digest"]==serialized["restored_state_digest"]==state_sha
+            and serialized["CUDA_RNG_equal"] is True and serialized["CUDA_RNG_tensor_count"]>0,
+            "Independent serialized state/GPU RNG proof differs")
+    receipt_path=inside(review["CPU_receipt"]);receipt=read(receipt_path)
+    require(receipt_path==checkpoint.with_suffix(".validation.json")
+            and digest(receipt_path)==review["CPU_receipt_sha256"]
+            and receipt.get("status")=="passed" and receipt.get("cpu_only") is True
+            and inside(receipt["checkpoint"])==checkpoint and receipt["sha256"]==model_sha
+            and receipt["checkpoint_format"]==LONGER_BUDGET_CONTEXT_FORMAT
+            and receipt["trial_protocol"]==LONGER_BUDGET_CONTEXT_PROTOCOL
+            and receipt["checkpoint_iteration"]==2568 and receipt["committed_updates"]==2569
+            and type(receipt["finite_tensors"]) is int and receipt["finite_tensors"]>0
+            and receipt["uncommitted_rollout"] is True and receipt["rnd_rollout_update_counter"]==61680
+            and receipt["network_dimensions"]==[1034,871,73,12]
+            and receipt["normalizers_frozen_and_parent_bitwise_equal"] is True
+            and receipt["normalizer_prefix_frozen_and_parent_bitwise_equal"] is True
+            and receipt["same_width_context_transfer_verified"] is True,
+            "New restored-v14 complete CPU receipt differs")
+    producer_path=run/"run.json";producer=read(producer_path)
+    require(digest(producer_path)==receipt["producer_run_sha256"]
+            and inside(receipt["producer_run"])==producer_path
+            and producer["status"]=="stopped_functional_guard" and producer["git_commit"]==model_commit
+            and producer["completed_iterations"]==2569 and producer["total_timesteps"]==63135744
+            and producer["actual_sampled_environment_steps"]==63160320
+            and producer["discarded_uncommitted_rollout_steps"]==24576,
+            "Stopped producer counts/source must not be relabeled natural completion")
+    require(receipt["validator_sha256"]==producer["training_tool_sha256"]["evaluate_flat_balance_policy.py"]
+            ==digest(ROOT/"tools/evaluate_flat_balance_policy.py")
+            and receipt["physical_validator_sha256"]==digest(ROOT/"tools/evaluate_direct_initialization.py"),
+            "Original full CPU/physical validators changed")
+    proof=receipt.get("rollback_equivalence",{})
+    require(proof.get("status")=="passed" and proof.get("current_packet_state_digest")==state_sha
+            and proof.get("serialized_closure_sha256")==digest(closure_path)
+            and proof.get("restored_packet_reused_from_complete_validator") is True
+            and proof.get("current_full_CPU_loads")=={"restored":1,"required_parent":1}
+            and proof.get("baseline_or_closed_scope_reloads")==0
+            and proof.get("CUDA_runtime_initialized") is False,
+            "Full CPU did not reuse its own packet and the closed restoration proof")
+    claim_path=inside(review["CPU_claim"]);claim=read(claim_path)
+    operator_path=inside(review["operator_path"])
+    require(claim_path==operator/"CPU_and_formal.once.json" and claim["status"]=="CPU_passed"
+            and claim["checkpoint_sha256"]==model_sha and claim["CPU_receipt_sha256"]==digest(receipt_path)
+            and claim["CPU_load_counts"]=={"restored":1,"required_parent":1}
+            and operator_path==operator/"review_and_dispatch_once.py"
+            and claim["operator_sha256"]==review["operator_sha256"]==digest(operator_path),
+            "Exclusive new full-CPU claim or operator differs")
+    admission_path=operator/"admission_review.json";admission=read(admission_path)
+    require(admission["status"]=="reviewed_ready_for_integrated_once_CPU_and_formal"
+            and digest(admission_path)==claim["admission_sha256"]
+            and admission["operator_sha256"]==digest(operator_path)
+            and admission["launcher_sha256"]==digest(SELF)
+            and admission["launcher_commit"]==git("rev-parse","HEAD"),
+            "Full CPU did not consume the exact reviewed operator admission")
+    implementation_path=inside(admission["implementation_review"])
+    require(implementation_path==implementation/"implementation_review.final.json"
+            and digest(implementation_path)==admission["implementation_review_sha256"]
+            and read(implementation_path)["status"]=="passed_cold_implementation_review",
+            "New custody implementation review changed")
+    source=inside(receipt["source_root"])
+    require(source==run/"training_source/source", "Restored-v14 requires its own source")
+    actual={"source/"+str(Path(path).relative_to(source)):value for path,value in hashes(source).items()}
+    require(actual==receipt["source_sha256"] and receipt["producer_training_tool_sha256"]==producer["training_tool_sha256"]
+            and receipt["plan_sha256"]==plan_sha==digest(inside(receipt["plan_path"])),
+            "Own source/producer tools/plan differs")
+    validate_task_context_metadata(producer["runtime_flat_geometry"])
+    validate_normalization_metadata(receipt["normalization_abi"],receipt["normalizer_prefix_counts"])
+    require(receipt["normalization_abi"]==producer["guarded_flat_learning"]["normalization_abi"]
+            and receipt["normalizer_prefix_counts"]=={"actor":24576000,"critic":24576000},
+            "Original own normalization ABI differs")
+    for name,count,steps in (("actor",45,50580),("critic",8,51380),("rnd",4,51380)):
+        require(receipt["optimizers"][name]["parameter_count"]==count
+                and receipt["optimizers"][name]["steps"]==steps,"Restored-v14 Adam history differs")
+    require(receipt["actor_proposal_projection"]["committed_minibatches"]==50580
+            and receipt["actor_proposal_projection"]["max_solver_sweeps"]==2048
+            and receipt["actor_compute_resource_coverage"]["max_active_rows"]==28
+            and receipt["actor_support_polish"]=="bounded_dual_active_set_v1",
+            "Original projection/resource contract differs")
+    for key in ("forward_excess_speed_cost","outward_tilt_growth_cost","episode_force_credit_policy"):
+        require(receipt[key]==producer["runtime_flat_geometry"][key],"Original reward/force metadata differs")
+    tree_manifest=inside(pre["producer_closed_case_run_identities"])
+    require(digest(tree_manifest)==pre["producer_closed_case_run_identities_sha256"],"Closed tree stat manifest changed")
+    for tree in read(tree_manifest)["trees"]:
+        expected=set(tree["file_identities"])
+        for name,value in tree["file_identities"].items():
+            stat=Path(name).stat()
+            require({key:getattr(stat,key) for key in value}==value,"Original closed artifact identity changed: "+name)
+        additions={str(path) for path in Path(tree["root"]).rglob("*") if path.is_file()}-expected
+        require(all(Path(name).is_relative_to(operator) or Path(name)==receipt_path for name in additions),
+                "An undeclared file appeared in the closed producer")
+    extra=review["frozen_extra_input_sha256"]
+    byte_path=inside(terminal["evidence"]["checkpoint_and_guard_byte_review.json"]["path"])
+    require(digest(byte_path)==terminal["evidence"]["checkpoint_and_guard_byte_review.json"]["sha256"]
+            and all(extra.get(item["path"])==item["sha256"] for item in read(byte_path)["receipts"]),
+            "The reviewed rejected/checkpoint artifact custody set was reduced")
+    for name,value in extra.items():
+        path=inside(name);require(digest(path)==value,"Reviewed new admission input changed: "+name)
+        frozen[str(path)]=value
+    for path in (checkpoint,receipt_path,claim_path,operator_path,producer_path,pre_path,archive_path,
+                 tree_manifest,terminal_path,closure_path,serialized_path,admission_path,implementation_path,
+                 parent/"request.json",parent/"launch.json"):
+        frozen[str(path)]=digest(path)
+    for name,value in producer["training_tool_sha256"].items():
+        path=source.parent/name;require(digest(path)==value,"Frozen producer tool changed: "+name)
+        frozen[str(path)]=value
+    frozen[str(SELF)]=digest(SELF)
+    return dict(checkpoint=checkpoint,source=source,source_hashes=actual,receipt=receipt,frozen_files=frozen)
+
+
 def postmortem_custody(review, parent, parent_request, state):
     """Bind a preserved baseline or a completely restored policy without loading it."""
     if review.get("kind")==V10_RESTORED372_KIND:
         return v10_restored372_custody(review,parent,parent_request,state)
+    if review.get("kind")==V14_RESTORED2569_KIND:
+        return v14_restored2569_custody(review,parent,parent_request,state)
     legacy = review.get("kind") == "single_frozen_validation_of_preserved_pre_guard_baseline_v1"
     restored = review.get("kind") == "single_frozen_validation_of_controlled_guard_restored_v4"
     require(legacy or restored, "Unknown postmortem custody protocol")
@@ -768,7 +957,7 @@ def preflight_postmortem(args):
     require(review.get("status") == "reviewed_ready" and
             review.get("kind") in ("single_frozen_validation_of_preserved_pre_guard_baseline_v1",
                                    "single_frozen_validation_of_controlled_guard_restored_v4",
-                                   V10_RESTORED372_KIND),
+                                   V10_RESTORED372_KIND,V14_RESTORED2569_KIND),
             "A specific reviewed postmortem measurement plan is required")
     require(review.get("protocol") == dict(num_envs=1024, duration_s=20, speed_m_s=.3, seed=42,
         minimum_successful_envs=922, minimum_forward_m=4.8, maximum_forward_m=7.2,
@@ -793,7 +982,7 @@ def preflight_postmortem(args):
     require(digest(baseline["final_checkpoint"]) == baseline["checkpoint_sha256"], "Protected flat baseline changed")
     for name, expected in baseline["network_hashes"].items():
         published=(ROOT/"artifacts/flat_forward/training_source/source"/name
-                   if review["kind"]==V10_RESTORED372_KIND else ROOT/"source"/name)
+                   if review["kind"] in (V10_RESTORED372_KIND,V14_RESTORED2569_KIND) else ROOT/"source"/name)
         require(digest(published) == expected, "Original network/input source changed")
     # Use model/source/protocol identity, not tooling revisions, for deduplication.
     key = hashlib.sha256(json.dumps(dict(kind=EVAL_KIND, checkpoint=digest(checkpoint),
@@ -810,6 +999,10 @@ def preflight_postmortem(args):
         producer_completed_iterations=review["committed_updates"],
         **(dict(trial_protocol=CONTEXT_PROTOCOL,producer_status="stopped_functional_guard",
                 producer_uncommitted_rollout=True) if review["kind"]==V10_RESTORED372_KIND else {}),
+        **(dict(trial_protocol=LONGER_BUDGET_CONTEXT_PROTOCOL,producer_status="stopped_functional_guard",
+                producer_uncommitted_rollout=True,producer_actual_sampled_environment_steps=63160320,
+                producer_committed_environment_steps=63135744,producer_discarded_rollout_steps=24576,
+                producer_natural_completion=False) if review["kind"]==V14_RESTORED2569_KIND else {}),
         postmortem_measurement=True, accepted_flat_baseline=baseline, GPU_soft_budget_MiB=11264)
 
 
