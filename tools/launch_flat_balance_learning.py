@@ -659,7 +659,22 @@ def v14_restored2569_custody(review, parent, parent_request, state):
     expected_case=ROOT/"logs/stair_learning/flat_balance_20261102_085834_d880d7b7"
     expected_run=ROOT/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7"
     implementation=ROOT/"logs/stairs_work/restored_policy_measurement_implementation_20261102_092322"
-    operator=expected_case/"restored_policy_measurement_20261102T092322Z"
+    operator=expected_case/"restored_policy_measurement_import_recovery_20261102T095000Z"
+    recovery=ROOT/"logs/stairs_work/restored_policy_measurement_import_recovery_20261102_095000"
+    recovery_pre_path=recovery/"pre_change_custody_review.json"
+    require(digest(recovery_pre_path)=="a393bbcc201ea3a2fb60f210d705de933daaf692ca395221adb3486950816670",
+            "Explicit import-recovery custody changed")
+    recovery_pre=read(recovery_pre_path)
+    authorization_path=inside(recovery_pre["human_authorization"])
+    failure_path=inside(recovery_pre["original_failed_entry_review"])
+    require(digest(authorization_path)==recovery_pre["human_authorization_sha256"]
+            =="7e314cbd6f07ee4bfac3a4c34610fd4ecefc12bb14012ae20b5fa44e06ccc417"
+            and read(authorization_path)["status"]=="explicitly_authorized"
+            and digest(failure_path)==recovery_pre["original_failed_entry_review_sha256"]
+            =="06f9b008f57d1798b756407b5ad6b0bdeef2f2b0b77ff721fac7961b815b53b6"
+            and read(failure_path)["actual_new_CPU_packet_load_counts"]=={}
+            and recovery_pre["original_packet_loads"]==recovery_pre["original_formal_dispatches"]==0,
+            "Import recovery was not explicitly authorized or the first attempt loaded a packet")
     model_commit="946742f45fc377718c9bb7710058e7457e5d2bb3"
     model_sha="8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
     state_sha="dd72e32ba0b7ab07346e558badbc5735780060eaf2baa1e8bf98f9ba7f5c1028"
@@ -695,6 +710,13 @@ def v14_restored2569_custody(review, parent, parent_request, state):
                 and digest(inside(entry["owncopy"]))==digest(inside(entry["Git_origin_copy"]))==old[name],
                 "Producer exact ROOT copy/Git origin changed")
         frozen[entry["owncopy"]]=old[name];frozen[entry["Git_origin_copy"]]=old[name]
+    recovery_archive_path=inside(recovery_pre["ROOT_archive_manifest"])
+    require(digest(recovery_archive_path)==recovery_pre["ROOT_archive_manifest_sha256"],
+            "Pre-recovery ROOT0606 archive changed")
+    for entry in read(recovery_archive_path)["entries"].values():
+        require(digest(inside(entry["owncopy"]))==digest(inside(entry["Git_origin_copy"]))==entry["sha256"],
+                "Pre-recovery exact source copies changed")
+        frozen[entry["owncopy"]]=entry["sha256"];frozen[entry["Git_origin_copy"]]=entry["sha256"]
     require(hashes(parent_request["source_root"])==parent_request["source_hashes"],
             "Producer source changed")
     for path,value in parent_request["frozen_files"].items():
@@ -786,7 +808,7 @@ def v14_restored2569_custody(review, parent, parent_request, state):
             and admission["launcher_commit"]==git("rev-parse","HEAD"),
             "Full CPU did not consume the exact reviewed operator admission")
     implementation_path=inside(admission["implementation_review"])
-    require(implementation_path==implementation/"implementation_review.final.json"
+    require(implementation_path==recovery/"implementation_review.final.json"
             and digest(implementation_path)==admission["implementation_review_sha256"]
             and read(implementation_path)["status"]=="passed_cold_implementation_review",
             "New custody implementation review changed")
@@ -811,8 +833,8 @@ def v14_restored2569_custody(review, parent, parent_request, state):
             "Original projection/resource contract differs")
     for key in ("forward_excess_speed_cost","outward_tilt_growth_cost","episode_force_credit_policy"):
         require(receipt[key]==producer["runtime_flat_geometry"][key],"Original reward/force metadata differs")
-    tree_manifest=inside(pre["producer_closed_case_run_identities"])
-    require(digest(tree_manifest)==pre["producer_closed_case_run_identities_sha256"],"Closed tree stat manifest changed")
+    tree_manifest=inside(recovery_pre["producer_closed_case_run_identities"])
+    require(digest(tree_manifest)==recovery_pre["producer_closed_case_run_identities_sha256"],"Closed tree stat manifest changed")
     for tree in read(tree_manifest)["trees"]:
         expected=set(tree["file_identities"])
         for name,value in tree["file_identities"].items():
@@ -831,6 +853,7 @@ def v14_restored2569_custody(review, parent, parent_request, state):
         frozen[str(path)]=value
     for path in (checkpoint,receipt_path,claim_path,operator_path,producer_path,pre_path,archive_path,
                  tree_manifest,terminal_path,closure_path,serialized_path,admission_path,implementation_path,
+                 recovery_pre_path,recovery_archive_path,authorization_path,failure_path,
                  parent/"request.json",parent/"launch.json"):
         frozen[str(path)]=digest(path)
     for name,value in producer["training_tool_sha256"].items():
