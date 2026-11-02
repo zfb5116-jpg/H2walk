@@ -68,21 +68,21 @@ from .robot_env_cfg import RobotFlatPlayEnvCfg, RobotRoughPlayEnvCfg
 # retain their original configuration and entry points.
 gym.register(
     id="Unitree-H2-Stair-Ascent-Policy",
-    entry_point=f"{__name__}.stair_ascent_env:StairAscentEnv",
+    entry_point=f"{__name__}.stair_transfer_env:StairTransferEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.stair_ascent_cfg:StairAscentEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
+        "env_cfg_entry_point": f"{__name__}.stair_transfer_cfg:StairTransferEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_transfer_ppo_cfg:H2StairTransferPPORunnerCfg",
     },
 )
 
 gym.register(
     id="Unitree-H2-Stair-Ascent-Policy-Play",
-    entry_point=f"{__name__}.stair_ascent_env:StairAscentEnv",
+    entry_point=f"{__name__}.stair_transfer_env:StairTransferEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.stair_ascent_cfg:StairAscentPlayEnvCfg",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_ascent_ppo_cfg:H2StairAscentPPORunnerCfg",
+        "env_cfg_entry_point": f"{__name__}.stair_transfer_cfg:StairTransferPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.stair_transfer_ppo_cfg:H2StairTransferPPORunnerCfg",
     },
 )
 

@@ -53,7 +53,7 @@ def signed_forward_ledger(previous_x, actual_peak_x, current_x, positive_allowed
 
 
 def stair_foot_state(soles, rotations, origins, heights, corners, *, depth, steps, width, approach,
-                     tile_end_x=9.75, margin=0.008):
+                     tile_end_x=9.75, margin=0.008, side_margin=None):
     """Identify a whole sole's true horizontal tread, including every physical edge.
 
     X identifies the tread, rather than rounding Z; this matters for 3 cm risers.
@@ -71,8 +71,9 @@ def stair_foot_state(soles, rotations, origins, heights, corners, *, depth, step
     start_x = torch.where(level == 0, torch.full_like(start_x, -1.75), start_x)
     end_x = torch.where(level == steps, torch.full_like(end_x, tile_end_x), end_x)
     plane_z = level * heights[:, None]
+    side_margin = margin if side_margin is None else side_margin
     footprint = ((min_x >= start_x + margin) & (max_x <= end_x - margin)
-                 & (max_y <= width * 0.5 - margin))
+                 & (max_y <= width * 0.5 - side_margin))
     near_height = (local[..., 2] - plane_z).abs() <= 0.03
     flat = rotations[..., 2, 2] > 0.975
     return {"local": local, "corners": world_corners, "level": level, "plane_z": plane_z,
@@ -90,12 +91,14 @@ class StairAscentProgress:
                       "physical_duration_s", "eligible_duration_s", "ever_invalid", "ever_out_of_tile",
                       "ever_below_floor", "minimum_world_z_m", "minimum_local_z_m",
                       "forward_paid_m", "backward_debt_m", "signed_forward_credit_m",
-                      "actual_backward_distance_m", "world_x_peak_m", "goal_reached", "platform_hold_s")
+                      "actual_backward_distance_m", "world_x_peak_m", "goal_reached", "platform_hold_s",
+                      "force_credit_eligible", "contact_evidence_valid", "first_failure_charged")
 
     def __init__(self, n, device, masses, *, steps=6, depth=0.35, width=2.4, approach=1.4,
                  episode_length_s=90.0, gamma=0.99, window_size=5000, domain_bounds=None,
-                 floor_tolerance=0.05, record_directory=None, contact_body_names=()):
+                 floor_tolerance=0.05, record_directory=None, contact_body_names=(), strict_episode_force=False):
         self.n, self.device = n, device
+        self.strict_episode_force = bool(strict_episode_force)
         self.steps, self.depth, self.width, self.approach = steps, depth, width, approach
         self.episode_length_s, self.gamma = episode_length_s, gamma
         if domain_bounds is None:
@@ -196,11 +199,17 @@ class StairAscentProgress:
         self.positive_control_seen = torch.zeros_like(self.current_force_valid)
         self.episode_positive_control_seen = torch.zeros_like(self.current_force_valid)
         self.force_mismatch_steps = torch.zeros(n, 2, dtype=torch.long, device=device)
+        self.failure_charged = torch.zeros(n, dtype=torch.bool, device=device)
+        self.first_failure_this_step = torch.zeros_like(self.failure_charged)
         self.events = {name: torch.zeros(n, device=device) for name in
                        ("potential", "foot", "pair", "transfer", "top")}
         self.last_episode = {key: torch.zeros(n, device=device) for key in self.SUMMARY_FIELDS}
         self.last_episode["valid"] = torch.zeros(n, dtype=torch.bool, device=device)
         self.snapshot_before_reset = None
+
+    @property
+    def force_credit_eligible(self):
+        return self.force_mismatch_steps.sum(-1) == 0
 
     def begin_step(self, root_position, soles, origins, heights, terrain_level, episode_length_buf, control_counter=0):
         ids = self.needs_start.nonzero().flatten()
@@ -230,6 +239,7 @@ class StairAscentProgress:
             value.zero_()
         for value in self.events.values():
             value.zero_()
+        self.first_failure_this_step.zero_()
         self.pending = True
 
     def update(self, counter, root_position, root_velocity, root_tilt, soles, rotations,
@@ -290,17 +300,36 @@ class StairAscentProgress:
             self.body_contact_time_end.copy_(body_contact_time)
         fz = ground_forces[..., 2]
         raw_fz = unfiltered_forces[..., 2]
-        agreement = (fz - raw_fz).abs() <= 1.0 + 0.02 * raw_fz.abs()
+        if self.strict_episode_force:
+            raw_norm = unfiltered_forces.norm(dim=-1)
+            ground_norm = ground_forces.norm(dim=-1)
+            agreement = ((ground_forces-unfiltered_forces).norm(dim=-1) <= 1.0+0.02*raw_norm)
+            relevant = (raw_norm > 5.0) | (ground_norm > 5.0)
+            self.force_mismatch_steps += ~agreement & relevant
+        else:
+            agreement = (fz - raw_fz).abs() <= 1.0 + 0.02 * raw_fz.abs()
+            self.force_mismatch_steps += ~agreement
         self.current_force_valid[:] = agreement & (fz >= 0)
-        self.positive_control_seen |= agreement & (fz >= self.minimum_load[:, None])
-        self.episode_positive_control_seen |= agreement & (fz >= self.minimum_load[:, None])
-        self.force_mismatch_steps += ~agreement
-        contact = (ground_forces.norm(dim=-1) > 5.0) & self.current_force_valid
+        positive = agreement & (fz > 5.0) if self.strict_episode_force else agreement & (fz >= self.minimum_load[:, None])
+        self.positive_control_seen |= positive
+        self.episode_positive_control_seen |= positive
+        # Force qualification gates credit, never the physical contact clock.
+        contact = ground_forces.norm(dim=-1) > 5.0
+        if not self.strict_episode_force:
+            contact &= self.current_force_valid
+        failed = terminated | ~self.force_credit_eligible
+        self.first_failure_this_step[:] = failed & ~self.failure_charged
+        self.failure_charged |= failed
+        speed_u = ((root_velocity[:, 0]-0.3)/0.3).clamp(0, 1)
+        positive_weight = ((1-speed_u).square()*(1+2*speed_u) * self.force_credit_eligible
+                           if self.strict_episode_force else torch.ones_like(speed_u))
         previous_landings = self.footfalls.landings.clone()
         self.footfalls.update(contact, dt)
         new_landing = self.footfalls.landings > previous_landings
         geo = stair_foot_state(soles, rotations, self.origins, self.heights, self.corners,
-                               depth=self.depth, steps=self.steps, width=self.width, approach=self.approach)
+                               depth=self.depth, steps=self.steps, width=self.width, approach=self.approach,
+                               side_margin=.02 if self.strict_episode_force else None,
+                               tile_end_x=9.0 if self.strict_episode_force else 9.75)
         level = geo["level"]
         loaded = (fz >= self.minimum_load[:, None]) & self.current_force_valid
         on_tread = loaded & geo["geometric"] & valid_physical[:, None]
@@ -354,11 +383,14 @@ class StairAscentProgress:
         supported = on_tread.any(-1) & (total >= 0.7*self.weight)
         self.forward_credit_eligible[:] = (supported & (root_tilt < 0.5) & valid_physical
                                            & ~self.ever_invalid & ~terminated & ~self.goal_reached)
+        if self.strict_episode_force:
+            self.forward_credit_eligible &= self.force_credit_eligible
         peak, paid, negative = signed_forward_ledger(
             self.pre_root_x, self.forward_actual_peak_x, root_position[:, 0],
             self.forward_credit_eligible, valid_physical & ~self.ever_invalid,
             self.goal_reached, dt)
         self.forward_actual_peak_x.copy_(peak)
+        paid = paid * positive_weight
         self.forward_paid_step_m.copy_(paid)
         self.backward_step_m.copy_(negative)
         self.signed_forward_step_m[:] = paid+negative
@@ -372,6 +404,7 @@ class StairAscentProgress:
         self.top_paid |= top_event
         for name in ("foot", "pair", "transfer", "top"):
             self.events[name] *= ~terminated & valid_physical
+            self.events[name] *= positive_weight
         self.root_rise[:] = root_position[:, 2] - self.root_start[:, 2]
         route_length = platform_start + 0.25
         self.route_progress[:] = ((root_position[:, 0] - self.origins[:, 0]) / route_length).clamp(-0.25, 1.0)
@@ -386,6 +419,9 @@ class StairAscentProgress:
                + 2.0 * (self.root_rise / expected_rise).clamp(-0.25, 1.0))
         phi = torch.where(terminated | invalid, 0.0, phi)
         self.events["potential"][:] = self.gamma * phi - self.potential
+        if self.strict_episode_force:
+            delta = self.events["potential"]
+            delta.copy_(delta.clamp_max(0)+delta.clamp_min(0)*positive_weight)
         self.potential.copy_(phi)
         sole_speed = ((soles - self.pre_soles)[..., :2] / dt).norm(dim=-1)
         slip_count = loaded.sum(-1)
@@ -408,6 +444,9 @@ class StairAscentProgress:
         success = (survived & (self.completed[ids] == self.steps) & self.verified[ids].all(dim=(1, 2))
                    & (self.platform_max_time[ids] >= 2.0-1.0e-6)
                    & ((self.root_rise[ids]-expected).abs() <= 0.10))
+        contact_valid = self.force_credit_eligible[ids] & self.episode_positive_control_seen[ids].all(-1)
+        if self.strict_episode_force:
+            success &= contact_valid
         values = {
             "duration_s": self.duration[ids], "survived": survived, "survived20s": (eligible_duration >= 20.0-1e-5),
             "completed_levels": self.completed[ids], "verified_feet": self.verified[ids].sum(dim=(1, 2)),
@@ -429,6 +468,9 @@ class StairAscentProgress:
             "actual_backward_distance_m": self.actual_backward_distance_m[ids],
             "world_x_peak_m": self.forward_actual_peak_x[ids], "goal_reached": self.goal_reached[ids],
             "platform_hold_s": self.platform_hold_s[ids],
+            "force_credit_eligible": self.force_credit_eligible[ids],
+            "contact_evidence_valid": contact_valid,
+            "first_failure_charged": self.failure_charged[ids],
         }
         for key, value in values.items():
             self.last_episode[key][ids] = value.to(self.last_episode[key].dtype)
@@ -491,7 +533,8 @@ class StairAscentProgress:
                       self.forward_paid_m, self.backward_debt_m, self.actual_backward_distance_m,
                       self.signed_forward_step_m, self.forward_paid_step_m, self.backward_step_m,
                       self.forward_credit_eligible, self.forward_actual_peak_x, self.pre_root_x,
-                      self.goal_reached, self.platform_stable, self.platform_hold_s):
+                      self.goal_reached, self.platform_stable, self.platform_hold_s,
+                      self.failure_charged, self.first_failure_this_step):
             value[ids] = 0
         self.first_invalid_counter[ids] = -1
         self.goal_first_counter[ids] = -1
@@ -508,7 +551,10 @@ class StairAscentProgress:
                     "invalid_physical_episode_fraction": 0.0, "physical_valid_episode_count": 0}
         rows = np.asarray(self.recent)
         c = {key: rows[:, i] for i, key in enumerate(self.SUMMARY_FIELDS)}
-        eligible = c["ever_invalid"] == 0
+        physically_valid = c["ever_invalid"] == 0
+        eligible = physically_valid.copy()
+        if self.strict_episode_force:
+            eligible &= c["contact_evidence_valid"] > 0
         forward = np.where(eligible, np.clip(c["route_progress_ratio"], 0.0, 1.0), 0.0)
         levels = np.where(eligible, c["completed_levels"], 0.0)
         success = eligible & (c["success"] > 0)
@@ -543,9 +589,11 @@ class StairAscentProgress:
                 "mean_platform_dwell_s": float(np.where(eligible, c["top_dwell_s"], 0).mean()),
                 "mean_stance_slip_m_s": float(c["stance_slip_m_s"].mean()),
                 "mean_terrain_level": float(c["terrain_level"].mean()),
-                "physical_valid_episode_count": int(eligible.sum()),
-                "invalid_physical_episode_count": int((~eligible).sum()),
-                "invalid_physical_episode_fraction": float((~eligible).mean()),
+                "physical_valid_episode_count": int(physically_valid.sum()),
+                "invalid_physical_episode_count": int((~physically_valid).sum()),
+                "invalid_physical_episode_fraction": float((~physically_valid).mean()),
+                "force_clean_episode_fraction": float((c["force_credit_eligible"] > 0).mean()),
+                "contact_evidence_valid_fraction": float((c["contact_evidence_valid"] > 0).mean()),
                 "out_of_tile_episode_fraction": float(c["ever_out_of_tile"].mean()),
                 "below_floor_episode_fraction": float(c["ever_below_floor"].mean()),
                 "true_timeout_fraction": float(c["timed_out"].mean()),

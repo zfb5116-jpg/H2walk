@@ -47,8 +47,12 @@ class StairAscentEnv(RobotEnv):
             floor_tolerance=cfg.stair_below_floor_tolerance_m,
             record_directory=self.stair_episode_evidence_directory,
             contact_body_names=self.scene["contact_forces"].body_names,
+            strict_episode_force=getattr(cfg, "stair_strict_episode_force", False),
         )
-        expected = {"policy": (1029,), "critic": (866,), "rnd_state": (73,)}
+        context = int(getattr(cfg, "stair_task_context_dim", 0))
+        if context not in (0, 5):
+            raise RuntimeError("Undeclared stair context width")
+        expected = {"policy": (1029+context,), "critic": (866+context,), "rnd_state": (73,)}
         for name, shape in expected.items():
             actual = tuple(self.observation_manager.group_obs_dim[name])
             if actual != shape:
@@ -78,8 +82,10 @@ class StairAscentEnv(RobotEnv):
         filtered = torch.stack(forces, dim=1)
         unfiltered = self.scene["contact_forces"].data.net_forces_w[:, self._stair_unfiltered_ids]
         tilt = torch.acos((-self.asset.data.projected_gravity_b[:, 2]).clamp(-1, 1))
+        velocity = (self.asset.data.root_link_lin_vel_w if self.stair_progress.strict_episode_force
+                    else self.asset.data.root_lin_vel_w)
         self.stair_progress.update(
-            self.common_step_counter, self.asset.data.root_pos_w, self.asset.data.root_lin_vel_w,
+            self.common_step_counter, self.asset.data.root_pos_w, velocity,
             tilt, sole, rotation, filtered, unfiltered, self.termination_manager.terminated, self.step_dt,
             body_forces=self.scene["contact_forces"].data.net_forces_w,
             body_contact_time=self.scene["contact_forces"].data.current_contact_time,

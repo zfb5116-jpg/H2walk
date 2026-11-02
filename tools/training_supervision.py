@@ -304,29 +304,38 @@ class ProbedVecEnv(RslRlVecEnvWrapper):
 
 
 class SupervisedRunner(OnPolicyRunner):
-    def __init__(self, *args, supervision_path, policy, effect_task_name, normalize_initial_observations=False, guarded_flat=False, **kwargs):
+    def __init__(self, *args, supervision_path, policy, effect_task_name, normalize_initial_observations=False, guarded_flat=False, guarded_stair=False, **kwargs):
         self.guarded_flat = bool(guarded_flat)
+        self.guarded_stair = bool(guarded_stair)
+        if self.guarded_flat and self.guarded_stair:
+            raise ValueError("A run must declare exactly one physical task")
+        self.guarded_split = self.guarded_flat or self.guarded_stair
         self.effect_task_name = effect_task_name
         effect_env = (args[0] if args else kwargs["env"]).unwrapped
         self.effect_metric_profile = training_effect_profile(
             effect_task_name, self.guarded_flat,
             getattr(effect_env, "flat_balance_progress", None) is not None,
             getattr(effect_env, "stair_progress", None) is not None)
-        if self.guarded_flat:
+        if self.guarded_split:
             # Installed RSL only recognizes the literal PPO training type. Keep
             # that constructor contract local and restore its module immediately.
             import copy
             import rsl_rl.runners.on_policy_runner as runner_module
             from guarded_flat_ppo import H2GuardedPPO
+            if self.guarded_stair:
+                from guarded_stair_transfer import H2GuardedStairPPO
+                algorithm_type = H2GuardedStairPPO
+            else:
+                algorithm_type = H2GuardedPPO
             local_args = list(args)
             cfg = copy.deepcopy(local_args[1] if len(local_args)>1 else kwargs["train_cfg"])
-            if cfg["algorithm"]["class_name"] != "H2GuardedPPO":
-                raise ValueError("Guarded-flat runner requires its declared split algorithm")
+            if cfg["algorithm"]["class_name"] != algorithm_type.__name__:
+                raise ValueError("Guarded runner requires its declared split algorithm")
             cfg["algorithm"]["class_name"] = "PPO"
             if len(local_args)>1: local_args[1]=cfg
             else: kwargs["train_cfg"]=cfg
             original = runner_module.PPO
-            runner_module.PPO = H2GuardedPPO
+            runner_module.PPO = algorithm_type
             try:
                 super().__init__(*local_args, **kwargs)
             finally:
@@ -347,14 +356,14 @@ class SupervisedRunner(OnPolicyRunner):
             "normalized_initial_batches": 0,
             "scope": "Explicit direct-policy task entry only; general VecEnv observations remain raw",
             "method": "One actor/critic normalization immediately before each learn call's first PPO act",
-            "normalizer_statistics_continue_updating": not self.guarded_flat,
+            "normalizer_statistics_continue_updating": not self.guarded_split,
             "subsequent_batches": "Unmodified RSL step normalization",
             "rnd_observations_changed": False,
         }
 
     def train_mode(self):
         super().train_mode()
-        if self.guarded_flat:
+        if self.guarded_split:
             self.obs_normalizer.eval()
             self.privileged_obs_normalizer.eval()
 
@@ -422,7 +431,7 @@ class SupervisedRunner(OnPolicyRunner):
         write_json(self.supervision_path, self.supervision)
 
     def save(self, path, infos=None):
-        if self.guarded_flat:
+        if self.guarded_split:
             from guarded_flat_ppo import save_packet
             save_packet(path, self.alg.packet(self.current_learning_iteration, infos))
         else:

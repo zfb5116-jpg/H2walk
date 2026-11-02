@@ -14,6 +14,19 @@ def stair_failure(env):
     return env.termination_manager.terminated.float() / env.step_dt
 
 
+def stair_first_qualified_failure(env):
+    env._update_stair_progress()
+    return env.stair_progress.first_failure_this_step.float() / env.step_dt
+
+
+def stair_qualified_platform_hold(env):
+    return stair_platform_hold(env) * env.stair_progress.force_credit_eligible
+
+
+def stair_forward_excess_speed(env):
+    return (env.scene["robot"].data.root_link_lin_vel_w[:, 0]-.3).clamp_min(0).square()
+
+
 def stair_signed_forward(env):
     env._update_stair_progress()
     return env.stair_progress.current_signed_forward_m_s()

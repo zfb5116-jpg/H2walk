@@ -113,15 +113,27 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    stair_transfer = saved.get("format") == "h2_guarded_stair_ppo_v1"
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
+    if stair_transfer:
+        required.remove("optimizer_state_dict")
+        required.update(("actor_optimizer_state_dict", "critic_optimizer_state_dict", "normalization_abi"))
+        receipt_path = checkpoint.with_suffix(".validation.json")
+        receipt = json.loads(receipt_path.read_text())
+        if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
+                or receipt.get("checkpoint_sha256") != sha256(checkpoint)
+                or saved.get("trial_protocol") != "accepted_flat_context_stair_transfer_v1"
+                or saved.get("iter") != 4999 or saved["guarded_ppo_state"]["completed_updates"] != 5000):
+            raise ValueError("Typed stair replay requires its new complete natural-final CPU receipt")
     if not isinstance(saved, dict) or not required.issubset(saved):
         raise ValueError("Require a complete PPO checkpoint, including both normalizers and RND state")
     if int(saved["iter"]) < 0:
         raise ValueError("Invalid checkpoint iteration")
     for key in ("obs_norm_state_dict", "privileged_obs_norm_state_dict"):
         norm = saved[key]
-        if int(norm["count"]) <= 0 or not bool((norm["_std"] >= 0).all()):
+        count_key, std_key = ("prefix.count", "prefix._std") if stair_transfer else ("count", "_std")
+        if int(norm[count_key]) <= 0 or not bool((norm[std_key] >= 0).all()):
             raise ValueError("Checkpoint normalization was not populated or contains an invalid scale")
     tensors = 0
 
@@ -311,7 +323,9 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        if shapes != {"policy": [n, 1029], "critic": [n, 866], "rnd_state": [n, 73]}:
+        stair_transfer = saved.get("format") == "h2_guarded_stair_ppo_v1"
+        actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
+        if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")
         if bool((raw.episode_length_buf != 0).any()):
             raise RuntimeError("Formal evaluation must start with 1024 complete zero-length first episodes")
@@ -321,10 +335,15 @@ def evaluate(args, app, metadata, source, expected_hashes):
         # is needed or allocated. The RSL inference formula is norm -> actor.
         policy_cfg = dict(agent["policy"])
         policy_cfg.pop("class_name")
-        actor = H2ActorCriticOur(1029, 866, 12, **policy_cfg).to(device)
+        actor = H2ActorCriticOur(actor_width, critic_width, 12, **policy_cfg).to(device)
         actor.load_state_dict(saved["model_state_dict"], strict=True)
-        actor_norm = EmpiricalNormalization([1029], until=1.0e8).to(device)
-        critic_norm = EmpiricalNormalization([866], until=1.0e8).to(device)
+        if stair_transfer:
+            from task_context_normalization import make_task_context_normalizers
+            blocks = make_task_context_normalizers(device)
+            actor_norm, critic_norm = blocks["actor"], blocks["critic"]
+        else:
+            actor_norm = EmpiricalNormalization([1029], until=1.0e8).to(device)
+            critic_norm = EmpiricalNormalization([866], until=1.0e8).to(device)
         actor_norm.load_state_dict(saved["obs_norm_state_dict"], strict=True)
         critic_norm.load_state_dict(saved["privileged_obs_norm_state_dict"], strict=True)
         for module in (actor, actor_norm, critic_norm):
@@ -333,8 +352,12 @@ def evaluate(args, app, metadata, source, expected_hashes):
                     "privileged_obs_norm_state_dict": saved["privileged_obs_norm_state_dict"]},
                    args.output / "saved_observation_normalizers.pt")
         metadata["saved_observation_normalizers_sha256"] = sha256(args.output / "saved_observation_normalizers.pt")
-        metadata["normalizer_counts"] = {key: int(saved[key]["count"]) for key in
-                                         ("obs_norm_state_dict", "privileged_obs_norm_state_dict")}
+        count_key = "prefix.count" if stair_transfer else "count"
+        metadata["normalizer_prefix_counts" if stair_transfer else "normalizer_counts"] = {
+            key: int(saved[key][count_key]) for key in ("obs_norm_state_dict", "privileged_obs_norm_state_dict")}
+        if stair_transfer:
+            metadata["normalization_abi"] = saved["normalization_abi"]
+            metadata["normalization_implementation_sha256"] = sha256(Path(__file__).parent/"task_context_normalization.py")
         metadata["runtime_joint_mapping"] = dict(action_joint_names=list(term._joint_names),
             action_articulation_ids=list(term._joint_ids), observed_joint_names=list(H2_JOINT_NAMES),
             articulation_joint_names=list(robot.joint_names), held_joint_ids=list(raw.action_manager.held_joint_ids))
