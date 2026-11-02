@@ -1,3 +1,34 @@
+# 当前修复：v4 落脚稳定性
+
+针对 v3 在第一阶后容易失稳，新增落地速度代价、连续稳定支撑判据，以及训练/评估稳定性指标。
+具体权重和门槛见 [REWARDS.md](REWARDS.md)。
+
+从当前 **86 观测 / 15 动作的 v3 checkpoint** 低学习率续训（将路径替换为实际文件）：
+
+```bash
+python -m mujoco_stairs.train --init-from /path/to/current_v3.zip --allow-reward-change --terrain-mode curriculum --start-stage low --stair-direction mixed --learning-rate 0.00003 --ent-coef 0.001 --total-timesteps 10000000 --n-envs 8 --run-dir logs/h2_stairs_stable_v4
+```
+
+方向必须与原 checkpoint 一致；原来是 up 则改为 `--stair-direction up`。
+使用独立输出目录，不加 `--resume-curriculum`，从课程的 4 cm 重新学习稳定落脚，成功后才升级。
+`--low-step-height` 只控制 low 固定地形，不改变 curriculum 高度序列。
+新契约支持显式迁移 v2/v3 奖励，仍严格检查模型、86/15 接口和控制参数。
+
+```bash
+python -m mujoco_stairs.evaluate logs/h2_stairs_stable_v4/h2_stairs_waist_ppo.zip --terrain-mode low --low-step-height 0.04 --stair-direction up --episodes 20 --output logs/h2_stairs_stable_v4/eval_4cm_up.json
+python -m mujoco_stairs.evaluate logs/h2_stairs_stable_v4/h2_stairs_waist_ppo.zip --terrain-mode 20cm --stair-direction up --episodes 20 --output logs/h2_stairs_stable_v4/eval_20cm_up.json
+```
+
+除 success、sequential_treads、max_x 外，JSON 记录 fallen、峰值着地向下速度、躯干倾角、支撑脚滑移速度和稳定支撑时间比例。
+训练 TensorBoard 同时记录 stability 指标。先确认浅台阶成功率提升和跌倒减少，再比较 20 cm；
+v3/v4 的完成级数判据和回报有变化，不能直接比较回报值。
+
+验证详情见 [STABILITY_VALIDATION.md](STABILITY_VALIDATION.md)。这次是奖励和落脚判据修复，尚未证实训练后站稳或能爬 20 cm。
+
+以下为 v3 及更早版本的历史说明。
+
+---
+
 # 本次修复：楼梯前停步
 
 当前奖励版本为 `h2_stairs_dense_v3`，细节见 [REWARDS.md](REWARDS.md)。

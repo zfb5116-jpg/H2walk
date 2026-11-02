@@ -13,7 +13,7 @@ def validate_checkpoint_contract(checkpoint, env, *, allow_direction_change=Fals
                else env.unwrapped.get_training_contract())
     if allow_reward_change:
         saved, current = dict(saved), dict(current)
-        if saved.get("reward_version") not in ("wm_loco_stairs_h2_v2", current.get("reward_version")):
+        if saved.get("reward_version") not in ("wm_loco_stairs_h2_v2", "h2_stairs_dense_v3", current.get("reward_version")):
             raise ValueError("Unsupported reward migration")
         for key in ("reward_version", "reward_weights"):
             saved.pop(key, None)

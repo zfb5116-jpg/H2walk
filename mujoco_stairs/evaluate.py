@@ -54,6 +54,8 @@ def main() -> None:
         steps = 0
         totals = {}
         max_treads = 0
+        peak_landing_speed = peak_tilt = peak_slide = 0.
+        stable_steps = 0
         while not done:
             action, _ = policy.predict(obs, deterministic=True)
             obs, _, terminated, truncated, info = env.step(action)
@@ -61,13 +63,20 @@ def main() -> None:
             success = bool(info.get("success", False))
             steps += 1
             max_x = max(max_x, info["x_position"])
+            peak_landing_speed = max(peak_landing_speed, max(info["landing_downward_speed"]))
+            peak_tilt = max(peak_tilt, info["base_tilt"])
+            peak_slide = max(peak_slide, info["supported_foot_slide_speed"])
+            stable_steps += int(any(info["stable_foot_support"]))
             max_treads = max(max_treads, info["stair_completed_treads"])
             for name, value in info["reward_terms"].items():
                 totals[name] = totals.get(name, 0.0) + value
         successes.append(success)
         episodes.append({"success": success, "max_x": float(max_x), "steps": steps,
                          "stair_direction": info["stair_direction"],
-                         "sequential_treads": max_treads, "reward_totals": totals})
+                         "sequential_treads": max_treads, "reward_totals": totals,
+                         "fallen": info["fallen"], "peak_landing_speed": peak_landing_speed,
+                         "peak_base_tilt_rad": peak_tilt, "peak_support_slide_speed": peak_slide,
+                         "stable_support_fraction": stable_steps / steps})
     contract = env.unwrapped.get_training_contract()
     env.close()
     print(f"{args.terrain_mode} success: {np.mean(successes):.1%} ({sum(successes)}/{len(successes)})")

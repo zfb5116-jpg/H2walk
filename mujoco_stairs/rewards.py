@@ -1,6 +1,6 @@
-"""H2 dense stair rewards v3, extending the WM-LOCO-inspired v2 baseline.
+"""H2 stable stair rewards v4, extending the dense v3 baseline.
 
-Adds finite approach/lift/reach/completion budgets and progress-gated tracking.
+Prioritizes sustained stable contact, soft landings, and finite exploration budgets.
 See REWARDS.md for the current schedule and historical paper adaptation.
 """
 
@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 import numpy as np
 
-REWARD_VERSION = "h2_stairs_dense_v3"
+REWARD_VERSION = "h2_stairs_stable_v4"
 REWARD_WEIGHTS = MappingProxyType({
     "linear_velocity_tracking": 3.0,
     "angular_velocity_tracking": 3.0,
@@ -23,16 +23,19 @@ REWARD_WEIGHTS = MappingProxyType({
     "stair_riser": -0.5,
     "stair_tread": 0.5,
     "stair_approach": 2.0,
-    "stair_lift": 3.0,
-    "stair_reach": 4.0,
-    "stair_completion": 6.0,
+    "stair_lift": 0.6,
+    "stair_reach": 0.8,
+    "stair_completion": 8.0,
+    "landing_impact": -1.0,
+    "base_vertical_motion": -1.0,
+    "fall_event": -8.0,
     "feet_air_time": 0.5,
-    "feet_slide": -0.4,
-    "feet_flat_orientation": -0.4,
+    "feet_slide": -1.2,
+    "feet_flat_orientation": -1.0,
     "feet_on_plane": -0.1,
     "feet_close_xy": 0.4,
     "hip_deviation": -0.5,
-    "angular_velocity_xy": -0.05,
+    "angular_velocity_xy": -0.25,
     "flat_orientation": -3.0,
     "pelvis_orientation": -3.0,
     "joint_torque": -1.5e-7,
@@ -42,7 +45,7 @@ REWARD_WEIGHTS = MappingProxyType({
     "joint_position_limit": -1.0,
     "joint_velocity_limit": -1.0,
     "torque_limit": -0.01,
-    "undesired_contact": -1.0,
+    "undesired_contact": -2.0,
 })
 
 

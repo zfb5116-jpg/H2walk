@@ -12,6 +12,7 @@ from gymnasium import spaces
 from dataclasses import replace
 import hashlib
 from .dense_stair_reward import DenseStairReward
+from .landing_stability import stable_support_mask, landing_costs
 from .rewards import REWARD_VERSION, REWARD_WEIGHTS, compute_standard_rewards, weighted_rewards
 
 from .curriculum import StairCurriculum
@@ -166,7 +167,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         self._landing_end = 4.3 if landing >= 0 else 3.0
         self._stair_geometry = StairGeometry(landing_end=self._landing_end,
                                              lane_half_width=stair_lane_half_width)
-        self._tread_reward = SequentialTreadReward(self._stair_geometry)
+        self._tread_reward = SequentialTreadReward(self._stair_geometry, minimum_hold=.18)
         self._dense_reward = DenseStairReward(self._stair_geometry)
         self._foot_geoms = [self._collision_geoms(b) for b in (self._left_foot, self._right_foot)]
         self._geom_to_foot = {g: i for i, geoms in enumerate(self._foot_geoms) for g in geoms}
@@ -330,7 +331,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
                                 + self.data.geom_xpos[g] for g in geoms])
                 for geoms in self._foot_geoms]
 
-    def _stair_reward_terms(self, support, dt: float) -> tuple[dict, dict]:
+    def _stair_reward_terms(self, support, dt: float, stable_support=None) -> tuple[dict, dict]:
         """Three WM-LOCO-inspired terms; no contribution on a flat stage."""
         height = self._terrain_step_height()
         if height > 0.0:
@@ -342,7 +343,8 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         else:
             boundary, riser = 0, 0
             ratios = np.zeros((2, self._stair_geometry.step_count))
-        sequential = self._tread_reward.step(ratios, float(self.command[0]), dt, active=height > 0.0)
+        qualified_ratios = ratios if stable_support is None else ratios * np.asarray(stable_support)[:, None]
+        sequential = self._tread_reward.step(qualified_ratios, float(self.command[0]), dt, active=height > 0.0)
         terms = {"stair_boundary": float(boundary),
                  "stair_riser": float(riser),
                  "stair_tread": sequential}
@@ -384,7 +386,7 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
             self.curriculum.advance()
         self.episode_direction = str(self.np_random.choice(("up", "down"))) if self.stair_direction == "mixed" else self.stair_direction
         self._stair_geometry = replace(self._stair_geometry, direction=self.episode_direction)
-        self._tread_reward = SequentialTreadReward(self._stair_geometry)
+        self._tread_reward = SequentialTreadReward(self._stair_geometry, minimum_hold=.18)
         self._dense_reward = DenseStairReward(self._stair_geometry)
         self._set_stair_height()
         mujoco.mj_resetData(self.model, self.data)
@@ -435,7 +437,11 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
         previous_action = self._previous_action.copy()
         target = self._action_target(action)
         before = float(self.data.xpos[self._torso, 0])
+        foot_bodies = [self._left_foot, self._right_foot]
+        touchdown_speeds = np.zeros(2)
+        substep_support = self._foot_support()
         for _ in range(5):
+            preimpact_vz = np.array([self._body_velocity(b)[5] for b in foot_bodies])
             self.data.ctrl[:] = 0.
             self.data.qfrc_applied[:] = 0.
             torque = np.clip(self._kp * (target - self.data.qpos[self._qpos_adrs])
@@ -445,6 +451,11 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
             self.data.qfrc_applied[self._arm_qvel_adrs] = np.clip(40 * (self._arm_home - self.data.qpos[self._arm_qpos_adrs])
                                                                    - 4 * self.data.qvel[self._arm_qvel_adrs], -30., 30.)
             mujoco.mj_step(self.model, self.data)
+            mujoco.mj_forward(self.model, self.data)
+            next_support = self._foot_support()
+            landed = next_support & ~substep_support
+            touchdown_speeds = np.maximum(touchdown_speeds, np.where(landed, np.maximum(-preimpact_vz, 0.), 0.))
+            substep_support = next_support
         mujoco.mj_forward(self.model, self.data)
         self._step_count += 1
         pos = self.data.xpos[self._torso]
@@ -483,11 +494,15 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
                      torso_gravity=-upper[2], pelvis_gravity=-rotation[2], fallen=fallen,
                      undesired_contacts=self._undesired_contacts())
         raw = compute_standard_rewards(state)
-        stair_raw, diagnostics = self._stair_reward_terms(support, self.dt)
+        stable_support = stable_support_mask(support, foot_velocity, state["foot_up"], velocity[3:],
+                                             velocity[:3], rotation[2, 2], upper[2, 2])
+        near_stairs = bool(self._terrain_step_height() > 0 and pos[0] > self._stair_geometry.first_edge - .45)
+        raw.update(landing_costs(touchdown_speeds, velocity[5], fallen, self.dt, near_stairs))
+        stair_raw, diagnostics = self._stair_reward_terms(support, self.dt, stable_support)
         raw.update(stair_raw)
         raw.update(self._dense_reward.step(sole_points, support, float(pos[0]), float(pos[1]),
                                            self._terrain_step_height(), self._tread_reward.current_index,
-                                           self.dt, bool(self.command[0] > .05 and not fallen)))
+                                           self.dt, bool(self.command[0] > .05 and not fallen and stable_support.any())))
         terms = weighted_rewards(raw, self.dt)
         self._previous_action[:] = action
         sequence_done = self._terrain_step_height() == 0 or self._tread_reward.current_index == 6
@@ -506,6 +521,11 @@ class H2StairsEnv(gym.Env[np.ndarray, np.ndarray]):
                 "success": bool(success), "fallen": fallen, "reward_terms": terms, "reward_raw": raw,
                 "reward_version": REWARD_VERSION, "waist_controlled": True,
                 "waist_position": self.data.qpos[self._qpos_adrs[-3:]].tolist(),
+                "landing_downward_speed": touchdown_speeds.tolist(),
+                "base_vertical_speed": float(velocity[5]),
+                "base_tilt": float(np.arccos(np.clip(rotation[2, 2], -1., 1.))),
+                "supported_foot_slide_speed": float(np.max(np.linalg.norm(foot_velocity[:, :2], axis=1) * support)),
+                "stable_foot_support": stable_support.tolist(),
                 "foot_support": support.tolist(), "curriculum_level": self.curriculum.level, **diagnostics}
         if self.render_mode == "human":
             self.render()

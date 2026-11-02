@@ -36,6 +36,8 @@ class TrainingDiagnostics(BaseCallback):
         self.samples = 0
         self.height_sum = 0.0
         self.last_save = 0
+        self.stability_sums: dict[str, float] = {}
+        self.max_landing_speed = 0.0
 
     def _on_training_start(self) -> None:
         self.last_save = self.num_timesteps
@@ -45,6 +47,12 @@ class TrainingDiagnostics(BaseCallback):
             for name, value in info.get("reward_terms", {}).items():
                 self.term_sums[name] = self.term_sums.get(name, 0.0) + value
             self.height_sum += info["terrain_step_height"]
+            metrics = {"base_tilt_rad": info["base_tilt"],
+                       "support_slide_speed": info["supported_foot_slide_speed"],
+                       "stable_support_fraction": float(any(info["stable_foot_support"]))}
+            for name, value in metrics.items():
+                self.stability_sums[name] = self.stability_sums.get(name, 0.0) + value
+            self.max_landing_speed = max(self.max_landing_speed, max(info["landing_downward_speed"]))
             self.samples += 1
         if self.args.save_every > 0 and self.num_timesteps - self.last_save >= self.args.save_every:
             save_training_state(self.model, Path(self.args.run_dir) / f"ckpt_{self.num_timesteps}", self.args)
@@ -58,6 +66,11 @@ class TrainingDiagnostics(BaseCallback):
         heights = self.training_env.env_method("_terrain_step_height")
         self.logger.record("terrain/min_step_height", float(np.min(heights)))
         self.logger.record("terrain/max_step_height", float(np.max(heights)))
+        for name, total in self.stability_sums.items():
+            self.logger.record(f"stability/{name}", total / max(self.samples, 1))
+        self.logger.record("stability/max_landing_speed", self.max_landing_speed)
+        self.stability_sums.clear()
+        self.max_landing_speed = 0.0
         self.term_sums.clear()
         self.samples = 0
         self.height_sum = 0.0
@@ -77,10 +90,11 @@ def main() -> None:
     parser.add_argument("--stair-lane-half-width", type=float, default=0.60)
     parser.add_argument("--init-from", default=None)
     parser.add_argument("--allow-reward-change", action="store_true",
-                        help="Explicitly migrate a compatible v2 86/15 policy to dense v3 rewards")
+                        help="Explicitly migrate a compatible v2/v3 86/15 policy to stable v4 rewards")
     parser.add_argument("--resume-curriculum", action="store_true",
                         help="Restore curriculum sidecar as well as policy/optimizer state")
     parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--ent-coef", type=float, default=None, help="Exploration entropy coefficient; try 0.001 for stability finetuning")
     parser.add_argument("--n-steps", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--save-every", type=int, default=1_000_000)
@@ -91,6 +105,8 @@ def main() -> None:
     args = parser.parse_args()
     if min(args.n_envs, args.total_timesteps, args.batch_size) < 1 or args.n_steps < 2:
         parser.error("env count, training steps and batch size must be positive; n-steps must be >=2")
+    if args.ent_coef is not None and (not np.isfinite(args.ent_coef) or args.ent_coef < 0):
+        parser.error("ent-coef must be finite and nonnegative")
     if args.resume_curriculum and (not args.init_from or args.terrain_mode != "curriculum"):
         parser.error("--resume-curriculum requires --init-from and --terrain-mode curriculum")
     if args.allow_reward_change and (not args.init_from or args.resume_curriculum):
@@ -127,6 +143,8 @@ def main() -> None:
                         ent_coef=0.005,
                         policy_kwargs={"net_arch": {"pi": [256, 256], "vf": [256, 256]}},
                         tensorboard_log=args.run_dir, verbose=1, device=args.device, seed=args.seed)
+        if args.ent_coef is not None:
+            model.ent_coef = args.ent_coef
         model.learn(total_timesteps=args.total_timesteps, callback=TrainingDiagnostics(args),
                     reset_num_timesteps=not bool(args.init_from))
         save_training_state(model, Path(args.run_dir) / "h2_stairs_waist_ppo", args)

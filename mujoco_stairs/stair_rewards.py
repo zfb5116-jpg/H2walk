@@ -109,8 +109,9 @@ class SequentialTreadReward:
     These expiry details are explicit H2 choices where the paper is underspecified.
     """
 
-    def __init__(self, geometry: StairGeometry):
+    def __init__(self, geometry: StairGeometry, minimum_hold: float = 0.0):
         self.geometry = geometry
+        self.minimum_hold = minimum_hold
         self.reset()
 
     def reset(self) -> None:
@@ -135,7 +136,7 @@ class SequentialTreadReward:
             start, end = self.geometry.tread_bounds(self.current_index)
             tau = float(np.clip((end - start) / (2.0 * command_speed * dt), 5.0, 50.0))
             self.window_remaining = int(math.ceil(tau))
-            self.required_hold = int(math.ceil(0.3 * tau))
+            self.required_hold = max(int(math.ceil(0.3 * tau)), int(math.ceil(self.minimum_hold / dt)))
             self.window_opened = True
         if self.contact_foot is None or not qualified[self.contact_foot]:
             self.hold_steps = 0
