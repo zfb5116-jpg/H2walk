@@ -5,8 +5,9 @@ import importlib.util
 import json
 import math
 from pathlib import Path
-from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS,
-                                          initialization_config_errors, exploration_snapshot_errors)
+from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+    initialization_config_errors, exploration_snapshot_errors,
+    temporal_credit_config_errors, temporal_credit_snapshot_errors)
 
 
 def sha(path):
@@ -38,7 +39,7 @@ def validate_cpu(checkpoint, plan_path, scope):
             and run["plan_sha256"] == sha(plan_path) and run["num_envs"] == 1024
             and run["num_steps_per_env"] == 24 and run["policy_dimensions"] == [1034,871,73,12],
             "CPU admission belongs to a different run")
-    if protocol == PROTOCOL:
+    if protocol in INITIALIZATION_PROTOCOLS:
         binding = plan["exploration_initialization"]
         request = json.loads((Path(run["case"])/"request.json").read_text())
         require(request.get("exploration_initialization") == run.get("exploration_initialization") == binding
@@ -51,6 +52,15 @@ def validate_cpu(checkpoint, plan_path, scope):
         require(not exploration_snapshot_errors(binding, run.get("stair_exploration_budget"),
                     initial_learning_state=run.get("initial_learning_state"), at_initialization=True),
                 "Actual initial exploration snapshot changed")
+    if protocol == PROTOCOL:
+        temporal_credit = plan.get("temporal_credit")
+        require(not temporal_credit_config_errors(temporal_credit)
+                and request.get("temporal_credit") == run.get("temporal_credit") == temporal_credit,
+                "Temporal credit plan/request/run binding changed")
+        for snapshot in (run.get("runtime_temporal_credit_config"), run.get("runtime_temporal_credit"),
+                         run.get("initial_learning_state", {}).get("temporal_credit")):
+            require(not temporal_credit_snapshot_errors(temporal_credit, snapshot),
+                    "Resolved or actual initial temporal credit changed")
     source = Path(run["source_snapshot"]).resolve(strict=True)
     source_hashes = {"source/"+str(p.relative_to(source)):sha(p) for p in source.rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
@@ -63,6 +73,15 @@ def validate_cpu(checkpoint, plan_path, scope):
     require(saved["format"] == checkpoint_format and saved["trial_protocol"] == protocol and saved["task"] == TASK
             and saved["training_budget"] == BUDGET, "Wrong serialized stair type")
     gs = saved["guarded_ppo_state"]
+    if protocol == PROTOCOL:
+        require(not temporal_credit_snapshot_errors(temporal_credit, saved.get("temporal_credit"))
+                and not temporal_credit_snapshot_errors(temporal_credit, gs.get("temporal_credit")),
+                "Typed packet actual temporal credit binding changed")
+        for record in (run, saved, gs):
+            require(record.get("inherited_numeric_execution_profile_scope") == "numeric_executor_only"
+                    and record.get("ppo_temporal_credit_override") == dict(parameter="gae_lambda", value=0.99,
+                        scope="stair_transfer_only", exact_binding="temporal_credit"),
+                    "Temporal credit override is not explicitly separated from inherited numeric execution")
     completed = int(gs["completed_updates"])
     require(1 <= completed <= BUDGET and saved["iter"] == completed-1 and gs["uncommitted_rollout"] is False,
             "CPU scope requires an accepted complete update")
@@ -73,6 +92,12 @@ def validate_cpu(checkpoint, plan_path, scope):
                 and run["status"] == "completed" and run["completed_iterations"] == BUDGET
                 and run["actual_sampled_environment_steps"] == BUDGET*1024*24
                 and run["discarded_uncommitted_rollout_steps"] == 0, "Not a natural complete stair final")
+    if protocol == PROTOCOL:
+        with (checkpoint.parent/"motion_metrics.jsonl").open() as stream:
+            native_rows = [json.loads(line) for line in stream if line.endswith("\n") and line.strip()]
+        native = [row for row in native_rows if row.get("iteration") == saved["iter"]]
+        require(len(native) == 1 and not temporal_credit_snapshot_errors(temporal_credit, native[0].get("temporal_credit")),
+                "Corresponding native iteration actual temporal credit binding changed")
     tensors = 0
     def finite(value):
         nonlocal tensors
@@ -153,7 +178,7 @@ def validate_cpu(checkpoint, plan_path, scope):
     require(ex["optimizer_steps"] == actor_steps and len(ex["policy_std"]) == 12
             and all(0<lo<=s<=hi for s,lo,hi in zip(ex["policy_std"],ex["minimum_raw_std"],ex["maximum_raw_std"])),
             "Physical exploration budget changed")
-    if protocol == PROTOCOL:
+    if protocol in INITIALIZATION_PROTOCOLS:
         require(not exploration_snapshot_errors(binding, ex, initial_learning_state=run["initial_learning_state"]),
                 "Typed packet exploration initialization binding changed")
         require(saved["model_state_dict"]["std"].tolist() == ex["policy_std"],
@@ -207,9 +232,13 @@ def validate_cpu(checkpoint, plan_path, scope):
         checkpoint_packet_loads=1,required_parent_packet_loads=1,parent_load_scope="coupled own-norm and startup actor inheritance",
         NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
         complete_policy_CPU_validation=True,physical_or_stair_acceptance=False)
-    if protocol == PROTOCOL:
+    if protocol in INITIALIZATION_PROTOCOLS:
         result["exploration_initialization"] = binding
         result["exploration_initialization_binding_passed"] = True
+    if protocol == PROTOCOL:
+        result["temporal_credit"] = temporal_credit
+        result["actual_temporal_credit_binding_passed"] = True
+        result["native_temporal_credit_iteration"] = saved["iter"]
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

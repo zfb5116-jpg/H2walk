@@ -1074,7 +1074,7 @@ class H2GuardedPPO(PPO):
                  actor_proposal_interior_fraction=.5,actor_proposal_max_active_rows=8,
                  actor_proposal_max_solver_sweeps=2048,actor_proposal_working_budget_fraction=None,
                  actor_proposal_jacobian_arena_budget_bytes=None,actor_proposal_primal_precision_policy=None,
-                 actor_proposal_support_polish_policy=None, **kwargs):
+                 actor_proposal_support_polish_policy=None, stair_temporal_credit=False, **kwargs):
         require(actor_learning_rate==1e-5 and critic_learning_rate==.001 and critic_only_iterations==40
                 and actor_max_grad_norm==critic_max_grad_norm==1.,"Guarded-flat fixed optimization protocol changed")
         require(kwargs.get("schedule","fixed")=="fixed" and kwargs.get("symmetry_cfg") is None
@@ -1083,13 +1083,26 @@ class H2GuardedPPO(PPO):
         require(kwargs.get("learning_rate",actor_learning_rate)==actor_learning_rate,"Conflicting declared actor LR")
         kwargs["learning_rate"]=actor_learning_rate
         super().__init__(policy,**kwargs)
+        require(type(stair_temporal_credit) is bool, "Temporal credit constructor flag must be boolean")
+        if stair_temporal_credit:
+            from guarded_stair_transfer import H2GuardedStairPPO
+            from stair_initialization_binding import temporal_credit_admission_errors
+            admission=dict(enabled=stair_temporal_credit, algorithm_class=type(self).__name__,
+                algorithm_module=type(self).__module__, stair_trial_protocol=getattr(self,"stair_trial_protocol",None),
+                numeric_execution_profile=trial_protocol, gamma=self.gamma, gae_lambda=self.lam)
+            require(type(self) is H2GuardedStairPPO and not temporal_credit_admission_errors(admission),
+                    "Temporal credit admission belongs only to the exact declared stair type")
+        else:
+            require(getattr(self,"stair_trial_protocol",None)!="accepted_flat_temporal_credit_stair_v7",
+                    "Declared temporal credit stair type requires its exact constructor flag")
+        require(self.lam==(.99 if stair_temporal_credit else .95), "Undeclared GAE lambda constructor override")
         require((trial_protocol=="guarded_flat_balance_v1" and actor_action_budget_penalty_weight==0.)
                 or (trial_protocol==MARGIN_TRIAL and actor_action_budget_penalty_weight==.01
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol==PROJECTION_TRIAL and actor_action_budget_penalty_weight==0.
                     and self.gamma==.99 and self.lam==.95)
                 or (trial_protocol in (RESERVED_TRIAL,RESOURCE_TRIAL,STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL,FORWARD_EXCESS_CONTEXT_TRIAL,LONGER_BUDGET_CONTEXT_TRIAL) and actor_action_budget_penalty_weight==0.
-                    and self.gamma==.99 and self.lam==.95),"Undeclared actor profile or discount change")
+                    and self.gamma==.99 and self.lam==(.99 if stair_temporal_credit else .95)),"Undeclared actor profile or discount change")
         require(actor_action_budget_penalty_epsilon==1e-6,"Actor-margin epsilon changed")
         self.strict_primal_enabled=trial_protocol in (STRICT_TRIAL,COST_TRIAL,OUTWARD_TRIAL,CLEAN_FORCE_TRIAL,CONTEXT_TRIAL,ACTIVE_CONTEXT_TRIAL,FULL_OUTWARD_CONTEXT_TRIAL,FORWARD_EXCESS_CONTEXT_TRIAL,LONGER_BUDGET_CONTEXT_TRIAL)
         require((self.strict_primal_enabled and actor_proposal_primal_precision_policy==PRIMAL_PRECISION_POLICY)

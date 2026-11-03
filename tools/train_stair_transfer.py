@@ -34,7 +34,8 @@ from guarded_stair_transfer import (TASK, PROTOCOL, FORMAT, BUDGET, parent_admis
 from guarded_flat_ppo import FunctionalUpdateRejected
 from task_context_normalization import make_task_context_normalizers, normalization_metadata
 from stair_exploration import StairExplorationBudget
-from stair_initialization_binding import initialization_config_errors, exploration_snapshot_errors
+from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
+    temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors)
 
 sys.path.insert(0, str(ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based"))
 import h2_task
@@ -74,11 +75,18 @@ def main():
     request = json.loads(request_path.read_text())
     initialization = plan.get("exploration_initialization")
     config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
+    temporal_credit = plan.get("temporal_credit")
+    runner_config = agent.to_dict()
+    resolved_control_dt_s = cfg.sim.dt * cfg.decimation
+    temporal_errors = temporal_credit_config_errors(
+        temporal_credit, runner_config, control_dt_s=resolved_control_dt_s)
     if (config_errors or plan.get("trial_protocol") != PROTOCOL or plan.get("checkpoint_format") != FORMAT
             or request.get("exploration_initialization") != initialization
             or request.get("plan_sha256") != sha(args.plan) or request.get("trial_protocol") != PROTOCOL
             or request.get("checkpoint_format") != FORMAT):
         raise RuntimeError("Fresh exploration plan/request/resolved config binding failed: " + "; ".join(config_errors))
+    if temporal_errors or request.get("temporal_credit") != temporal_credit:
+        raise RuntimeError("Temporal credit plan/request/resolved config binding failed: " + "; ".join(temporal_errors))
     log_dir = ROOT/"logs/rsl_rl/h2_guarded_stair_transfer"/(datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+"_"+args.supervision_state.parent.name[-8:])
     log_dir.mkdir(parents=True, exist_ok=False)
     cfg.io_descriptors_output_dir = str(log_dir)
@@ -115,6 +123,12 @@ def main():
         plan_path=str(args.plan.resolve()), plan_sha256=sha(args.plan), stop_policy=policy,
         exploration_initialization=initialization,
         runtime_exploration_config=dict(agent.stair_exploration_budget),
+        temporal_credit=temporal_credit,
+        runtime_temporal_credit_config=temporal_credit_config_snapshot(
+            runner_config, control_dt_s=resolved_control_dt_s),
+        inherited_numeric_execution_profile_scope="numeric_executor_only",
+        ppo_temporal_credit_override=dict(parameter="gae_lambda", value=agent.algorithm.lam,
+            scope="stair_transfer_only", exact_binding="temporal_credit"),
         early_progress_policy=plan["early_progress_policy"],
         early_progress_policy_sha256=plan["early_progress_policy_sha256"],
         policy_dimensions=[1034,871,73,12], inherited_numeric_execution_profile="explicit_task_context_longer_budget_v1",
@@ -131,6 +145,9 @@ def main():
     try:
         env = ProbedVecEnv(env, clip_actions=agent.clip_actions)
         raw = env.unwrapped
+        temporal_errors = temporal_credit_config_errors(temporal_credit, runner_config, control_dt_s=raw.step_dt)
+        if temporal_errors:
+            raise RuntimeError("Actual environment temporal configuration differs before policy construction: " + "; ".join(temporal_errors))
         obs, extras = env.get_observations()
         shapes = {k:list(v.shape) for k,v in extras["observations"].items()}
         if (obs.shape != (1024,1034) or tuple(shapes["critic"]) != (1024,871)
@@ -162,9 +179,11 @@ def main():
             reward_contract={name:dict(weight=float(raw.reward_manager.get_term_cfg(name).weight),
                 function=raw.reward_manager.get_term_cfg(name).func.__name__)
                 for name in raw.reward_manager.active_terms})
-        runner = SupervisedRunner(env, agent.to_dict(), log_dir=str(log_dir), device=agent.device,
+        runner = SupervisedRunner(env, runner_config, log_dir=str(log_dir), device=agent.device,
             supervision_path=args.supervision_state, policy=policy, effect_task_name=TASK,
             normalize_initial_observations=True, guarded_stair=True)
+        metadata["runtime_temporal_credit"] = runner.alg.bind_temporal_credit(runner, raw, temporal_credit)
+        metadata["ppo_temporal_credit_override"]["value"] = metadata["runtime_temporal_credit"]["gae_lambda"]
         metadata["learning_rate_wiring"] = configure_stair_learning_rates(
             runner.alg,agent.algorithm.actor_learning_rate,agent.algorithm.rnd_cfg.learning_rate,resumed=False)
         normalizers = make_task_context_normalizers(runner.device)
@@ -188,11 +207,15 @@ def main():
             critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),
             rnd_optimizer_state_entries=len(runner.alg.rnd_optimizer.state), parent_packet_loads=1,
             parent_optimizer_or_RNG_loaded=False, normalization_abi=normalization_metadata(normalizers),
-            policy_std=runner.alg.policy.std.detach().cpu().tolist())
+            policy_std=runner.alg.policy.std.detach().cpu().tolist(),
+            temporal_credit=runner.alg.temporal_credit_snapshot())
         initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
             initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
         if initialization_errors:
             raise RuntimeError("Actual fresh exploration initialization binding failed: " + "; ".join(initialization_errors))
+        temporal_errors = temporal_credit_snapshot_errors(temporal_credit, metadata["runtime_temporal_credit"])
+        if temporal_errors:
+            raise RuntimeError("Actual temporal credit initialization binding failed: " + "; ".join(temporal_errors))
         case = args.supervision_state.resolve().parent
         request_path = case/"request.json"
         request_sha, plan_sha = sha(request_path), sha(args.plan)
@@ -236,7 +259,8 @@ def main():
         runner.update_state(status="training", training_started_at_epoch=time.time(),
             observation_shapes=shapes, num_actions=12, policy_shape=list(obs.shape),
             initial_policy_transfer=metadata["initial_policy_transfer"],
-            guarded_stair_learning=metadata["guarded_stair_learning"], runtime_stair_geometry=metadata["runtime_stair_geometry"])
+            guarded_stair_learning=metadata["guarded_stair_learning"], runtime_stair_geometry=metadata["runtime_stair_geometry"],
+            temporal_credit=metadata["runtime_temporal_credit"])
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
         except FunctionalUpdateRejected as error:
@@ -259,7 +283,10 @@ def main():
     except BaseException as error:
         metadata.update(status="failed",error_type=type(error).__name__,error=str(error),traceback=traceback.format_exc())
         if runner is not None:
-            metadata["guarded_ppo_state"] = runner.alg.learning_state()
+            try:
+                metadata["guarded_ppo_state"] = runner.alg.learning_state()
+            except BaseException as state_error:
+                metadata["guarded_ppo_state_error"] = str(state_error)
         write_json(log_dir/"run.json",metadata)
         raise
     finally:

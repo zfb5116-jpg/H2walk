@@ -16,8 +16,9 @@ from zoneinfo import ZoneInfo
 from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snapshot,
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy
-from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS,
-                                          initialization_config_errors, exploration_snapshot_errors)
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+    initialization_config_errors, exploration_snapshot_errors,
+    temporal_credit_config_errors, temporal_credit_snapshot_errors)
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -109,6 +110,8 @@ def preflight(plan_path):
             and plan["num_envs"] == 1024 and plan["network_dimensions"] == [1034,871,73,12], "Wrong reviewed plan")
     require(not initialization_config_errors(plan.get("exploration_initialization")),
             "Missing reviewed full-ceiling fresh exploration initialization")
+    require(not temporal_credit_config_errors(plan.get("temporal_credit")),
+            "Missing reviewed stair temporal credit binding")
     require("tools/stair_initialization_binding.py" in plan["implementation_sha256"],
             "Fresh exploration binding helper is absent from the implementation manifest")
     require(subprocess.check_output(["git","status","--porcelain=v1"],cwd=ROOT,text=True).strip() == "", "Commit the reviewed implementation before launch")
@@ -158,14 +161,25 @@ def startup(metadata,request):
     protocol=request.get("trial_protocol")
     check(metadata.get("task") == TASK and protocol in PROTOCOL_FORMATS
           and metadata.get("trial_protocol") == protocol, "wrong physical task/profile")
-    if protocol == PROTOCOL:
+    if protocol in INITIALIZATION_PROTOCOLS:
         binding=request.get("exploration_initialization")
-        check(metadata.get("checkpoint_format") == request.get("checkpoint_format") == FORMAT, "wrong fresh exploration packet format")
+        check(metadata.get("checkpoint_format") == request.get("checkpoint_format") == PROTOCOL_FORMATS[protocol], "wrong fresh exploration packet format")
         check(metadata.get("exploration_initialization") == binding
               and metadata.get("plan_sha256") == request.get("plan_sha256"), "exploration plan/request/runtime binding disagrees")
         errors.extend(initialization_config_errors(binding, metadata.get("runtime_exploration_config", {})))
         errors.extend(exploration_snapshot_errors(binding, metadata.get("stair_exploration_budget"),
             initial_learning_state=metadata.get("initial_learning_state"), at_initialization=True))
+    if protocol == PROTOCOL:
+        temporal_credit=request.get("temporal_credit")
+        check(metadata.get("temporal_credit") == temporal_credit
+              and metadata.get("plan_sha256") == request.get("plan_sha256"), "temporal credit plan/request/runtime binding disagrees")
+        check(metadata.get("inherited_numeric_execution_profile_scope") == "numeric_executor_only"
+              and metadata.get("ppo_temporal_credit_override") == dict(parameter="gae_lambda", value=0.99,
+                  scope="stair_transfer_only", exact_binding="temporal_credit"), "temporal credit override metadata is missing")
+        for name, snapshot in (("resolved config", metadata.get("runtime_temporal_credit_config")),
+                               ("actual runtime", metadata.get("runtime_temporal_credit")),
+                               ("initial learning state", metadata.get("initial_learning_state", {}).get("temporal_credit"))):
+            errors.extend(name+": "+error for error in temporal_credit_snapshot_errors(temporal_credit, snapshot))
     check(metadata.get("num_envs") == 1024 and metadata.get("max_iterations") == BUDGET
           and metadata.get("num_steps_per_env") == 24, "wrong budget")
     check(metadata.get("observation_shapes") == {"policy":[1024,1034],"critic":[1024,871],"rnd_state":[1024,73]}, "wrong observation ABI")
@@ -233,12 +247,17 @@ def sample(case,commit=False,reviewed_pending=None):
         metadata=read(run/"run.json") if run and (run/"run.json").exists() else {}
         contract=startup(metadata,request) if request["job_kind"] == KIND else dict(status="not_training",errors=[])
         latest_motion=(tail_jsonl(run/"motion_metrics.jsonl") or [None])[-1] if run else None
-        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+        if (request["job_kind"] == KIND and request.get("trial_protocol") in INITIALIZATION_PROTOCOLS
                 and latest_motion is not None):
             native_errors=exploration_snapshot_errors(request.get("exploration_initialization"), latest_motion.get("exploration"),
                 initial_learning_state=metadata.get("initial_learning_state"))
             contract["errors"].extend("native exploration: "+error for error in native_errors)
             if native_errors: contract["status"]="failed"
+        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+                and latest_motion is not None):
+            temporal_errors=temporal_credit_snapshot_errors(request.get("temporal_credit"), latest_motion.get("temporal_credit"))
+            contract["errors"].extend("native temporal credit: "+error for error in temporal_errors)
+            if temporal_errors: contract["status"]="failed"
         files=[]
         if run:
             for path in run.glob("model_*.pt"):
@@ -435,6 +454,7 @@ def dispatch(plan_path,start,validation_parent=None):
             source_commit=checked["source_commit"],source_branch=subprocess.check_output(["git","branch","--show-current"],cwd=ROOT,text=True).strip(),
             plan_path=str(plan_path),plan_sha256=digest(plan_path),initial_policy=plan["initial_policy"],initial_policy_sha256=plan["initial_policy_sha256"],
             exploration_initialization=plan["exploration_initialization"],
+            temporal_credit=plan["temporal_credit"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=24,save_interval=500,expected_total_timesteps=BUDGET*1024*24,

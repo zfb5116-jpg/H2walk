@@ -485,6 +485,10 @@ class SupervisedRunner(OnPolicyRunner):
                  "effect_metric_schema": effect_schema}
         if exploration_budget is not None:
             point["exploration"] = exploration_budget.snapshot()
+        if self.guarded_stair:
+            temporal_credit = self.alg.temporal_credit_snapshot()
+            if temporal_credit is not None:
+                point["temporal_credit"] = temporal_credit
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

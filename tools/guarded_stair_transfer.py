@@ -9,8 +9,9 @@ import torch
 from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require, sha, state_digest)
 from task_context_normalization import normalization_metadata
 from selected_row_block import SELECTED_ROW_BLOCK_POLICY
-from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS,
-                                          initialization_config_errors)
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+                                          initialization_config_errors, temporal_credit_config_errors,
+                                          temporal_credit_snapshot_errors)
 
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
@@ -26,9 +27,36 @@ class H2GuardedStairPPO(H2GuardedPPO):
         self.stair_trial_protocol = trial_protocol
         # This selects the existing 5D, reserved, resource bounded, strict FP64
         # executor. It does not select a task, reward, terrain or training cap.
-        super().__init__(*args, trial_protocol=LONGER_BUDGET_CONTEXT_TRIAL, **kwargs)
+        super().__init__(*args, trial_protocol=LONGER_BUDGET_CONTEXT_TRIAL,
+                         stair_temporal_credit=trial_protocol == PROTOCOL, **kwargs)
         self.checkpoint_format = PROTOCOL_FORMATS[trial_protocol]
         self.selected_row_evaluation_policy = SELECTED_ROW_BLOCK_POLICY
+
+    def bind_temporal_credit(self, runner, environment, binding):
+        """Bind live runner/environment sources once, before the first rollout."""
+        require(self.stair_trial_protocol == PROTOCOL and runner.alg is self
+                and not hasattr(self, "_temporal_credit_binding"), "Wrong or repeated temporal credit binding")
+        require(not temporal_credit_config_errors(binding, runner.cfg, control_dt_s=environment.step_dt),
+                "Actual runner temporal configuration differs from its plan")
+        self._temporal_credit_binding = copy.deepcopy(binding)
+        self._temporal_credit_runner = runner
+        self._temporal_credit_environment = environment
+        return self.temporal_credit_snapshot()
+
+    def temporal_credit_snapshot(self):
+        """Read actual algorithm attributes and live rollout/environment scalars."""
+        if self.stair_trial_protocol != PROTOCOL:
+            return None
+        require(hasattr(self, "_temporal_credit_binding"), "Actual temporal credit is not bound")
+        steps = self._temporal_credit_runner.num_steps_per_env
+        require(type(steps) is int and type(self.storage.num_transitions_per_env) is int
+                and self.storage.num_transitions_per_env == steps,
+                "Actual rollout storage and runner lengths disagree")
+        result = dict(gamma=self.gamma, gae_lambda=self.lam, rollout_steps=steps,
+                      control_dt_s=self._temporal_credit_environment.step_dt)
+        require(not temporal_credit_snapshot_errors(self._temporal_credit_binding, result),
+                "Actual temporal credit differs from the immutable plan")
+        return result
 
     def learning_state(self):
         result = super().learning_state()
@@ -36,12 +64,22 @@ class H2GuardedStairPPO(H2GuardedPPO):
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
         result["proposal_projection"]["protocol"] = self.stair_trial_protocol
         result["proposal_projection"]["selected_row_evaluation_policy"] = SELECTED_ROW_BLOCK_POLICY
+        if self.stair_trial_protocol == PROTOCOL:
+            result["temporal_credit"] = self.temporal_credit_snapshot()
+            result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
+            result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
+                scope="stair_transfer_only", exact_binding="temporal_credit")
         return result
 
     def packet(self, iteration, infos=None):
         result = super().packet(iteration, infos)
         result.update(trial_protocol=self.stair_trial_protocol, task=TASK, training_budget=BUDGET,
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
+        if self.stair_trial_protocol == PROTOCOL:
+            result["temporal_credit"] = self.temporal_credit_snapshot()
+            result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
+            result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
+                scope="stair_transfer_only", exact_binding="temporal_credit")
         return result
 
 
@@ -51,10 +89,13 @@ def parent_admission(plan, root):
     require(plan["trial_protocol"] in PROTOCOL_FORMATS and plan["task"] == TASK
             and plan["max_iterations"] == BUDGET and plan["num_envs"] == 1024
             and plan["network_dimensions"] == [1034, 871, 73, 12], "Wrong stair plan")
-    if plan["trial_protocol"] == PROTOCOL:
-        require(plan.get("checkpoint_format") == FORMAT
+    if plan["trial_protocol"] in INITIALIZATION_PROTOCOLS:
+        require(plan.get("checkpoint_format") == PROTOCOL_FORMATS[plan["trial_protocol"]]
                 and not initialization_config_errors(plan.get("exploration_initialization")),
                 "Wrong fresh stair exploration initialization plan")
+    if plan["trial_protocol"] == PROTOCOL:
+        require(not temporal_credit_config_errors(plan.get("temporal_credit")),
+                "Wrong stair temporal credit plan")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA
