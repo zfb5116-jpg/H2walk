@@ -503,6 +503,9 @@ class SupervisedRunner(OnPolicyRunner):
                 point["target15_progress"] = course.target_summary()
                 point["per_height_training_progress"] = course.per_height_summary()
                 point["mixed_motion_is_not_target15_success"] = True
+            execution = self.alg.execution_chain_snapshot()
+            if execution is not None:
+                point["execution_chain"] = execution
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

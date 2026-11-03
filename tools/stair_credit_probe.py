@@ -27,6 +27,7 @@ class StairCreditProbe:
         self.delta_integrals = torch.zeros(6, 4, dtype=torch.float64, device=raw.device)
         self.last_note_counter = -1
         self.video = None
+        self.execution = None
         self.fixed_input_height_counts = torch.zeros(3, dtype=torch.long, device=raw.device)
         self.current_input_height_counts = torch.zeros_like(self.fixed_input_height_counts)
         self.current_input_update = -1
@@ -55,6 +56,8 @@ class StairCreditProbe:
         self.expected_counter = self.controls + 1
         self.captured.zero_()
         self.pre_generation = self.raw.initialization_reset_generation.clone()
+        if self.execution is not None:
+            self.execution.begin()
 
     def note_clearance(self, eligible, weight, previous_level, previous_near, raw_delta, applied_delta):
         """Copy actual branch inputs/results; never modify reward-owned tensors."""
@@ -151,6 +154,8 @@ class StairCreditProbe:
             original_physical_acceptance_unchanged=True, training_not_formal=True)
         self.trace.write(json.dumps(value, allow_nan=False) + "\n")
         self.trace.flush()
+        if self.execution is not None:
+            self.execution.finish_control(value)
 
     def finish(self):
         self.capture((~self.captured).nonzero().flatten())

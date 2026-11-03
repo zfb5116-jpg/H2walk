@@ -37,6 +37,8 @@ from stair_exploration import StairExplorationBudget
 from stair_curriculum_binding import course_config_errors
 from training_video import TrainingVideo, video_config_errors
 from stair_credit_probe import StairCreditProbe
+from stair_execution_probe import StairExecutionProbe
+from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors,
     ROLLOUT_STEPS_BY_PROTOCOL, rollout_credit_collection_errors, rollout_credit_budget_errors,
@@ -74,6 +76,9 @@ def main():
     cfg.stair_clearance_progress_potential = True
     height_course = plan.get("height_course")
     training_video = plan.get("training_video")
+    execution_chain = plan.get("execution_chain")
+    if execution_config_errors(execution_chain):
+        raise RuntimeError("Missing bounded existing-execution observer configuration")
     if course_config_errors(height_course) or video_config_errors(training_video) or args.enable_cameras is not True:
         raise RuntimeError("Missing reviewed height course/offscreen video configuration")
     from h2_task.stair_height_course import configure_height_course
@@ -90,7 +95,8 @@ def main():
         raise RuntimeError("Stair configuration differs from the reviewed budget/type")
     request_path = args.supervision_state.resolve().parent/"request.json"
     request = json.loads(request_path.read_text())
-    if request.get("height_course") != height_course or request.get("training_video") != training_video:
+    if (request.get("height_course") != height_course or request.get("training_video") != training_video
+            or request.get("execution_chain") != execution_chain):
         raise RuntimeError("Plan/request height/video declarations differ")
     initialization = plan.get("exploration_initialization")
     config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
@@ -132,7 +138,8 @@ def main():
                   "task_context_normalization.py", "task_context_metadata.py", "v11_parent_custody.py",
                   "evaluate_stair_policy.py", "evaluate_stair_policy.sh", "validate_stair_transfer.py", "launch_stair_transfer.py",
                   "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py",
-                  "stair_curriculum_binding.py", "training_video.py", "stair_credit_probe.py", "watch_stair_progress.py"]
+                  "stair_curriculum_binding.py", "training_video.py", "stair_credit_probe.py", "watch_stair_progress.py",
+                  "stair_execution_binding.py", "stair_execution_probe.py"]
     for name in tool_names:
         shutil.copy2(ROOT/"tools"/name, snapshot/name)
     shutil.copy2(args.plan, snapshot/"stair_transfer_plan.json")
@@ -165,7 +172,7 @@ def main():
         temporal_credit=temporal_credit,
         rollout_collection=rollout_collection,
         clearance_progress_potential=clearance_progress, runtime_clearance_progress_config=clearance_config,
-        height_course=height_course, training_video=training_video,
+        height_course=height_course, training_video=training_video, execution_chain=execution_chain,
         runtime_height_config=dict(minimum=cfg.stair_minimum_height, maximum=cfg.stair_maximum_height,
             rows=cfg.stair_height_levels, root_x=list(cfg.events.reset_base.params["pose_range"]["x"]),
             importer=cfg.scene.terrain.class_type.__module__+"."+cfg.scene.terrain.class_type.__name__,
@@ -188,7 +195,7 @@ def main():
     print("[H2] Stair log directory: "+str(log_dir), flush=True)
     env = gym.make(TASK, cfg=cfg, render_mode="rgb_array")
     runner = None
-    video = observer = None
+    video = observer = execution = None
     try:
         env = ProbedVecEnv(env, clip_actions=agent.clip_actions)
         raw = env.unwrapped
@@ -271,6 +278,9 @@ def main():
         observer.video = video
         metadata["runtime_height_profile"] = runner.alg.bind_height_profile(
             raw, observer, video, height_course, training_video)
+        execution = StairExecutionProbe(raw, runner, observer, log_dir/"execution_chain", execution_chain)
+        observer.execution = execution
+        metadata["runtime_execution_chain"] = runner.alg.bind_execution_chain(execution, execution_chain)
         metadata["initial_learning_state"] = dict(iteration=int(runner.current_learning_iteration),
             actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
             critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),
@@ -280,7 +290,10 @@ def main():
             temporal_credit=runner.alg.temporal_credit_snapshot(),
             rollout_collection=runner.alg.rollout_collection_snapshot(),
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
-            height_profile=runner.alg.height_profile_snapshot())
+            height_profile=runner.alg.height_profile_snapshot(),
+            execution_chain=runner.alg.execution_chain_snapshot())
+        if execution_snapshot_errors(execution_chain, metadata["runtime_execution_chain"], expected_controls=0):
+            raise RuntimeError("Actual initial execution observer binding failed")
         initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
             initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
         if initialization_errors:
@@ -300,6 +313,7 @@ def main():
             rollout_collection=runner.alg.rollout_collection_snapshot(),
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             height_profile=runner.alg.height_profile_snapshot(),
+            execution_chain=runner.alg.execution_chain_snapshot(),
             normalization_abi=normalization_metadata(normalizers), normalizers_frozen=True)
         def bank_sealed(receipt):
             if (sha(request_path) != request_sha or sha(args.plan) != plan_sha
@@ -327,6 +341,7 @@ def main():
                                    rollout_collection=runner.alg.rollout_collection_snapshot(),
                                    clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
                                    height_profile=runner.alg.height_profile_snapshot(),
+                                   execution_chain=runner.alg.execution_chain_snapshot(),
                                    actual_seal_storage_step=runner.alg.storage.step,
                                    actual_seal_RND_counter=int(runner.alg.rnd.update_counter),
                                    actual_current_rows_at_seal=receipt["current_rows_at_seal"],
@@ -339,6 +354,7 @@ def main():
                 source_sha256=source_hashes,training_tool_sha256=metadata["training_tool_sha256"],
                 trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
                 clearance_progress_potential=clearance_progress, height_course=height_course, training_video=training_video,
+                execution_chain=execution_chain,
                 plan_path=str(args.plan.resolve()),plan_sha256=plan_sha,initial_policy_sha256=plan["initial_policy_sha256"]))
         runner.alg.attach_guard(normalizers, runner.stair_exploration_budget, None, guard_dir,
             plan["initial_policy_sha256"], acquisition_spec=acquisition, on_bank_sealed=bank_sealed)
@@ -360,7 +376,7 @@ def main():
             temporal_credit=metadata["runtime_temporal_credit"],
             rollout_collection=metadata["runtime_rollout_collection"],
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
-            height_profile=runner.alg.height_profile_snapshot())
+            height_profile=runner.alg.height_profile_snapshot(), execution_chain=runner.alg.execution_chain_snapshot())
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
         except FunctionalUpdateRejected as error:
@@ -393,14 +409,18 @@ def main():
         if runner is not None and runner.writer is not None:
             runner.writer.flush(); runner.writer.close()
         try:
-            if video is not None:
-                video.close()
+            if execution is not None:
+                execution.close()
         finally:
             try:
-                if observer is not None:
-                    observer.close()
+                if video is not None:
+                    video.close()
             finally:
-                env.close()
+                try:
+                    if observer is not None:
+                        observer.close()
+                finally:
+                    env.close()
 
 
 if __name__ == "__main__":

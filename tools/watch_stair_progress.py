@@ -25,11 +25,13 @@ WINDOWS = (299, 399, 499)
 MAX_SIGNAL_ITERATION = 525
 sys.path.insert(0, str(ROOT/'tools'))
 import launch_stair_transfer as L
-from stair_curriculum_binding import target_window_errors, early_policy_errors, PROTOCOL
+from stair_curriculum_binding import target_window_errors, early_policy_errors
+from stair_initialization_binding import HEIGHT_COURSE_PROTOCOLS
+from stair_execution_binding import PROTOCOL, execution_snapshot_errors
 # Reject a wrong/closed producer before creating any operator artifact.
 if (not CASE.is_relative_to(ROOT/'logs/stair_learning')
         or L.digest(HERE/'human_authorization.json') != AUTH_SHA
-        or L.read(CASE/'request.json').get('trial_protocol') != PROTOCOL):
+        or L.read(CASE/'request.json').get('trial_protocol') not in HEIGHT_COURSE_PROTOCOLS):
     raise RuntimeError('Wrong current-course producer/authorization; no operator artifacts created')
 
 
@@ -59,6 +61,10 @@ def validate_window(native, index):
             and schema['evidence_status'] == 'complete_episode_window', 'Wrong progress provider')
     target_errors = target_window_errors(native, index)
     require(not target_errors, 'Target15 window rejected: '+ '; '.join(target_errors))
+    request=L.read(CASE/'request.json')
+    if request['trial_protocol'] == PROTOCOL:
+        require(not execution_snapshot_errors(request.get('execution_chain'), native.get('execution_chain'),
+                    expected_controls=(index+1)*48), 'Wrong actual execution-chain window source')
     m = native['target15_progress']['motion']
     for key in ['window_episode_count','episode_count','completed_episode_count',
                 'physical_valid_episode_count','invalid_physical_episode_count']:
@@ -108,7 +114,7 @@ def bindings(auth):
     require(L.digest(HERE/'human_authorization.json') == AUTH_SHA, 'Authorization changed')
     require(L.read(L.POINTER)['active_stair_job'] == str(CASE), 'Current pointer changed')
     req = L.read(CASE/'request.json')
-    require(req['trial_protocol'] == PROTOCOL
+    require(req['trial_protocol'] in HEIGHT_COURSE_PROTOCOLS
             and not early_policy_errors(L.read(req['early_progress_policy']))
             and req['early_progress_policy_sha256'] == L.digest(req['early_progress_policy']),
             'Wrong human-approved target15 policy')

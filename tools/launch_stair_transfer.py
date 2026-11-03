@@ -17,7 +17,7 @@ from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snaps
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy
 from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
-    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
+    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, HEIGHT_COURSE_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
     rollout_credit_budget_errors, rollout_credit_seal_errors, rollout_credit_acquisition_errors,
@@ -25,6 +25,7 @@ from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, IN
 
 from stair_curriculum_binding import (course_config_errors, profile_snapshot_errors, early_policy_errors)
 from training_video import video_config_errors
+from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -150,6 +151,10 @@ def preflight(plan_path):
             and choice["answer"] == "采用该课程方案", "Missing direct human course choice")
     require(not course_config_errors(plan.get("height_course"))
             and not video_config_errors(plan.get("training_video")), "Wrong new course/video profile")
+    require(not execution_config_errors(plan.get("execution_chain"))
+            and all(name in plan["implementation_sha256"] for name in
+                    ("tools/stair_execution_binding.py", "tools/stair_execution_probe.py")),
+            "Missing bounded existing-execution observer source/contract")
     for name, expected in plan["external_dependency_sha256"].items():
         require(digest(name) == expected, "Reviewed external terrain/reset/render/encoder dependency changed: "+name)
     require(digest(plan["initial_policy"]) == plan["initial_policy_sha256"] == "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f", "Wrong accepted flat parent")
@@ -228,11 +233,11 @@ def startup(metadata,request):
                          metadata.get("initial_learning_state", {}).get("clearance_progress_potential"),
                          metadata.get("guarded_stair_learning", {}).get("clearance_progress_potential")):
             errors.extend(clearance_progress_snapshot_errors(binding, snapshot, protocol=protocol, expected_updates=0))
-    if protocol == PROTOCOL:
+    if protocol in HEIGHT_COURSE_PROTOCOLS:
         check(metadata.get("height_course") == request.get("height_course")
               and metadata.get("training_video") == request.get("training_video"), "new profile declarations disagree")
         errors.extend(course_config_errors(request.get("height_course")))
-        errors.extend(video_config_errors(request.get("training_video")))
+        errors.extend(video_config_errors(request.get("training_video"), allow_legacy_view=protocol != PROTOCOL))
         for profile in (metadata.get("runtime_height_profile"),
                         metadata.get("initial_learning_state", {}).get("height_profile"),
                         metadata.get("guarded_stair_learning", {}).get("height_profile")):
@@ -249,6 +254,13 @@ def startup(metadata,request):
               and config.get("root_x") == [-.25,.25] and config.get("enable_cameras") is True
               and config.get("importer") == "h2_task.stair_height_course.FixedTargetTerrainImporter",
               "actual initial course config is missing")
+    if protocol == PROTOCOL:
+        check(metadata.get("execution_chain") == request.get("execution_chain"),
+              "execution-chain plan/request/runtime declaration differs")
+        for snapshot in (metadata.get("runtime_execution_chain"),
+                         metadata.get("initial_learning_state", {}).get("execution_chain"),
+                         metadata.get("guarded_stair_learning", {}).get("execution_chain")):
+            errors.extend(execution_snapshot_errors(request.get("execution_chain"), snapshot, expected_controls=0))
     check(metadata.get("num_envs") == 1024 and metadata.get("max_iterations") == BUDGET
           and metadata.get("num_steps_per_env") == (ROLLOUT_STEPS_BY_PROTOCOL.get(protocol) if type(protocol) is str else None),
           "wrong budget")
@@ -260,8 +272,8 @@ def startup(metadata,request):
     check(initial.get("actor_optimizer_state_entries") == initial.get("critic_optimizer_state_entries")
           == initial.get("rnd_optimizer_state_entries") == 0, "optimizers are not fresh")
     geo=metadata.get("runtime_stair_geometry",{})
-    check(geo.get("levels") == 6 and geo.get("riser_min_m") == (.05 if protocol == PROTOCOL else .15) and geo.get("riser_max_m") == .15
-          and geo.get("terrain_rows") == (3 if protocol == PROTOCOL else 2)
+    check(geo.get("levels") == 6 and geo.get("riser_min_m") == (.05 if protocol in HEIGHT_COURSE_PROTOCOLS else .15) and geo.get("riser_max_m") == .15
+          and geo.get("terrain_rows") == (3 if protocol in HEIGHT_COURSE_PROTOCOLS else 2)
           and geo.get("episode_length_s") == 90 and geo.get("scripted_gait_installed") is False, "incorrect staircase/controller")
     command=metadata.get("world_stair_command",{})
     check(command.get("kind") == "fixed_world_plusX_base_command_v1"
@@ -335,13 +347,20 @@ def sample(case,commit=False,reviewed_pending=None):
                                                                protocol=request["trial_protocol"])
             contract["errors"].extend("native rollout collection: "+error for error in collection_errors)
             if collection_errors: contract["status"]="failed"
-        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+        if (request["job_kind"] == KIND and request.get("trial_protocol") in HEIGHT_COURSE_PROTOCOLS
                 and latest_motion is not None):
             clearance_errors=clearance_progress_snapshot_errors(request.get("clearance_progress_potential"),
                 latest_motion.get("clearance_progress_potential"), protocol=request["trial_protocol"],
                 expected_updates=latest_motion["completed_iterations"]*request["num_steps_per_env"])
             contract["errors"].extend("native clearance progress: "+error for error in clearance_errors)
             if clearance_errors: contract["status"]="failed"
+        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+                and latest_motion is not None):
+            execution_errors=execution_snapshot_errors(request.get("execution_chain"),
+                latest_motion.get("execution_chain"),
+                expected_controls=latest_motion["completed_iterations"]*request["num_steps_per_env"])
+            contract["errors"].extend("native execution chain: "+error for error in execution_errors)
+            if execution_errors: contract["status"]="failed"
         files=[]
         if run:
             for path in run.glob("model_*.pt"):
@@ -548,6 +567,7 @@ def dispatch(plan_path,start,validation_parent=None):
             rollout_collection=plan["rollout_collection"],
             clearance_progress_potential=plan["clearance_progress_potential"],
             height_course=plan["height_course"], training_video=plan["training_video"],
+            execution_chain=plan["execution_chain"],
             external_dependency_sha256=plan["external_dependency_sha256"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
@@ -575,6 +595,7 @@ def dispatch(plan_path,start,validation_parent=None):
             temporal_credit=plan["temporal_credit"],rollout_collection=plan["rollout_collection"],
             clearance_progress_potential=plan["clearance_progress_potential"],
             height_course=plan["height_course"], training_video=plan["training_video"],
+            execution_chain=plan["execution_chain"],
             external_dependency_sha256=plan["external_dependency_sha256"],
             expected_final_iteration=BUDGET-1,expected_total_timesteps=BUDGET*1024*rollout_steps,
             monitor_snapshot_tool=str(SELF),monitor_snapshot_command=[sys.executable,str(SELF),"--monitor",str(case)])

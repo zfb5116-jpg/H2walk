@@ -97,7 +97,7 @@ def profile_snapshot_errors(binding, video_binding, value, *, expected_controls=
     if type(value) is not dict or set(value) != {"height_course", "training_video", "credit_coverage"}:
         return ["missing exact live course/video/credit profile"]
     errors = course_snapshot_errors(binding, value["height_course"], expected_controls=expected_controls)
-    errors.extend(video_config_errors(video_binding))
+    errors.extend(video_config_errors(video_binding, allow_legacy_view=True))
     video = value["training_video"]
     if not isinstance(video, dict) or not _same_json(video.get("contract"), video_binding):
         return errors + ["live video config differs"]

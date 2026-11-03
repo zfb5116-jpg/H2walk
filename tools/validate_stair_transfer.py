@@ -7,8 +7,9 @@ import math
 from pathlib import Path
 from stair_curriculum_binding import course_config_errors, profile_snapshot_errors
 from training_video import video_config_errors
+from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
-    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
+    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, HEIGHT_COURSE_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
     rollout_credit_budget_errors, rollout_credit_seal_errors,
@@ -39,9 +40,10 @@ def validate_cpu(checkpoint, plan_path, scope):
     provenance = parent_admission(plan, root)
     protocol = plan["trial_protocol"]
     checkpoint_format = PROTOCOL_FORMATS[protocol]
-    if protocol == PROTOCOL:
+    if protocol in HEIGHT_COURSE_PROTOCOLS:
         height_course, training_video = plan.get("height_course"), plan.get("training_video")
-        require(not course_config_errors(height_course) and not video_config_errors(training_video),
+        require(not course_config_errors(height_course)
+                and not video_config_errors(training_video, allow_legacy_view=protocol != PROTOCOL),
                 "Wrong new course/video declaration")
     rollout_steps = ROLLOUT_STEPS_BY_PROTOCOL[protocol]
     run = json.loads((checkpoint.parent/"run.json").read_text())
@@ -163,8 +165,10 @@ def validate_cpu(checkpoint, plan_path, scope):
                 plan_path=str(plan_path),plan_sha256=sha(plan_path),initial_policy_sha256=plan["initial_policy_sha256"])
         if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
             expected_bindings["clearance_progress_potential"] = clearance_progress
-        if protocol == PROTOCOL:
+        if protocol in HEIGHT_COURSE_PROTOCOLS:
             expected_bindings.update(height_course=height_course, training_video=training_video)
+        if protocol == PROTOCOL:
+            expected_bindings["execution_chain"] = plan["execution_chain"]
         require(bank["bindings"] == expected_bindings,
                 "Actual fixed-prefix source/request/plan bindings changed")
         guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
@@ -276,7 +280,7 @@ def validate_cpu(checkpoint, plan_path, scope):
                 "Typed packet exploration initialization binding changed")
         require(saved["model_state_dict"]["std"].tolist() == ex["policy_std"],
                 "Typed packet exploration snapshot disagrees with the serialized policy std")
-    if protocol == PROTOCOL:
+    if protocol in HEIGHT_COURSE_PROTOCOLS:
         require(request.get("height_course") == run.get("height_course") == height_course
                 and request.get("training_video") == run.get("training_video") == training_video,
                 "Typed new training profile disagrees with its request/plan")
@@ -304,10 +308,27 @@ def validate_cpu(checkpoint, plan_path, scope):
             require(sha(name) == expected, "External profile source/encoder changed")
         require(saved["height_profile"]["training_video"]["encoder_binary_sha256"]
                 == plan["external_dependency_sha256"][training_video["encoder_binary"]], "Wrong actual encoder binary")
+    if protocol == PROTOCOL:
+        execution_chain = plan.get("execution_chain")
+        require(not execution_config_errors(execution_chain)
+                and request.get("execution_chain") == run.get("execution_chain") == execution_chain,
+                "Typed execution observer declaration differs from its own source")
+        for value in (run.get("runtime_execution_chain"),
+                      run.get("initial_learning_state", {}).get("execution_chain"),
+                      run.get("guarded_stair_learning", {}).get("execution_chain")):
+            require(not execution_snapshot_errors(execution_chain, value, expected_controls=0),
+                    "Initial existing-execution binding differs")
+        for value in (saved.get("execution_chain"), gs.get("execution_chain"), native[0].get("execution_chain")):
+            require(not execution_snapshot_errors(execution_chain, value, expected_controls=completed*rollout_steps),
+                    "Typed actual execution-chain window differs")
+        require(saved["execution_chain"] == gs["execution_chain"] == native[0]["execution_chain"],
+                "Packet/state/native execution-chain snapshots disagree")
+        require(not execution_snapshot_errors(execution_chain, sealed.get("execution_chain"), expected_controls=24),
+                "Prefix24 existing-execution observer binding differs")
     geometry = run["runtime_stair_geometry"]
-    require(geometry["levels"] == 6 and geometry["riser_min_m"] == (.05 if protocol == PROTOCOL else .15) and geometry["riser_max_m"] == .15
+    require(geometry["levels"] == 6 and geometry["riser_min_m"] == (.05 if protocol in HEIGHT_COURSE_PROTOCOLS else .15) and geometry["riser_max_m"] == .15
             and geometry["depth_m"] == .35 and geometry["width_m"] == 2.4 and geometry["approach_m"] == 1.4
-            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == (3 if protocol == PROTOCOL else 2)
+            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == (3 if protocol in HEIGHT_COURSE_PROTOCOLS else 2)
             and geometry["scripted_gait_installed"] is False and len(geometry["termination_terms"]) == 7,
             "Actual staircase or native terminations changed")
     command = run["world_stair_command"]
@@ -372,9 +393,12 @@ def validate_cpu(checkpoint, plan_path, scope):
         result["actual_clearance_reward_binding_passed"] = True
         result["actual_clearance_reward_state"] = saved["clearance_progress_potential"]
         result["native_clearance_reward_iteration"] = saved["iter"]
-    if protocol == PROTOCOL:
+    if protocol in HEIGHT_COURSE_PROTOCOLS:
         result.update(height_course=height_course, training_video=training_video,
             actual_height_profile=saved["height_profile"], actual_height_profile_binding_passed=True)
+    if protocol == PROTOCOL:
+        result.update(execution_chain=execution_chain, actual_execution_chain=saved["execution_chain"],
+                      actual_execution_chain_binding_passed=True)
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

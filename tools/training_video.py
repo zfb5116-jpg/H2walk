@@ -10,19 +10,20 @@ import threading
 FFMPEG = "/home/nsgm/anaconda3/envs/env_isaaclab/lib/python3.11/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2"
 
 
-def video_contract():
+def video_contract(*, legacy_view=False):
     return dict(kind="same_sim_env0_three_bounded_training_windows_v1", enabled=True,
         env_id=0, resolution=[512, 384], fps=10, control_dt_s=0.02, capture_every_controls=5,
         windows=[[0, 10, 500, 100], [480, 500, 1000, 200], [979, 999, 1000, 200]],
         maximum_frames=500, maximum_manual_renders=504, static_warmup_renders=4,
         queue_frames=2, cpu_codec="libx264", encoder_binary=FFMPEG,
-        eye=[1.75, -4.5, 2.2], lookat=[1.75, 0.0, 1.35],
+        eye=([1.75, -4.5, 2.2] if legacy_view else [-1.2, -3.6, 2.5]),
+        lookat=([1.75, 0.0, 1.35] if legacy_view else [2.2, 0.0, 0.8]),
         viewer_origin="env", viewer_env_index=0, camera_sensor_added=False,
         expected_has_rtx_sensors=False, render_recompute=False,
         training_not_formal=True, reset_frames_labelled=True)
 
 
-def video_config_errors(value):
+def video_config_errors(value, *, allow_legacy_view=False):
     expected = video_contract()
     if type(value) is not dict or set(value) != set(expected):
         return ["training video requires exact declared fields"]
@@ -32,6 +33,10 @@ def video_config_errors(value):
         if isinstance(b, list):
             return len(a) == len(b) and all(exact(x, y) for x, y in zip(a, b))
         return a == b
+    if allow_legacy_view:
+        legacy = video_contract(legacy_view=True)
+        if all(exact(value[k], legacy[k]) for k in legacy):
+            return []
     return ["training video changed " + k for k in expected if not exact(value[k], expected[k])]
 
 

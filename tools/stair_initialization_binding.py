@@ -6,10 +6,12 @@ checkpoint, or change the inherited exploration arithmetic or optimizer hook.
 import math
 
 
-PROTOCOL = "accepted_flat_fixed_target_height_course_stair_v10"
-FORMAT = "h2_guarded_stair_ppo_v10"
+from stair_execution_binding import PROTOCOL, FORMAT
+
+LEGACY_COURSE_PROTOCOL = "accepted_flat_fixed_target_height_course_stair_v10"
+HEIGHT_COURSE_PROTOCOLS = (LEGACY_COURSE_PROTOCOL, PROTOCOL)
 LEGACY_CLEARANCE_PROTOCOL = "accepted_flat_clearance_potential_stair_v9"
-CLEARANCE_PROGRESS_PROTOCOLS = (LEGACY_CLEARANCE_PROTOCOL, PROTOCOL)
+CLEARANCE_PROGRESS_PROTOCOLS = (LEGACY_CLEARANCE_PROTOCOL, *HEIGHT_COURSE_PROTOCOLS)
 LEGACY_ROLLOUT_PROTOCOL = "accepted_flat_rollout_credit_stair_v8"
 ROLLOUT_CREDIT_PROTOCOLS = (LEGACY_ROLLOUT_PROTOCOL, *CLEARANCE_PROGRESS_PROTOCOLS)
 LEGACY_PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
@@ -19,7 +21,8 @@ PROTOCOL_FORMATS = {LEGACY_PROTOCOL: "h2_guarded_stair_ppo_v5",
                     LEGACY_INITIALIZATION_PROTOCOL: "h2_guarded_stair_ppo_v6",
                     LEGACY_TEMPORAL_PROTOCOL: "h2_guarded_stair_ppo_v7",
                     LEGACY_ROLLOUT_PROTOCOL: "h2_guarded_stair_ppo_v8",
-                    LEGACY_CLEARANCE_PROTOCOL: "h2_guarded_stair_ppo_v9", PROTOCOL: FORMAT}
+                    LEGACY_CLEARANCE_PROTOCOL: "h2_guarded_stair_ppo_v9",
+                    LEGACY_COURSE_PROTOCOL: "h2_guarded_stair_ppo_v10", PROTOCOL: FORMAT}
 INITIALIZATION_PROTOCOLS = (LEGACY_INITIALIZATION_PROTOCOL, LEGACY_TEMPORAL_PROTOCOL, *ROLLOUT_CREDIT_PROTOCOLS)
 TEMPORAL_CREDIT_BY_PROTOCOL = {
     LEGACY_TEMPORAL_PROTOCOL: {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 24, "control_dt_s": 0.02},
