@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snapshot,
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS,
+                                          initialization_config_errors, exploration_snapshot_errors)
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -23,8 +25,6 @@ POINTER = ROOT/"logs/launches/current_main_training.json"
 SLOT = ROOT/"logs/stair_learning/stair_transfer.slot.lock"
 ENTRY = ROOT/"tools/train_stair_transfer.py"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
-PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
-FORMAT = "h2_guarded_stair_ppo_v5"
 KIND = "guarded_stair_transfer_ppo_learning"
 EVAL_KIND = "guarded_stair_transfer_frozen_validation"
 BUDGET = 1000
@@ -104,9 +104,13 @@ def preflight(plan_path):
     plan_path=Path(plan_path).resolve(strict=True)
     plan=read(plan_path)
     no_sim()
-    require(plan["status"] == "reviewed_ready" and plan["trial_protocol"] == PROTOCOL
+    require(plan["status"] == "reviewed_ready" and plan["trial_protocol"] == PROTOCOL and plan.get("checkpoint_format") == FORMAT
             and plan["task"] == TASK and plan["max_iterations"] == BUDGET
             and plan["num_envs"] == 1024 and plan["network_dimensions"] == [1034,871,73,12], "Wrong reviewed plan")
+    require(not initialization_config_errors(plan.get("exploration_initialization")),
+            "Missing reviewed full-ceiling fresh exploration initialization")
+    require("tools/stair_initialization_binding.py" in plan["implementation_sha256"],
+            "Fresh exploration binding helper is absent from the implementation manifest")
     require(subprocess.check_output(["git","status","--porcelain=v1"],cwd=ROOT,text=True).strip() == "", "Commit the reviewed implementation before launch")
     for name, expected in plan["implementation_sha256"].items():
         require(digest(ROOT/name) == expected, "Reviewed implementation changed: "+name)
@@ -151,7 +155,17 @@ def startup(metadata,request):
     errors=[]
     def check(ok,message):
         if not ok: errors.append(message)
-    check(metadata.get("task") == TASK and metadata.get("trial_protocol") == PROTOCOL, "wrong physical task/profile")
+    protocol=request.get("trial_protocol")
+    check(metadata.get("task") == TASK and protocol in PROTOCOL_FORMATS
+          and metadata.get("trial_protocol") == protocol, "wrong physical task/profile")
+    if protocol == PROTOCOL:
+        binding=request.get("exploration_initialization")
+        check(metadata.get("checkpoint_format") == request.get("checkpoint_format") == FORMAT, "wrong fresh exploration packet format")
+        check(metadata.get("exploration_initialization") == binding
+              and metadata.get("plan_sha256") == request.get("plan_sha256"), "exploration plan/request/runtime binding disagrees")
+        errors.extend(initialization_config_errors(binding, metadata.get("runtime_exploration_config", {})))
+        errors.extend(exploration_snapshot_errors(binding, metadata.get("stair_exploration_budget"),
+            initial_learning_state=metadata.get("initial_learning_state"), at_initialization=True))
     check(metadata.get("num_envs") == 1024 and metadata.get("max_iterations") == BUDGET
           and metadata.get("num_steps_per_env") == 24, "wrong budget")
     check(metadata.get("observation_shapes") == {"policy":[1024,1034],"critic":[1024,871],"rnd_state":[1024,73]}, "wrong observation ABI")
@@ -218,6 +232,13 @@ def sample(case,commit=False,reviewed_pending=None):
         run=Path(state["run_dir"]) if state.get("run_dir") else None
         metadata=read(run/"run.json") if run and (run/"run.json").exists() else {}
         contract=startup(metadata,request) if request["job_kind"] == KIND else dict(status="not_training",errors=[])
+        latest_motion=(tail_jsonl(run/"motion_metrics.jsonl") or [None])[-1] if run else None
+        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+                and latest_motion is not None):
+            native_errors=exploration_snapshot_errors(request.get("exploration_initialization"), latest_motion.get("exploration"),
+                initial_learning_state=metadata.get("initial_learning_state"))
+            contract["errors"].extend("native exploration: "+error for error in native_errors)
+            if native_errors: contract["status"]="failed"
         files=[]
         if run:
             for path in run.glob("model_*.pt"):
@@ -249,7 +270,7 @@ def sample(case,commit=False,reviewed_pending=None):
             processes=checked,gpu=gpu_snapshot(),changed_frozen_inputs=changed,
             startup_contract=contract,checkpoints=files,fatal_log_candidates=fatal,known_nonfatal=known,
             confirmed_stop_reasons=reasons,reviewed_pending=str(reviewed_pending) if reviewed_pending else None,
-            latest_motion=(tail_jsonl(run/"motion_metrics.jsonl") or [None])[-1] if run else None,
+            latest_motion=latest_motion,
             latest_effect=(tail_jsonl(run/"effect_assessments.jsonl") or [None])[-1] if run else None)
         pending=case/("monitor.pending_"+uuid.uuid4().hex[:12]+".json")
         immutable(pending,point)
@@ -410,9 +431,10 @@ def dispatch(plan_path,start,validation_parent=None):
         else:
             command += ["--plan",str(plan_path),"--supervision_state",str(case/"supervision.json"),
                         "--stop_policy",str(case/"stop_policy.json"),"--expected_git_commit",checked["source_commit"]]
-        request=dict(case=str(case),job_kind=kind,entrypoint=entry,command=command,task=TASK,trial_protocol=PROTOCOL,
+        request=dict(case=str(case),job_kind=kind,entrypoint=entry,command=command,task=TASK,trial_protocol=PROTOCOL,checkpoint_format=FORMAT,
             source_commit=checked["source_commit"],source_branch=subprocess.check_output(["git","branch","--show-current"],cwd=ROOT,text=True).strip(),
             plan_path=str(plan_path),plan_sha256=digest(plan_path),initial_policy=plan["initial_policy"],initial_policy_sha256=plan["initial_policy_sha256"],
+            exploration_initialization=plan["exploration_initialization"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=24,save_interval=500,expected_total_timesteps=BUDGET*1024*24,

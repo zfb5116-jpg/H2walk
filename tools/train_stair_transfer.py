@@ -34,6 +34,7 @@ from guarded_stair_transfer import (TASK, PROTOCOL, FORMAT, BUDGET, parent_admis
 from guarded_flat_ppo import FunctionalUpdateRejected
 from task_context_normalization import make_task_context_normalizers, normalization_metadata
 from stair_exploration import StairExplorationBudget
+from stair_initialization_binding import initialization_config_errors, exploration_snapshot_errors
 
 sys.path.insert(0, str(ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based"))
 import h2_task
@@ -69,6 +70,15 @@ def main():
     if (agent.max_iterations != BUDGET or agent.save_interval != 500 or agent.num_steps_per_env != 24
             or agent.algorithm.class_name != "H2GuardedStairPPO" or agent.algorithm.trial_protocol != PROTOCOL):
         raise RuntimeError("Stair configuration differs from the reviewed budget/type")
+    request_path = args.supervision_state.resolve().parent/"request.json"
+    request = json.loads(request_path.read_text())
+    initialization = plan.get("exploration_initialization")
+    config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
+    if (config_errors or plan.get("trial_protocol") != PROTOCOL or plan.get("checkpoint_format") != FORMAT
+            or request.get("exploration_initialization") != initialization
+            or request.get("plan_sha256") != sha(args.plan) or request.get("trial_protocol") != PROTOCOL
+            or request.get("checkpoint_format") != FORMAT):
+        raise RuntimeError("Fresh exploration plan/request/resolved config binding failed: " + "; ".join(config_errors))
     log_dir = ROOT/"logs/rsl_rl/h2_guarded_stair_transfer"/(datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+"_"+args.supervision_state.parent.name[-8:])
     log_dir.mkdir(parents=True, exist_ok=False)
     cfg.io_descriptors_output_dir = str(log_dir)
@@ -76,7 +86,7 @@ def main():
     snapshot.mkdir()
     shutil.copytree(ROOT/"source", snapshot/"source", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     tool_names = ["train_stair_transfer.py", "guarded_stair_transfer.py", "guarded_flat_ppo.py",
-                  "functional_proposal.py", "selected_row_block.py", "stair_exploration.py", "training_supervision.py",
+                  "functional_proposal.py", "selected_row_block.py", "stair_exploration.py", "stair_initialization_binding.py", "training_supervision.py",
                   "task_context_normalization.py", "task_context_metadata.py", "v11_parent_custody.py",
                   "evaluate_stair_policy.py", "evaluate_stair_policy.sh", "validate_stair_transfer.py", "launch_stair_transfer.py",
                   "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py"]
@@ -103,6 +113,8 @@ def main():
         initialization_mode="accepted_flat_same_width_model_and_own_norm_only_fresh_stair_PPO",
         initial_policy=plan["initial_policy"], initial_policy_sha256=plan["initial_policy_sha256"],
         plan_path=str(args.plan.resolve()), plan_sha256=sha(args.plan), stop_policy=policy,
+        exploration_initialization=initialization,
+        runtime_exploration_config=dict(agent.stair_exploration_budget),
         early_progress_policy=plan["early_progress_policy"],
         early_progress_policy_sha256=plan["early_progress_policy_sha256"],
         policy_dimensions=[1034,871,73,12], inherited_numeric_execution_profile="explicit_task_context_longer_budget_v1",
@@ -169,7 +181,7 @@ def main():
             stiffness=robot.data.joint_stiffness[:,ids], effort_limits=robot.data.joint_effort_limits[:,ids],
             **agent.stair_exploration_budget)
         if not torch.equal(runner.alg.policy.std, runner.stair_exploration_budget.initial):
-            raise RuntimeError("Fresh stair exploration was not reset to its reviewed half budget")
+            raise RuntimeError("Fresh stair exploration was not reset to its reviewed configured initial fraction")
         metadata["stair_exploration_budget"] = runner.stair_exploration_budget.snapshot()
         metadata["initial_learning_state"] = dict(iteration=int(runner.current_learning_iteration),
             actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
@@ -177,6 +189,10 @@ def main():
             rnd_optimizer_state_entries=len(runner.alg.rnd_optimizer.state), parent_packet_loads=1,
             parent_optimizer_or_RNG_loaded=False, normalization_abi=normalization_metadata(normalizers),
             policy_std=runner.alg.policy.std.detach().cpu().tolist())
+        initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
+            initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
+        if initialization_errors:
+            raise RuntimeError("Actual fresh exploration initialization binding failed: " + "; ".join(initialization_errors))
         case = args.supervision_state.resolve().parent
         request_path = case/"request.json"
         request_sha, plan_sha = sha(request_path), sha(args.plan)

@@ -15,6 +15,8 @@ class StairExplorationBudget:
         if not 0 < minimum_fraction <= initial_fraction <= 1:
             raise ValueError("Invalid exploration fraction ordering")
         self.policy = policy
+        self.initial_fraction = initial_fraction
+        self.minimum_fraction = minimum_fraction
         self.maximum_angle = torch.as_tensor(maximum_angle_std,device=policy.std.device,dtype=policy.std.dtype)
         if self.maximum_angle.shape != (12,) or not bool((self.maximum_angle>0).all()):
             raise ValueError("Specify one positive physical angular std ceiling per leg joint")
@@ -63,7 +65,8 @@ class StairExplorationBudget:
     def snapshot(self):
         self.assert_valid()
         std=self.policy.std.detach()
-        result=dict(policy_std=std.cpu().tolist(),minimum_raw_std=self.minimum.cpu().tolist(),
+        result=dict(initial_fraction=self.initial_fraction,minimum_fraction=self.minimum_fraction,
+            policy_std=std.cpu().tolist(),minimum_raw_std=self.minimum.cpu().tolist(),
             maximum_raw_std=self.maximum.cpu().tolist(),initial_raw_std=self.initial.cpu().tolist(),
             maximum_angle_rms_rad=self.maximum_angle.cpu().tolist(),
             current_angle_rms_upper_bound_rad=(std*self.half_range_max).cpu().tolist(),

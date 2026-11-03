@@ -5,6 +5,8 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS,
+                                          initialization_config_errors, exploration_snapshot_errors)
 
 
 def sha(path):
@@ -18,7 +20,7 @@ def require(ok, message):
 
 def validate_cpu(checkpoint, plan_path, scope):
     import torch
-    from guarded_stair_transfer import FORMAT, PROTOCOL, TASK, BUDGET, parent_admission
+    from guarded_stair_transfer import TASK, BUDGET, parent_admission
     from guarded_flat_ppo import state_digest
     from task_context_normalization import make_task_context_normalizers, normalization_metadata
     checkpoint = Path(checkpoint).resolve(strict=True)
@@ -29,11 +31,26 @@ def validate_cpu(checkpoint, plan_path, scope):
     output = checkpoint.with_suffix(".validation.json")
     require(not output.exists(), "A CPU receipt already exists; do not reload this scope")
     provenance = parent_admission(plan, root)
+    protocol = plan["trial_protocol"]
+    checkpoint_format = PROTOCOL_FORMATS[protocol]
     run = json.loads((checkpoint.parent/"run.json").read_text())
-    require(run["task"] == TASK and run["trial_protocol"] == PROTOCOL and run["max_iterations"] == BUDGET
+    require(run["task"] == TASK and run["trial_protocol"] == protocol and run["max_iterations"] == BUDGET
             and run["plan_sha256"] == sha(plan_path) and run["num_envs"] == 1024
             and run["num_steps_per_env"] == 24 and run["policy_dimensions"] == [1034,871,73,12],
             "CPU admission belongs to a different run")
+    if protocol == PROTOCOL:
+        binding = plan["exploration_initialization"]
+        request = json.loads((Path(run["case"])/"request.json").read_text())
+        require(request.get("exploration_initialization") == run.get("exploration_initialization") == binding
+                and request.get("plan_sha256") == run["plan_sha256"]
+                and request.get("trial_protocol") == protocol
+                and request.get("checkpoint_format") == run.get("checkpoint_format") == checkpoint_format,
+                "Fresh exploration plan/request/run binding changed")
+        require(not initialization_config_errors(binding, run.get("runtime_exploration_config", {})),
+                "Resolved runtime exploration configuration changed")
+        require(not exploration_snapshot_errors(binding, run.get("stair_exploration_budget"),
+                    initial_learning_state=run.get("initial_learning_state"), at_initialization=True),
+                "Actual initial exploration snapshot changed")
     source = Path(run["source_snapshot"]).resolve(strict=True)
     source_hashes = {"source/"+str(p.relative_to(source)):sha(p) for p in source.rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
@@ -43,7 +60,7 @@ def validate_cpu(checkpoint, plan_path, scope):
     require(not torch.cuda.is_initialized(), "CPU admission may not initialize CUDA")
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
     parent = torch.load(plan["initial_policy"], map_location="cpu", weights_only=True)
-    require(saved["format"] == FORMAT and saved["trial_protocol"] == PROTOCOL and saved["task"] == TASK
+    require(saved["format"] == checkpoint_format and saved["trial_protocol"] == protocol and saved["task"] == TASK
             and saved["training_budget"] == BUDGET, "Wrong serialized stair type")
     gs = saved["guarded_ppo_state"]
     completed = int(gs["completed_updates"])
@@ -136,6 +153,11 @@ def validate_cpu(checkpoint, plan_path, scope):
     require(ex["optimizer_steps"] == actor_steps and len(ex["policy_std"]) == 12
             and all(0<lo<=s<=hi for s,lo,hi in zip(ex["policy_std"],ex["minimum_raw_std"],ex["maximum_raw_std"])),
             "Physical exploration budget changed")
+    if protocol == PROTOCOL:
+        require(not exploration_snapshot_errors(binding, ex, initial_learning_state=run["initial_learning_state"]),
+                "Typed packet exploration initialization binding changed")
+        require(saved["model_state_dict"]["std"].tolist() == ex["policy_std"],
+                "Typed packet exploration snapshot disagrees with the serialized policy std")
     geometry = run["runtime_stair_geometry"]
     require(geometry["levels"] == 6 and geometry["riser_min_m"] == .15 and geometry["riser_max_m"] == .15
             and geometry["depth_m"] == .35 and geometry["width_m"] == 2.4 and geometry["approach_m"] == 1.4
@@ -177,7 +199,7 @@ def validate_cpu(checkpoint, plan_path, scope):
                 "Typed finite policy forward failed")
     require(not torch.cuda.is_initialized(), "CPU check initialized CUDA")
     result = dict(status="passed",scope=scope,checkpoint=str(checkpoint),checkpoint_sha256=sha(checkpoint),
-        checkpoint_format=FORMAT,trial_protocol=PROTOCOL,task=TASK,iteration=saved["iter"],completed_updates=completed,
+        checkpoint_format=checkpoint_format,trial_protocol=protocol,task=TASK,iteration=saved["iter"],completed_updates=completed,
         finite_tensor_occurrences=tensors,network_dimensions=[1034,871,73,12],model_strict_load=True,
         actor_optimizer_steps=actor_steps,critic_optimizer_steps=critic_steps,rnd_optimizer_steps=critic_steps,
         rnd_rollout_counter=completed*24,normalization_abi=abi,source_sha256=source_hashes,
@@ -185,6 +207,9 @@ def validate_cpu(checkpoint, plan_path, scope):
         checkpoint_packet_loads=1,required_parent_packet_loads=1,parent_load_scope="coupled own-norm and startup actor inheritance",
         NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
         complete_policy_CPU_validation=True,physical_or_stair_acceptance=False)
+    if protocol == PROTOCOL:
+        result["exploration_initialization"] = binding
+        result["exploration_initialization_binding_passed"] = True
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

@@ -9,9 +9,9 @@ import torch
 from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require, sha, state_digest)
 from task_context_normalization import normalization_metadata
 from selected_row_block import SELECTED_ROW_BLOCK_POLICY
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS,
+                                          initialization_config_errors)
 
-PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
-FORMAT = "h2_guarded_stair_ppo_v5"
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
 PARENT_CPU_SHA = "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1"
@@ -22,24 +22,25 @@ BUDGET = 1000
 class H2GuardedStairPPO(H2GuardedPPO):
     """Keep original optimizer/constraints and select original-block row calls."""
     def __init__(self, *args, trial_protocol=PROTOCOL, **kwargs):
-        require(trial_protocol == PROTOCOL, "Undeclared stair transfer profile")
+        require(trial_protocol in PROTOCOL_FORMATS, "Undeclared stair transfer profile")
+        self.stair_trial_protocol = trial_protocol
         # This selects the existing 5D, reserved, resource bounded, strict FP64
         # executor. It does not select a task, reward, terrain or training cap.
         super().__init__(*args, trial_protocol=LONGER_BUDGET_CONTEXT_TRIAL, **kwargs)
-        self.checkpoint_format = FORMAT
+        self.checkpoint_format = PROTOCOL_FORMATS[trial_protocol]
         self.selected_row_evaluation_policy = SELECTED_ROW_BLOCK_POLICY
 
     def learning_state(self):
         result = super().learning_state()
-        result.update(trial_protocol=PROTOCOL, task=TASK, training_budget=BUDGET,
+        result.update(trial_protocol=self.stair_trial_protocol, task=TASK, training_budget=BUDGET,
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
-        result["proposal_projection"]["protocol"] = PROTOCOL
+        result["proposal_projection"]["protocol"] = self.stair_trial_protocol
         result["proposal_projection"]["selected_row_evaluation_policy"] = SELECTED_ROW_BLOCK_POLICY
         return result
 
     def packet(self, iteration, infos=None):
         result = super().packet(iteration, infos)
-        result.update(trial_protocol=PROTOCOL, task=TASK, training_budget=BUDGET,
+        result.update(trial_protocol=self.stair_trial_protocol, task=TASK, training_budget=BUDGET,
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
         return result
 
@@ -47,9 +48,13 @@ class H2GuardedStairPPO(H2GuardedPPO):
 def parent_admission(plan, root):
     """Receipt/custody checks only; never loads a parent checkpoint."""
     root = Path(root).resolve(strict=True)
-    require(plan["trial_protocol"] == PROTOCOL and plan["task"] == TASK
+    require(plan["trial_protocol"] in PROTOCOL_FORMATS and plan["task"] == TASK
             and plan["max_iterations"] == BUDGET and plan["num_envs"] == 1024
             and plan["network_dimensions"] == [1034, 871, 73, 12], "Wrong stair plan")
+    if plan["trial_protocol"] == PROTOCOL:
+        require(plan.get("checkpoint_format") == FORMAT
+                and not initialization_config_errors(plan.get("exploration_initialization")),
+                "Wrong fresh stair exploration initialization plan")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA
@@ -69,7 +74,7 @@ def parent_admission(plan, root):
     require(formal.get("flat_protocol_passed") is True and formal.get("scope_closed") is True
             and formal.get("all1024_original_conjunction_independently_verified") is True,
             "Parent physical gate review is not closed")
-    return dict(kind=PROTOCOL, parent_checkpoint=str(parent), parent_checkpoint_sha256=PARENT_SHA,
+    return dict(kind=plan["trial_protocol"], parent_checkpoint=str(parent), parent_checkpoint_sha256=PARENT_SHA,
                 parent_CPU_receipt=str(cpu_path), parent_CPU_receipt_sha256=PARENT_CPU_SHA,
                 parent_formal_review=str(formal_path), parent_formal_review_sha256=FORMAL_SHA,
                 parent_source_commit="946742f45fc377718c9bb7710058e7457e5d2bb3",
