@@ -26,8 +26,9 @@ MAX_SIGNAL_ITERATION = 525
 sys.path.insert(0, str(ROOT/'tools'))
 import launch_stair_transfer as L
 from stair_curriculum_binding import target_window_errors, early_policy_errors
-from stair_initialization_binding import HEIGHT_COURSE_PROTOCOLS
+from stair_initialization_binding import HEIGHT_COURSE_PROTOCOLS, EXECUTION_PROTOCOLS, BRIDGE_PROTOCOLS
 from stair_execution_binding import PROTOCOL, execution_snapshot_errors
+from stair_contact_bridge_binding import bridge_snapshot_errors
 # Reject a wrong/closed producer before creating any operator artifact.
 if (not CASE.is_relative_to(ROOT/'logs/stair_learning')
         or L.digest(HERE/'human_authorization.json') != AUTH_SHA
@@ -62,9 +63,12 @@ def validate_window(native, index):
     target_errors = target_window_errors(native, index)
     require(not target_errors, 'Target15 window rejected: '+ '; '.join(target_errors))
     request=L.read(CASE/'request.json')
-    if request['trial_protocol'] == PROTOCOL:
+    if request['trial_protocol'] in EXECUTION_PROTOCOLS:
         require(not execution_snapshot_errors(request.get('execution_chain'), native.get('execution_chain'),
                     expected_controls=(index+1)*48), 'Wrong actual execution-chain window source')
+    if request['trial_protocol'] in BRIDGE_PROTOCOLS:
+        require(not bridge_snapshot_errors(request.get('contact_bridge'), native.get('contact_bridge'),
+                    expected_controls=(index+1)*48), 'Wrong training-only bridge source')
     m = native['target15_progress']['motion']
     for key in ['window_episode_count','episode_count','completed_episode_count',
                 'physical_valid_episode_count','invalid_physical_episode_count']:
@@ -330,7 +334,7 @@ def stop_and_classify(auth, decision, point, pending):
     require(not terminal['changed_frozen_inputs'] and not terminal['fatal_log_candidates']
             and not terminal['startup_contract']['errors'], 'New terminal fatal/frozen evidence requires ROOT review')
     manager=L.read(CASE/'manager_state.json');supervision=L.read(CASE/'supervision.json')
-    require(supervision['status'] not in ('stopped_functional_guard','stopped_no_improvement'),
+    require(supervision['status'] not in ('stopped_functional_guard','stopped_no_improvement','stopped_aux_bridge_needs_attention'),
             'A raced original guard stop must keep its own classification')
     require(manager.get('error') is None and manager['exit_code'] in (0,-15,130,143)
             and not supervision.get('traceback') and not supervision.get('error'),

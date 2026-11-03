@@ -57,6 +57,9 @@ class StairExecutionProbe:
 
         def observed_original_write():
             result = self.original_write()
+            bridge = getattr(self.raw, "stair_contact_bridge", None)
+            if bridge is not None:
+                bridge.received_action()
             if self.pending is not None:
                 self._copy_after_native_write()
             return result

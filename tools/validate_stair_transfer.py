@@ -8,8 +8,9 @@ from pathlib import Path
 from stair_curriculum_binding import course_config_errors, profile_snapshot_errors
 from training_video import video_config_errors
 from stair_execution_binding import execution_config_errors, execution_snapshot_errors
+from stair_contact_bridge_binding import bridge_config_errors, bridge_snapshot_errors
 from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
-    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, HEIGHT_COURSE_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
+    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, HEIGHT_COURSE_PROTOCOLS, EXECUTION_PROTOCOLS, BRIDGE_PROTOCOLS, LEGACY_COURSE_PROTOCOL, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
     rollout_credit_budget_errors, rollout_credit_seal_errors,
@@ -43,7 +44,7 @@ def validate_cpu(checkpoint, plan_path, scope):
     if protocol in HEIGHT_COURSE_PROTOCOLS:
         height_course, training_video = plan.get("height_course"), plan.get("training_video")
         require(not course_config_errors(height_course)
-                and not video_config_errors(training_video, allow_legacy_view=protocol != PROTOCOL),
+                and not video_config_errors(training_video, allow_legacy_view=protocol == LEGACY_COURSE_PROTOCOL),
                 "Wrong new course/video declaration")
     rollout_steps = ROLLOUT_STEPS_BY_PROTOCOL[protocol]
     run = json.loads((checkpoint.parent/"run.json").read_text())
@@ -167,8 +168,10 @@ def validate_cpu(checkpoint, plan_path, scope):
             expected_bindings["clearance_progress_potential"] = clearance_progress
         if protocol in HEIGHT_COURSE_PROTOCOLS:
             expected_bindings.update(height_course=height_course, training_video=training_video)
-        if protocol == PROTOCOL:
+        if protocol in EXECUTION_PROTOCOLS:
             expected_bindings["execution_chain"] = plan["execution_chain"]
+        if protocol in BRIDGE_PROTOCOLS:
+            expected_bindings["contact_bridge"] = plan["contact_bridge"]
         require(bank["bindings"] == expected_bindings,
                 "Actual fixed-prefix source/request/plan bindings changed")
         guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
@@ -191,15 +194,24 @@ def validate_cpu(checkpoint, plan_path, scope):
             sealed.get("clearance_progress_potential"), protocol=protocol, expected_updates=24),
             "Actual prefix-seal reward state did not observe24 controls")
     tensors = 0
-    def finite(value):
+    def finite(value, path=()):
         nonlocal tensors
         if torch.is_tensor(value):
             tensors += 1
+            if protocol in BRIDGE_PROTOCOLS and path in (
+                    ("contact_bridge_payload","pending_bytes"),("contact_bridge_payload","closed_bytes")):
+                expected = (64*1024 if path[-1] == "pending_bytes" else 49152)*3840
+                require(value.device.type == "cpu" and value.dtype == torch.uint8
+                        and value.is_contiguous() and tuple(value.shape) == (expected,),
+                        "Invalid typed bridge byte storage")
+                # uint8 cannot contain NaN/Inf. Actual embedded float32 fields
+                # are checked below, in <=512-record blocks, by the new schema.
+                return
             require(value.device.type == "cpu" and bool(torch.isfinite(value).all()), "Invalid CPU tensor")
         elif isinstance(value, dict):
-            for child in value.values(): finite(child)
+            for key,child in value.items(): finite(child,path+(key,))
         elif isinstance(value, (tuple,list)):
-            for child in value: finite(child)
+            for index,child in enumerate(value): finite(child,path+(index,))
         elif isinstance(value, float):
             require(math.isfinite(value), "Nonfinite scalar metadata")
     finite(saved)
@@ -308,7 +320,7 @@ def validate_cpu(checkpoint, plan_path, scope):
             require(sha(name) == expected, "External profile source/encoder changed")
         require(saved["height_profile"]["training_video"]["encoder_binary_sha256"]
                 == plan["external_dependency_sha256"][training_video["encoder_binary"]], "Wrong actual encoder binary")
-    if protocol == PROTOCOL:
+    if protocol in EXECUTION_PROTOCOLS:
         execution_chain = plan.get("execution_chain")
         require(not execution_config_errors(execution_chain)
                 and request.get("execution_chain") == run.get("execution_chain") == execution_chain,
@@ -325,6 +337,29 @@ def validate_cpu(checkpoint, plan_path, scope):
                 "Packet/state/native execution-chain snapshots disagree")
         require(not execution_snapshot_errors(execution_chain, sealed.get("execution_chain"), expected_controls=24),
                 "Prefix24 existing-execution observer binding differs")
+    bridge_cpu = None
+    if protocol in BRIDGE_PROTOCOLS:
+        from stair_contact_bridge import validate_bridge_payload
+        contact_bridge = plan.get("contact_bridge")
+        require(not bridge_config_errors(contact_bridge)
+                and request.get("contact_bridge") == run.get("contact_bridge") == contact_bridge,
+                "New bridge source/plan/request declaration differs")
+        for value in (run.get("runtime_contact_bridge"),
+                      run.get("initial_learning_state", {}).get("contact_bridge"),
+                      run.get("guarded_stair_learning", {}).get("contact_bridge")):
+            require(not bridge_snapshot_errors(contact_bridge,value,expected_controls=0),
+                    "New bridge initial source state differs")
+        for value in (saved.get("contact_bridge"),gs.get("contact_bridge"),native[0].get("contact_bridge")):
+            require(not bridge_snapshot_errors(contact_bridge,value,expected_controls=completed*rollout_steps),
+                    "New bridge actual packet/native state differs")
+        require(saved["contact_bridge"] == gs["contact_bridge"] == native[0]["contact_bridge"],
+                "New bridge accepted packet/native snapshots disagree")
+        prefix = sealed.get("contact_bridge")
+        require(not bridge_snapshot_errors(contact_bridge,prefix,expected_controls=24)
+                and prefix["serving_forwards"] == prefix["Adam_commits"] == 0,
+                "New bridge changed the original first24 NN/optimizer seal")
+        bridge_cpu = validate_bridge_payload(saved["contact_bridge_payload"],contact_bridge,
+                                            saved["contact_bridge"],completed=completed)
     geometry = run["runtime_stair_geometry"]
     require(geometry["levels"] == 6 and geometry["riser_min_m"] == (.05 if protocol in HEIGHT_COURSE_PROTOCOLS else .15) and geometry["riser_max_m"] == .15
             and geometry["depth_m"] == .35 and geometry["width_m"] == 2.4 and geometry["approach_m"] == 1.4
@@ -396,9 +431,13 @@ def validate_cpu(checkpoint, plan_path, scope):
     if protocol in HEIGHT_COURSE_PROTOCOLS:
         result.update(height_course=height_course, training_video=training_video,
             actual_height_profile=saved["height_profile"], actual_height_profile_binding_passed=True)
-    if protocol == PROTOCOL:
+    if protocol in EXECUTION_PROTOCOLS:
         result.update(execution_chain=execution_chain, actual_execution_chain=saved["execution_chain"],
                       actual_execution_chain_binding_passed=True)
+    if bridge_cpu is not None:
+        result.update(contact_bridge=contact_bridge, actual_contact_bridge=saved["contact_bridge"],
+            actual_contact_bridge_binding_passed=True, contact_bridge_CPU=bridge_cpu,
+            bridge_CPU_forward_batches=bridge_cpu["CPU_forward_batches"])
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

@@ -433,7 +433,13 @@ class SupervisedRunner(OnPolicyRunner):
     def save(self, path, infos=None):
         if self.guarded_split:
             from guarded_flat_ppo import save_packet
-            save_packet(path, self.alg.packet(self.current_learning_iteration, infos))
+            packet = self.alg.packet(self.current_learning_iteration, infos)
+            bridge = getattr(self.alg, "contact_bridge", None)
+            if bridge is not None:
+                # Full rings serialize only at actual checkpoints. Original
+                # per-proposal snapshots retain a single bounded model seal.
+                packet["contact_bridge_payload"] = bridge.checkpoint_payload()
+            save_packet(path, packet)
         else:
             super().save(path, infos)
         checkpoint = Path(path)
@@ -506,6 +512,9 @@ class SupervisedRunner(OnPolicyRunner):
             execution = self.alg.execution_chain_snapshot()
             if execution is not None:
                 point["execution_chain"] = execution
+            bridge = self.alg.contact_bridge_snapshot()
+            if bridge is not None:
+                point["contact_bridge"] = bridge
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

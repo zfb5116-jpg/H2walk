@@ -91,6 +91,8 @@ class StairAscentEnv(RobotEnv):
             body_forces=self.scene["contact_forces"].data.net_forces_w,
             body_contact_time=self.scene["contact_forces"].data.current_contact_time,
             timed_out=self.termination_manager.time_outs,
+            root_angular_velocity=self.asset.data.root_ang_vel_w
+                if getattr(self, "stair_contact_bridge", None) is not None else None,
         )
         course = getattr(self, "stair_height_course", None)
         if course is not None:
@@ -112,11 +114,16 @@ class StairAscentEnv(RobotEnv):
             observer.capture(env_ids)
         if course is not None:
             course.finish_episodes(env_ids)
+        bridge = getattr(self, "stair_contact_bridge", None)
+        if bridge is not None:
+            bridge.before_reset(env_ids)
         super()._reset_idx(env_ids)
         if hasattr(self, "stair_progress"):
             self.stair_progress.reset(env_ids)
         if course is not None:
             course.reset(env_ids)
+        if bridge is not None:
+            bridge.after_reset(env_ids)
 
     def step(self, action):
         sole, rotation = self._stair_foot_pose()
@@ -124,6 +131,9 @@ class StairAscentEnv(RobotEnv):
             self.asset.data.root_pos_w, sole, self.scene.terrain.env_origins,
             self._stair_heights(), self.scene.terrain.terrain_levels, self.episode_length_buf,
             control_counter=self.common_step_counter, rotations=rotation)
+        bridge = getattr(self, "stair_contact_bridge", None)
+        if bridge is not None:
+            bridge.begin(sole, rotation)
         observer = getattr(self, "stair_training_observer", None)
         if observer is not None:
             observer.begin()

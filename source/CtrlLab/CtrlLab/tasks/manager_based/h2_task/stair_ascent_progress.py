@@ -349,7 +349,7 @@ class StairAscentProgress:
 
     def update(self, counter, root_position, root_velocity, root_tilt, soles, rotations,
                ground_forces, unfiltered_forces, terminated, dt, body_forces=None, body_contact_time=None,
-               timed_out=None):
+               timed_out=None, root_angular_velocity=None):
         if not self.pending or self.last_update_counter == int(counter):
             return
         for value in (root_position, root_velocity, root_tilt, soles, rotations,
@@ -455,6 +455,11 @@ class StairAscentProgress:
                 ids, lev = ids[unseen], lev[unseen]
                 self.verified[ids, lev, foot] = True
                 self.events["foot"][ids] += 1.0
+                bridge = getattr(self, "contact_bridge", None)
+                if bridge is not None:
+                    # This tap precedes the original reward scaling and binds
+                    # the very same foot and physical level. It creates no event.
+                    bridge.note_physical_foot(ids, foot, lev+1)
         next_level = self.completed.clamp_max(self.steps - 1)
         advance = ((self.completed < self.steps)
                    & self.verified[torch.arange(self.n, device=self.device), next_level].all(-1)
@@ -530,6 +535,10 @@ class StairAscentProgress:
             delta.copy_(delta.clamp_max(0)+delta.clamp_min(0)*positive_weight)
         self.potential.copy_(phi)
         self._clearance_update(soles, rotations, fz, terminated, timed_out, positive_weight, root_tilt)
+        bridge = getattr(self, "contact_bridge", None)
+        if bridge is not None:
+            bridge.endpoint(soles, rotations, root_tilt, root_angular_velocity,
+                            terminated, timed_out, valid_physical, positive_weight)
         sole_speed = ((soles - self.pre_soles)[..., :2] / dt).norm(dim=-1)
         slip_count = loaded.sum(-1)
         self.current_slip[:] = (sole_speed * loaded).sum(-1) / slip_count.clamp_min(1)

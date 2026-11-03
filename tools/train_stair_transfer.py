@@ -39,6 +39,8 @@ from training_video import TrainingVideo, video_config_errors
 from stair_credit_probe import StairCreditProbe
 from stair_execution_probe import StairExecutionProbe
 from stair_execution_binding import execution_config_errors, execution_snapshot_errors
+from stair_contact_bridge_binding import bridge_config_errors, bridge_snapshot_errors
+from stair_contact_bridge import BridgeRejected
 from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors,
     ROLLOUT_STEPS_BY_PROTOCOL, rollout_credit_collection_errors, rollout_credit_budget_errors,
@@ -77,6 +79,9 @@ def main():
     height_course = plan.get("height_course")
     training_video = plan.get("training_video")
     execution_chain = plan.get("execution_chain")
+    contact_bridge = plan.get("contact_bridge")
+    if bridge_config_errors(contact_bridge):
+        raise RuntimeError("Missing training-only future contact bridge contract")
     if execution_config_errors(execution_chain):
         raise RuntimeError("Missing bounded existing-execution observer configuration")
     if course_config_errors(height_course) or video_config_errors(training_video) or args.enable_cameras is not True:
@@ -96,7 +101,8 @@ def main():
     request_path = args.supervision_state.resolve().parent/"request.json"
     request = json.loads(request_path.read_text())
     if (request.get("height_course") != height_course or request.get("training_video") != training_video
-            or request.get("execution_chain") != execution_chain):
+            or request.get("execution_chain") != execution_chain
+            or request.get("contact_bridge") != contact_bridge):
         raise RuntimeError("Plan/request height/video declarations differ")
     initialization = plan.get("exploration_initialization")
     config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
@@ -139,7 +145,8 @@ def main():
                   "evaluate_stair_policy.py", "evaluate_stair_policy.sh", "validate_stair_transfer.py", "launch_stair_transfer.py",
                   "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py",
                   "stair_curriculum_binding.py", "training_video.py", "stair_credit_probe.py", "watch_stair_progress.py",
-                  "stair_execution_binding.py", "stair_execution_probe.py"]
+                  "stair_execution_binding.py", "stair_execution_probe.py",
+                  "stair_contact_bridge_binding.py", "stair_contact_bridge.py"]
     for name in tool_names:
         shutil.copy2(ROOT/"tools"/name, snapshot/name)
     shutil.copy2(args.plan, snapshot/"stair_transfer_plan.json")
@@ -173,6 +180,7 @@ def main():
         rollout_collection=rollout_collection,
         clearance_progress_potential=clearance_progress, runtime_clearance_progress_config=clearance_config,
         height_course=height_course, training_video=training_video, execution_chain=execution_chain,
+        contact_bridge=contact_bridge,
         runtime_height_config=dict(minimum=cfg.stair_minimum_height, maximum=cfg.stair_maximum_height,
             rows=cfg.stair_height_levels, root_x=list(cfg.events.reset_base.params["pose_range"]["x"]),
             importer=cfg.scene.terrain.class_type.__module__+"."+cfg.scene.terrain.class_type.__name__,
@@ -195,7 +203,7 @@ def main():
     print("[H2] Stair log directory: "+str(log_dir), flush=True)
     env = gym.make(TASK, cfg=cfg, render_mode="rgb_array")
     runner = None
-    video = observer = execution = None
+    video = observer = execution = bridge = None
     try:
         env = ProbedVecEnv(env, clip_actions=agent.clip_actions)
         raw = env.unwrapped
@@ -281,6 +289,8 @@ def main():
         execution = StairExecutionProbe(raw, runner, observer, log_dir/"execution_chain", execution_chain)
         observer.execution = execution
         metadata["runtime_execution_chain"] = runner.alg.bind_execution_chain(execution, execution_chain)
+        metadata["runtime_contact_bridge"] = runner.alg.bind_contact_bridge(raw, contact_bridge, log_dir/"contact_bridge")
+        bridge = runner.alg.contact_bridge
         metadata["initial_learning_state"] = dict(iteration=int(runner.current_learning_iteration),
             actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
             critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),
@@ -291,9 +301,12 @@ def main():
             rollout_collection=runner.alg.rollout_collection_snapshot(),
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             height_profile=runner.alg.height_profile_snapshot(),
-            execution_chain=runner.alg.execution_chain_snapshot())
+            execution_chain=runner.alg.execution_chain_snapshot(),
+            contact_bridge=runner.alg.contact_bridge_snapshot())
         if execution_snapshot_errors(execution_chain, metadata["runtime_execution_chain"], expected_controls=0):
             raise RuntimeError("Actual initial execution observer binding failed")
+        if bridge_snapshot_errors(contact_bridge, metadata["runtime_contact_bridge"], expected_controls=0):
+            raise RuntimeError("Actual initial future contact bridge binding failed")
         initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
             initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
         if initialization_errors:
@@ -314,6 +327,7 @@ def main():
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             height_profile=runner.alg.height_profile_snapshot(),
             execution_chain=runner.alg.execution_chain_snapshot(),
+            contact_bridge=runner.alg.contact_bridge_snapshot(),
             normalization_abi=normalization_metadata(normalizers), normalizers_frozen=True)
         def bank_sealed(receipt):
             if (sha(request_path) != request_sha or sha(args.plan) != plan_sha
@@ -342,6 +356,7 @@ def main():
                                    clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
                                    height_profile=runner.alg.height_profile_snapshot(),
                                    execution_chain=runner.alg.execution_chain_snapshot(),
+                                   contact_bridge=runner.alg.contact_bridge_snapshot(),
                                    actual_seal_storage_step=runner.alg.storage.step,
                                    actual_seal_RND_counter=int(runner.alg.rnd.update_counter),
                                    actual_current_rows_at_seal=receipt["current_rows_at_seal"],
@@ -355,6 +370,7 @@ def main():
                 trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
                 clearance_progress_potential=clearance_progress, height_course=height_course, training_video=training_video,
                 execution_chain=execution_chain,
+                contact_bridge=contact_bridge,
                 plan_path=str(args.plan.resolve()),plan_sha256=plan_sha,initial_policy_sha256=plan["initial_policy_sha256"]))
         runner.alg.attach_guard(normalizers, runner.stair_exploration_budget, None, guard_dir,
             plan["initial_policy_sha256"], acquisition_spec=acquisition, on_bank_sealed=bank_sealed)
@@ -376,9 +392,17 @@ def main():
             temporal_credit=metadata["runtime_temporal_credit"],
             rollout_collection=metadata["runtime_rollout_collection"],
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
-            height_profile=runner.alg.height_profile_snapshot(), execution_chain=runner.alg.execution_chain_snapshot())
+            height_profile=runner.alg.height_profile_snapshot(), execution_chain=runner.alg.execution_chain_snapshot(),
+            contact_bridge=runner.alg.contact_bridge_snapshot())
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
+        except BridgeRejected as error:
+            metadata.update(status="stopped_aux_bridge_needs_attention", completed_iterations=runner.alg.completed_updates,
+                final_checkpoint=runner.supervision.get("latest_checkpoint"), bridge_error=str(error),
+                total_timesteps=int(runner.tot_timesteps),
+                actual_sampled_environment_steps=int(raw.common_step_counter)*1024,
+                discarded_uncommitted_rollout_steps=(int(raw.common_step_counter)-runner.alg.completed_updates*48)*1024,
+                automatic_restart_allowed=False)
         except FunctionalUpdateRejected as error:
             metadata.update(status="stopped_functional_guard", completed_iterations=runner.alg.completed_updates,
                 final_checkpoint=error.restored_checkpoint, functional_guard_evidence=error.evidence,
@@ -406,21 +430,25 @@ def main():
         write_json(log_dir/"run.json",metadata)
         raise
     finally:
+        primary = sys.exc_info()[1]
+        cleanup_errors = []
+        closers = []
+        if bridge is not None: closers.append(("contact_bridge",bridge.close))
         if runner is not None and runner.writer is not None:
-            runner.writer.flush(); runner.writer.close()
-        try:
-            if execution is not None:
-                execution.close()
-        finally:
+            closers.extend((("writer_flush",runner.writer.flush),("writer_close",runner.writer.close)))
+        for name,item in (("execution",execution),("video",video),("observer",observer),("environment",env)):
+            if item is not None: closers.append((name,item.close))
+        for name,close in closers:
             try:
-                if video is not None:
-                    video.close()
-            finally:
-                try:
-                    if observer is not None:
-                        observer.close()
-                finally:
-                    env.close()
+                close()
+            except BaseException as cleanup_error:
+                cleanup_errors.append((name,cleanup_error,traceback.format_exc()))
+        if cleanup_errors:
+            receipt = dict(primary_exception=repr(primary),errors=[dict(component=name,
+                error=repr(error),traceback=trace) for name,error,trace in cleanup_errors])
+            try: write_json(log_dir/"cleanup_errors.json",receipt)
+            except BaseException: print("[H2] Cleanup errors: "+repr(receipt),file=sys.stderr,flush=True)
+            if primary is None: raise cleanup_errors[0][1]
 
 
 if __name__ == "__main__":
