@@ -492,6 +492,9 @@ class SupervisedRunner(OnPolicyRunner):
             rollout_collection = self.alg.rollout_collection_snapshot()
             if rollout_collection is not None:
                 point["rollout_collection"] = rollout_collection
+            clearance_progress = self.alg.clearance_progress_snapshot()
+            if clearance_progress is not None:
+                point["clearance_progress_potential"] = clearance_progress
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

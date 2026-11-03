@@ -15,6 +15,7 @@ from .foot_geometry import sole_footprint_corners
 from .locomotion_progress import FootfallTracker
 from .stair_ascent_safety import physical_validity
 from .stair_ascent_evidence import StairEpisodeEvidence
+from .stair_clearance_rewards import clearance_progress_components, clearance_progress_delta
 
 
 def quaternion_matrix(q):
@@ -96,9 +97,15 @@ class StairAscentProgress:
 
     def __init__(self, n, device, masses, *, steps=6, depth=0.35, width=2.4, approach=1.4,
                  episode_length_s=90.0, gamma=0.99, window_size=5000, domain_bounds=None,
-                 floor_tolerance=0.05, record_directory=None, contact_body_names=(), strict_episode_force=False):
+                 floor_tolerance=0.05, record_directory=None, contact_body_names=(), strict_episode_force=False,
+                 clearance_progress_potential=False):
         self.n, self.device = n, device
         self.strict_episode_force = bool(strict_episode_force)
+        if type(clearance_progress_potential) is not bool:
+            raise ValueError("Clearance progress activation must be an explicit boolean")
+        self.clearance_progress_enabled = clearance_progress_potential
+        if self.clearance_progress_enabled and (not self.strict_episode_force or gamma != 0.99):
+            raise ValueError("Clearance progress requires the strict transfer force contract and gamma.99")
         self.steps, self.depth, self.width, self.approach = steps, depth, width, approach
         self.episode_length_s, self.gamma = episode_length_s, gamma
         if domain_bounds is None:
@@ -206,12 +213,105 @@ class StairAscentProgress:
         self.last_episode = {key: torch.zeros(n, device=device) for key in self.SUMMARY_FIELDS}
         self.last_episode["valid"] = torch.zeros(n, dtype=torch.bool, device=device)
         self.snapshot_before_reset = None
+        self._clearance_allocate()
+
+    def _clearance_allocate(self):
+        self.clearance_positive_tilt_limit_rad = 0.5
+        self.clearance_previous = torch.zeros(self.n, 2, device=self.device)
+        self.clearance_level = torch.zeros(self.n, 2, dtype=torch.long, device=self.device)
+        self.clearance_near = torch.zeros(self.n, 2, dtype=torch.bool, device=self.device)
+        self.clearance_initialized = torch.zeros(self.n, dtype=torch.bool, device=self.device)
+        self.clearance_endpoint_closed = torch.zeros_like(self.clearance_initialized)
+        self.clearance_raw_delta = torch.zeros_like(self.clearance_previous)
+        self.clearance_applied_delta = torch.zeros_like(self.clearance_previous)
+        self.clearance_update_count = 0
+        self.clearance_initialization_count = 0
+
+    def _clearance_initialize(self, ids, soles, rotations):
+        if not self.clearance_progress_enabled or not ids.numel():
+            return
+        if rotations is None or not torch.isfinite(rotations[ids]).all():
+            raise RuntimeError("Clearance initial state requires actual precontrol foot rotations")
+        value, level, near = clearance_progress_components(
+            soles[ids], rotations[ids], self.origins[ids], self.heights[ids], self.corners,
+            approach=self.approach, depth=self.depth, steps=self.steps)
+        if not torch.isfinite(value).all():
+            raise RuntimeError("Non-finite actual initial clearance state")
+        self.clearance_previous[ids] = value
+        self.clearance_level[ids] = level
+        self.clearance_near[ids] = near
+        self.clearance_initialized[ids] = True
+        self.clearance_endpoint_closed[ids] = False
+        self.clearance_initialization_count += int(ids.numel())
+
+    def _clearance_update(self, soles, rotations, fz, terminated, timed_out, positive_weight, root_tilt):
+        if not self.clearance_progress_enabled:
+            return
+        if (timed_out is None or timed_out.dtype != torch.bool or timed_out.shape != terminated.shape
+                or not self.clearance_initialized.all()):
+            raise RuntimeError("Clearance progress requires real timeout masks and precontrol initialization")
+        value, level, near = clearance_progress_components(
+            soles, rotations, self.origins, self.heights, self.corners,
+            approach=self.approach, depth=self.depth, steps=self.steps)
+        endpoint = terminated | timed_out | self.ever_invalid
+        value = torch.where(endpoint[:, None], 0.0, value)
+        eligible = (~endpoint[:, None] & self.current_force_valid.all(-1)[:, None]
+                    & (root_tilt < self.clearance_positive_tilt_limit_rad)[:, None]
+                    & (fz < self.minimum_load[:, None]) & (fz.flip(-1) >= 0.7*self.weight[:, None])
+                    & near & self.clearance_near & (level == self.clearance_level))
+        raw, applied = clearance_progress_delta(self.clearance_previous, value, positive_weight,
+                                                eligible, self.gamma)
+        if not torch.isfinite(raw).all() or not torch.isfinite(applied).all():
+            raise RuntimeError("Non-finite clearance progress difference")
+        self.clearance_raw_delta.copy_(raw)
+        self.clearance_applied_delta.copy_(applied)
+        # The old event has already received its own original sign gate. Each
+        # new foot's negative debt survives even if the other foot is unpaid.
+        self.events["potential"] += applied.sum(-1)
+        self.clearance_previous.copy_(value)
+        self.clearance_level.copy_(level)
+        self.clearance_near.copy_(near)
+        self.clearance_endpoint_closed.copy_(endpoint)
+        self.clearance_update_count += 1
+
+    def assert_clearance_reset(self, env_ids):
+        if not self.clearance_progress_enabled:
+            return
+        ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        active = self.clearance_initialized[ids]
+        if (self.pending or (active & ~self.clearance_endpoint_closed[ids]).any()
+                or (self.clearance_previous[ids][active] != 0).any()):
+            raise RuntimeError("Cannot reset active clearance history without its real rewarded endpoint")
+
+    def _clearance_reset(self, ids):
+        self.assert_clearance_reset(ids)
+        for value in (self.clearance_previous, self.clearance_level, self.clearance_near,
+                      self.clearance_initialized, self.clearance_endpoint_closed,
+                      self.clearance_raw_delta, self.clearance_applied_delta):
+            value[ids] = 0
+
+    def clearance_progress_snapshot(self):
+        """Live reward-state evidence; this is never supplied to the actor."""
+        if not self.clearance_progress_enabled:
+            return None
+        return dict(enabled=self.clearance_progress_enabled, gamma=self.gamma,
+            approach_m=self.approach, depth_m=self.depth, real_riser_count=self.steps,
+            strict_episode_force=self.strict_episode_force, foot_components=int(self.clearance_previous.shape[1]),
+            positive_tilt_limit_rad=self.clearance_positive_tilt_limit_rad,
+            update_count=self.clearance_update_count, initialization_count=self.clearance_initialization_count,
+            initialized_envs=int(self.clearance_initialized.sum()), last_control_counter=self.last_update_counter,
+            score_min=float(self.clearance_previous.min()), score_max=float(self.clearance_previous.max()),
+            last_added_event_min=float(self.clearance_applied_delta.sum(-1).min()),
+            last_added_event_max=float(self.clearance_applied_delta.sum(-1).max()),
+            last_raw_delta_min=float(self.clearance_raw_delta.min()),
+            last_raw_delta_max=float(self.clearance_raw_delta.max()))
 
     @property
     def force_credit_eligible(self):
         return self.force_mismatch_steps.sum(-1) == 0
 
-    def begin_step(self, root_position, soles, origins, heights, terrain_level, episode_length_buf, control_counter=0):
+    def begin_step(self, root_position, soles, origins, heights, terrain_level, episode_length_buf, control_counter=0,
+                   rotations=None):
         ids = self.needs_start.nonzero().flatten()
         if ids.numel():
             self.root_start[ids] = root_position[ids]
@@ -231,6 +331,7 @@ class StairAscentProgress:
             # RSL-RL can randomize the first episode-length buffer. Such partial
             # episodes train normally, but never enter curriculum/monitor evidence.
             self.partial[ids] = episode_length_buf[ids] != 0
+            self._clearance_initialize(ids, soles, rotations)
             self.needs_start[ids] = False
         self.pre_soles.copy_(soles)
         self.pre_root_x.copy_(root_position[:, 0])
@@ -243,7 +344,8 @@ class StairAscentProgress:
         self.pending = True
 
     def update(self, counter, root_position, root_velocity, root_tilt, soles, rotations,
-               ground_forces, unfiltered_forces, terminated, dt, body_forces=None, body_contact_time=None):
+               ground_forces, unfiltered_forces, terminated, dt, body_forces=None, body_contact_time=None,
+               timed_out=None):
         if not self.pending or self.last_update_counter == int(counter):
             return
         for value in (root_position, root_velocity, root_tilt, soles, rotations,
@@ -423,6 +525,7 @@ class StairAscentProgress:
             delta = self.events["potential"]
             delta.copy_(delta.clamp_max(0)+delta.clamp_min(0)*positive_weight)
         self.potential.copy_(phi)
+        self._clearance_update(soles, rotations, fz, terminated, timed_out, positive_weight, root_tilt)
         sole_speed = ((soles - self.pre_soles)[..., :2] / dt).norm(dim=-1)
         slip_count = loaded.sum(-1)
         self.current_slip[:] = (sole_speed * loaded).sum(-1) / slip_count.clamp_min(1)
@@ -518,6 +621,7 @@ class StairAscentProgress:
 
     def reset(self, env_ids):
         ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        self._clearance_reset(ids)
         self.needs_start[ids] = True
         self.partial[ids] = False
         for value in (self.duration, self.completed, self.verified, self.transferred, self.pending_level,

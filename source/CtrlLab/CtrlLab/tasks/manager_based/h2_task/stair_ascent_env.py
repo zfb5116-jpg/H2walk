@@ -48,6 +48,7 @@ class StairAscentEnv(RobotEnv):
             record_directory=self.stair_episode_evidence_directory,
             contact_body_names=self.scene["contact_forces"].body_names,
             strict_episode_force=getattr(cfg, "stair_strict_episode_force", False),
+            clearance_progress_potential=getattr(cfg, "stair_clearance_progress_potential", False),
         )
         context = int(getattr(cfg, "stair_task_context_dim", 0))
         if context not in (0, 5):
@@ -89,11 +90,13 @@ class StairAscentEnv(RobotEnv):
             tilt, sole, rotation, filtered, unfiltered, self.termination_manager.terminated, self.step_dt,
             body_forces=self.scene["contact_forces"].data.net_forces_w,
             body_contact_time=self.scene["contact_forces"].data.current_contact_time,
+            timed_out=self.termination_manager.time_outs,
         )
 
     def _reset_idx(self, env_ids):
         if hasattr(self, "stair_progress"):
             self._update_stair_progress()
+            self.stair_progress.assert_clearance_reset(env_ids)
             # Curriculum runs inside super()._reset_idx, so it reads this exact
             # terminal epoch rather than reset positions or a later sensor map.
             self.stair_progress.record_episodes(
@@ -105,11 +108,11 @@ class StairAscentEnv(RobotEnv):
             self.stair_progress.reset(env_ids)
 
     def step(self, action):
-        sole, _ = self._stair_foot_pose()
+        sole, rotation = self._stair_foot_pose()
         self.stair_progress.begin_step(
             self.asset.data.root_pos_w, sole, self.scene.terrain.env_origins,
             self._stair_heights(), self.scene.terrain.terrain_levels, self.episode_length_buf,
-            control_counter=self.common_step_counter)
+            control_counter=self.common_step_counter, rotations=rotation)
         result = super().step(action)
         self.stair_progress.episode_evidence.maybe_flush(self.common_step_counter)
         return result

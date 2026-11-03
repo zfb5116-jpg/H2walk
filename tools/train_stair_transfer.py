@@ -37,7 +37,7 @@ from stair_exploration import StairExplorationBudget
 from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors,
     ROLLOUT_STEPS_BY_PROTOCOL, rollout_credit_collection_errors, rollout_credit_budget_errors,
-    rollout_credit_seal_errors)
+    rollout_credit_seal_errors, clearance_progress_config_errors, clearance_progress_snapshot_errors)
 
 sys.path.insert(0, str(ROOT/"source/CtrlLab/CtrlLab/tasks/manager_based"))
 import h2_task
@@ -68,6 +68,7 @@ def main():
     spec = gym.spec(TASK)
     cfg = load_config(spec.kwargs["env_cfg_entry_point"])
     agent = load_config(spec.kwargs["rsl_rl_cfg_entry_point"])
+    cfg.stair_clearance_progress_potential = True
     cfg.scene.num_envs = 1024
     cfg.seed = agent.seed = 42
     cfg.sim.device = agent.device = args.device or "cuda:0"
@@ -97,6 +98,15 @@ def main():
             or request.get("rollout_collection") != rollout_collection
             or rollout_credit_budget_errors(request, protocol=request.get("trial_protocol"))):
         raise RuntimeError("Rollout credit plan/request48-current/24-fixed binding failed")
+    clearance_progress = plan.get("clearance_progress_potential")
+    geometry = cfg.scene.terrain.terrain_generator.sub_terrains["ascending_stairway"]
+    clearance_config = dict(enabled=cfg.stair_clearance_progress_potential, gamma=float(cfg.stair_shaping_gamma),
+        outer_potential_weight=float(cfg.rewards.potential.weight), strict_episode_force=cfg.stair_strict_episode_force,
+        approach_m=float(geometry.approach_distance), depth_m=float(geometry.tread_depth),
+        real_riser_count=int(geometry.num_steps))
+    if (clearance_progress_config_errors(clearance_progress, clearance_config, protocol=protocol)
+            or request.get("clearance_progress_potential") != clearance_progress):
+        raise RuntimeError("Clearance progress plan/request/resolved reward configuration disagrees")
     log_dir = ROOT/"logs/rsl_rl/h2_guarded_stair_transfer"/(datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+"_"+args.supervision_state.parent.name[-8:])
     log_dir.mkdir(parents=True, exist_ok=False)
     cfg.io_descriptors_output_dir = str(log_dir)
@@ -136,6 +146,7 @@ def main():
         runtime_exploration_config=dict(agent.stair_exploration_budget),
         temporal_credit=temporal_credit,
         rollout_collection=rollout_collection,
+        clearance_progress_potential=clearance_progress, runtime_clearance_progress_config=clearance_config,
         runtime_temporal_credit_config=temporal_credit_config_snapshot(
             runner_config, control_dt_s=resolved_control_dt_s),
         inherited_numeric_execution_profile_scope="numeric_executor_only",
@@ -196,6 +207,7 @@ def main():
             supervision_path=args.supervision_state, policy=policy, effect_task_name=TASK,
             normalize_initial_observations=True, guarded_stair=True)
         metadata["runtime_temporal_credit"] = runner.alg.bind_temporal_credit(runner, raw, temporal_credit)
+        metadata["runtime_clearance_progress"] = runner.alg.bind_clearance_progress(raw, clearance_progress)
         metadata["runtime_rollout_collection"] = runner.alg.rollout_collection_snapshot()
         metadata["ppo_temporal_credit_override"]["value"] = metadata["runtime_temporal_credit"]["gae_lambda"]
         metadata["learning_rate_wiring"] = configure_stair_learning_rates(
@@ -223,7 +235,8 @@ def main():
             parent_optimizer_or_RNG_loaded=False, normalization_abi=normalization_metadata(normalizers),
             policy_std=runner.alg.policy.std.detach().cpu().tolist(),
             temporal_credit=runner.alg.temporal_credit_snapshot(),
-            rollout_collection=runner.alg.rollout_collection_snapshot())
+            rollout_collection=runner.alg.rollout_collection_snapshot(),
+            clearance_progress_potential=runner.alg.clearance_progress_snapshot())
         initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
             initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
         if initialization_errors:
@@ -241,6 +254,7 @@ def main():
         metadata["guarded_stair_learning"] = dict(optimizer_format=FORMAT, trial_protocol=PROTOCOL,
             fixed_real_bank=bank_receipt, current_rollout_real_rows=1024, total_guard_rows=5120,
             rollout_collection=runner.alg.rollout_collection_snapshot(),
+            clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             normalization_abi=normalization_metadata(normalizers), normalizers_frozen=True)
         def bank_sealed(receipt):
             if (sha(request_path) != request_sha or sha(args.plan) != plan_sha
@@ -266,6 +280,7 @@ def main():
                                    trial_protocol=PROTOCOL,checkpoint_format=FORMAT,
                                    temporal_credit=runner.alg.temporal_credit_snapshot(),
                                    rollout_collection=runner.alg.rollout_collection_snapshot(),
+                                   clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
                                    actual_seal_storage_step=runner.alg.storage.step,
                                    actual_seal_RND_counter=int(runner.alg.rnd.update_counter),
                                    actual_current_rows_at_seal=receipt["current_rows_at_seal"],
@@ -273,9 +288,11 @@ def main():
                     stream.flush(); os.fsync(stream.fileno())
         acquisition = dict(plan["audit_bank_source"], wrapper_clip_actions=float(agent.clip_actions),
             trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
+            clearance_progress_potential=clearance_progress,
             bindings=dict(case=str(case),request_sha256=request_sha,source_commit=commit,
                 source_sha256=source_hashes,training_tool_sha256=metadata["training_tool_sha256"],
                 trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
+                clearance_progress_potential=clearance_progress,
                 plan_path=str(args.plan.resolve()),plan_sha256=plan_sha,initial_policy_sha256=plan["initial_policy_sha256"]))
         runner.alg.attach_guard(normalizers, runner.stair_exploration_budget, None, guard_dir,
             plan["initial_policy_sha256"], acquisition_spec=acquisition, on_bank_sealed=bank_sealed)
@@ -294,7 +311,8 @@ def main():
             initial_policy_transfer=metadata["initial_policy_transfer"],
             guarded_stair_learning=metadata["guarded_stair_learning"], runtime_stair_geometry=metadata["runtime_stair_geometry"],
             temporal_credit=metadata["runtime_temporal_credit"],
-            rollout_collection=metadata["runtime_rollout_collection"])
+            rollout_collection=metadata["runtime_rollout_collection"],
+            clearance_progress_potential=runner.alg.clearance_progress_snapshot())
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
         except FunctionalUpdateRejected as error:

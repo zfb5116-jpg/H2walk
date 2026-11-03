@@ -27,6 +27,8 @@ class StairTransferEnvCfg(StairAscentEnvCfg):
     stair_minimum_height: float = 0.15
     stair_maximum_height: float = 0.15
     stair_height_levels: int = 2
+    # Activated only by the explicitly bound new training/evaluation profile.
+    stair_clearance_progress_potential: bool = False
 
     def __post_init__(self):
         super().__post_init__()

@@ -730,7 +730,7 @@ class RealInputFunctionalGuard:
         self.rollout_credit_mode=False;self.rollout_collection=None
         stair_protocol=getattr(algorithm,"stair_trial_protocol",None)
         if stair_protocol is not None:
-            from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, TEMPORAL_PROTOCOLS,
+            from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS,
                 FIXED_BANK_COLLECTION_CONTROLS, temporal_credit_config_errors)
             require(stair_protocol in PROTOCOL_FORMATS,"Undeclared stair guard collection profile")
             self.fixed_collection_controls=FIXED_BANK_COLLECTION_CONTROLS
@@ -739,7 +739,7 @@ class RealInputFunctionalGuard:
                 require(not temporal_credit_config_errors(temporal,protocol=stair_protocol),
                         "Stair guard has no exact live temporal binding")
                 self.current_rollout_steps=temporal["rollout_steps"]
-            self.rollout_credit_mode=stair_protocol==PROTOCOL
+            self.rollout_credit_mode=stair_protocol in ROLLOUT_CREDIT_PROTOCOLS
             if self.rollout_credit_mode:
                 self.rollout_collection=algorithm.rollout_collection_snapshot()
         require(type(algorithm.storage.num_transitions_per_env) is int

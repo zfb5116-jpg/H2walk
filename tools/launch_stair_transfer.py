@@ -17,10 +17,11 @@ from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snaps
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy
 from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
-    TEMPORAL_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
+    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
-    rollout_credit_budget_errors, rollout_credit_seal_errors, rollout_credit_acquisition_errors)
+    rollout_credit_budget_errors, rollout_credit_seal_errors, rollout_credit_acquisition_errors,
+    clearance_progress_config_errors, clearance_progress_snapshot_errors)
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -120,6 +121,8 @@ def preflight(plan_path):
             "Missing reviewed48-current/24-fixed collection and49,152,000-step source budget")
     require("tools/stair_initialization_binding.py" in plan["implementation_sha256"],
             "Fresh exploration binding helper is absent from the implementation manifest")
+    require(not clearance_progress_config_errors(plan.get("clearance_progress_potential"), protocol=PROTOCOL),
+            "Missing reviewed new clearance potential reward binding")
     require(subprocess.check_output(["git","status","--porcelain=v1"],cwd=ROOT,text=True).strip() == "", "Commit the reviewed implementation before launch")
     for name, expected in plan["implementation_sha256"].items():
         require(digest(ROOT/name) == expected, "Reviewed implementation changed: "+name)
@@ -187,7 +190,7 @@ def startup(metadata,request):
                                ("initial learning state", metadata.get("initial_learning_state", {}).get("temporal_credit"))):
             errors.extend(name+": "+error for error in temporal_credit_snapshot_errors(temporal_credit, snapshot,
                                                                                      protocol=protocol))
-    if protocol == PROTOCOL:
+    if protocol in ROLLOUT_CREDIT_PROTOCOLS:
         errors.extend(rollout_credit_budget_errors(request, protocol=protocol))
         errors.extend(rollout_credit_budget_errors(metadata, protocol=protocol))
         collection=request.get("rollout_collection")
@@ -201,6 +204,16 @@ def startup(metadata,request):
         bank=metadata.get("guarded_stair_learning", {}).get("fixed_real_bank", {})
         if bank.get("status") == "sealed":
             errors.extend(rollout_credit_seal_errors(bank, protocol=protocol))
+    if protocol == PROTOCOL:
+        binding=request.get("clearance_progress_potential")
+        check(metadata.get("clearance_progress_potential") == binding,
+              "clearance progress plan/request/run disagree")
+        errors.extend(clearance_progress_config_errors(binding, metadata.get("runtime_clearance_progress_config"),
+                                                       protocol=protocol))
+        for snapshot in (metadata.get("runtime_clearance_progress"),
+                         metadata.get("initial_learning_state", {}).get("clearance_progress_potential"),
+                         metadata.get("guarded_stair_learning", {}).get("clearance_progress_potential")):
+            errors.extend(clearance_progress_snapshot_errors(binding, snapshot, protocol=protocol, expected_updates=0))
     check(metadata.get("num_envs") == 1024 and metadata.get("max_iterations") == BUDGET
           and metadata.get("num_steps_per_env") == (ROLLOUT_STEPS_BY_PROTOCOL.get(protocol) if type(protocol) is str else None),
           "wrong budget")
@@ -281,12 +294,19 @@ def sample(case,commit=False,reviewed_pending=None):
                                                             protocol=request["trial_protocol"])
             contract["errors"].extend("native temporal credit: "+error for error in temporal_errors)
             if temporal_errors: contract["status"]="failed"
-        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+        if (request["job_kind"] == KIND and request.get("trial_protocol") in ROLLOUT_CREDIT_PROTOCOLS
                 and latest_motion is not None):
             collection_errors=rollout_credit_collection_errors(latest_motion.get("rollout_collection"),
                                                                protocol=request["trial_protocol"])
             contract["errors"].extend("native rollout collection: "+error for error in collection_errors)
             if collection_errors: contract["status"]="failed"
+        if (request["job_kind"] == KIND and request.get("trial_protocol") == PROTOCOL
+                and latest_motion is not None):
+            clearance_errors=clearance_progress_snapshot_errors(request.get("clearance_progress_potential"),
+                latest_motion.get("clearance_progress_potential"), protocol=request["trial_protocol"],
+                expected_updates=latest_motion["completed_iterations"]*request["num_steps_per_env"])
+            contract["errors"].extend("native clearance progress: "+error for error in clearance_errors)
+            if clearance_errors: contract["status"]="failed"
         files=[]
         if run:
             for path in run.glob("model_*.pt"):
@@ -486,6 +506,7 @@ def dispatch(plan_path,start,validation_parent=None):
             exploration_initialization=plan["exploration_initialization"],
             temporal_credit=plan["temporal_credit"],
             rollout_collection=plan["rollout_collection"],
+            clearance_progress_potential=plan["clearance_progress_potential"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=rollout_steps,save_interval=500,
@@ -510,6 +531,7 @@ def dispatch(plan_path,start,validation_parent=None):
             latest_checkpoint_sha256=None,latest_checkpoint_iteration=None,latest_checkpoint_size=None,
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=rollout_steps,
             temporal_credit=plan["temporal_credit"],rollout_collection=plan["rollout_collection"],
+            clearance_progress_potential=plan["clearance_progress_potential"],
             expected_final_iteration=BUDGET-1,expected_total_timesteps=BUDGET*1024*rollout_steps,
             monitor_snapshot_tool=str(SELF),monitor_snapshot_command=[sys.executable,str(SELF),"--monitor",str(case)])
         write(POINTER,pointer)

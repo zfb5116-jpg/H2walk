@@ -6,10 +6,11 @@ import json
 import math
 from pathlib import Path
 from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
-    TEMPORAL_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
+    TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
-    rollout_credit_budget_errors, rollout_credit_seal_errors)
+    rollout_credit_budget_errors, rollout_credit_seal_errors,
+    clearance_progress_config_errors, clearance_progress_snapshot_errors)
 
 
 def sha(path):
@@ -64,7 +65,7 @@ def validate_cpu(checkpoint, plan_path, scope):
                          run.get("initial_learning_state", {}).get("temporal_credit")):
             require(not temporal_credit_snapshot_errors(temporal_credit, snapshot, protocol=protocol),
                     "Resolved or actual initial temporal credit changed")
-    if protocol == PROTOCOL:
+    if protocol in ROLLOUT_CREDIT_PROTOCOLS:
         require(not rollout_credit_budget_errors(request, protocol=protocol)
                 and not rollout_credit_budget_errors(run, protocol=protocol),
                 "New rollout source budget differs from plan/request/run")
@@ -76,6 +77,18 @@ def validate_cpu(checkpoint, plan_path, scope):
                          run.get("guarded_stair_learning", {}).get("rollout_collection")):
             require(not rollout_credit_collection_errors(snapshot, protocol=protocol) and snapshot == collection,
                     "Actual initial48-current/24-fixed collection changed")
+    if protocol == PROTOCOL:
+        clearance_progress = plan.get("clearance_progress_potential")
+        require(run.get("clearance_progress_potential") == request.get("clearance_progress_potential")
+                == clearance_progress and not clearance_progress_config_errors(clearance_progress,
+                    run.get("runtime_clearance_progress_config"), protocol=protocol),
+                "Clearance progress plan/request/resolved configuration changed")
+        for snapshot in (run.get("runtime_clearance_progress"),
+                         run.get("initial_learning_state", {}).get("clearance_progress_potential"),
+                         run.get("guarded_stair_learning", {}).get("clearance_progress_potential")):
+            require(not clearance_progress_snapshot_errors(clearance_progress, snapshot, protocol=protocol,
+                                                           expected_updates=0),
+                    "Actual clearance progress initialization binding changed")
     source = Path(run["source_snapshot"]).resolve(strict=True)
     source_hashes = {"source/"+str(p.relative_to(source)):sha(p) for p in source.rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
@@ -115,7 +128,7 @@ def validate_cpu(checkpoint, plan_path, scope):
         require(len(native) == 1 and not temporal_credit_snapshot_errors(temporal_credit, native[0].get("temporal_credit"),
                                                                         protocol=protocol),
                 "Corresponding native iteration actual temporal credit binding changed")
-    if protocol == PROTOCOL:
+    if protocol in ROLLOUT_CREDIT_PROTOCOLS:
         for record in (saved, gs, native[0]):
             require(not rollout_credit_collection_errors(record.get("rollout_collection"), protocol=protocol)
                     and record["rollout_collection"] == collection,
@@ -137,11 +150,14 @@ def validate_cpu(checkpoint, plan_path, scope):
                 and type(sealed.get("actual_seal_RND_counter")) is int and sealed["actual_seal_RND_counter"] == 24
                 and type(sealed.get("actual_current_rows_at_seal")) is int and sealed["actual_current_rows_at_seal"] == 520,
                 "Exclusive actual-bank publication did not observe the true post-step24 seal")
-        require(bank["bindings"] == dict(case=str(case),request_sha256=sha(case/"request.json"),
+        expected_bindings = dict(case=str(case),request_sha256=sha(case/"request.json"),
                 source_commit=run["git_commit"],source_sha256=run["source_sha256"],
                 training_tool_sha256=run["training_tool_sha256"],trial_protocol=protocol,
                 temporal_credit=temporal_credit,rollout_collection=collection,
-                plan_path=str(plan_path),plan_sha256=sha(plan_path),initial_policy_sha256=plan["initial_policy_sha256"]),
+                plan_path=str(plan_path),plan_sha256=sha(plan_path),initial_policy_sha256=plan["initial_policy_sha256"])
+        if protocol == PROTOCOL:
+            expected_bindings["clearance_progress_potential"] = clearance_progress
+        require(bank["bindings"] == expected_bindings,
                 "Actual fixed-prefix source/request/plan bindings changed")
         guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
         for key, hash_key in (("bank_path","bank_sha256"), ("receipt_path","receipt_sha256"),
@@ -152,6 +168,16 @@ def validate_cpu(checkpoint, plan_path, scope):
         receipt_json = json.loads(Path(bank["receipt_path"]).read_text())
         require(receipt_json == {key:value for key,value in bank.items() if key not in ("receipt_path","receipt_sha256")},
                 "Actual fixed-prefix receipt bytes disagree with the typed packet")
+    if protocol == PROTOCOL:
+        for record in (saved, gs, native[0]):
+            require(not clearance_progress_snapshot_errors(clearance_progress,
+                record.get("clearance_progress_potential"), protocol=protocol, expected_updates=completed*rollout_steps),
+                "Typed packet/state/native actual clearance reward binding changed")
+        require(saved["clearance_progress_potential"] == gs["clearance_progress_potential"]
+                == native[0]["clearance_progress_potential"], "Packet and matching native reward states disagree")
+        require(not clearance_progress_snapshot_errors(clearance_progress,
+            sealed.get("clearance_progress_potential"), protocol=protocol, expected_updates=24),
+            "Actual prefix-seal reward state did not observe24 controls")
     tensors = 0
     def finite(value):
         nonlocal tensors
@@ -181,7 +207,7 @@ def validate_cpu(checkpoint, plan_path, scope):
             "Split optimizer mapping changed")
     actor_steps = max(0,completed-40)*20
     critic_steps = completed*20
-    if protocol == PROTOCOL:
+    if protocol in ROLLOUT_CREDIT_PROTOCOLS:
         require(all(type(gs.get(key)) is int for key in ("completed_updates", "actor_optimizer_steps",
                     "critic_optimizer_steps", "rnd_optimizer_steps", "rnd_update_counter"))
                 and type(saved["rnd_runtime"].get("update_counter")) is int,
@@ -298,13 +324,18 @@ def validate_cpu(checkpoint, plan_path, scope):
         result["temporal_credit"] = temporal_credit
         result["actual_temporal_credit_binding_passed"] = True
         result["native_temporal_credit_iteration"] = saved["iter"]
-    if protocol == PROTOCOL:
+    if protocol in ROLLOUT_CREDIT_PROTOCOLS:
         result["rollout_collection"] = collection
         result["actual_prefix24_seal_and_full48_packet_binding_passed"] = True
         result["actual_prefix_seal"] = dict(sealed_record=str(sealed_path),sealed_record_sha256=sha(sealed_path),
             storage_step=sealed["actual_seal_storage_step"],rnd_rollout_counter=bank["rnd_rollout_update_counter"],
             current_rows_at_seal=bank["current_rows_at_seal"],full_guard_bank_assembled_at_seal=False,
             completed_controls=bank["completed_controls"],receipt_sha256=bank["receipt_sha256"])
+    if protocol == PROTOCOL:
+        result["clearance_progress_potential"] = clearance_progress
+        result["actual_clearance_reward_binding_passed"] = True
+        result["actual_clearance_reward_state"] = saved["clearance_progress_potential"]
+        result["native_clearance_reward_iteration"] = saved["iter"]
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

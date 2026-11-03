@@ -10,11 +10,12 @@ from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require
 from task_context_normalization import normalization_metadata
 from selected_row_block import SELECTED_ROW_BLOCK_POLICY
 from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
-                                          TEMPORAL_PROTOCOLS, FIXED_BANK_COLLECTION_CONTROLS,
+                                          TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, FIXED_BANK_COLLECTION_CONTROLS,
                                           initialization_config_errors, temporal_credit_config_errors,
                                           temporal_credit_snapshot_errors, rollout_credit_collection_contract,
                                           rollout_credit_collection_errors, rollout_credit_budget_errors,
-                                          rollout_credit_acquisition_errors)
+                                          rollout_credit_acquisition_errors, clearance_progress_config_errors,
+                                          clearance_progress_snapshot_errors)
 
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
@@ -65,7 +66,7 @@ class H2GuardedStairPPO(H2GuardedPPO):
 
     def rollout_collection_snapshot(self):
         """Bind declared prefix/current lengths to the already live storage."""
-        if self.stair_trial_protocol != PROTOCOL:
+        if self.stair_trial_protocol not in ROLLOUT_CREDIT_PROTOCOLS:
             return None
         temporal = self.temporal_credit_snapshot()
         result = rollout_credit_collection_contract(protocol=self.stair_trial_protocol)
@@ -77,9 +78,32 @@ class H2GuardedStairPPO(H2GuardedPPO):
                     "Actual guard collection differs from the live rollout")
         return result
 
+    def bind_clearance_progress(self, environment, binding):
+        require(self.stair_trial_protocol == PROTOCOL
+                and environment is self._temporal_credit_environment
+                and not hasattr(self, "_clearance_progress_binding")
+                and not clearance_progress_config_errors(binding, protocol=self.stair_trial_protocol),
+                "Wrong or repeated clearance progress binding")
+        self._clearance_progress_binding = copy.deepcopy(binding)
+        return self.clearance_progress_snapshot()
+
+    def clearance_progress_snapshot(self):
+        if self.stair_trial_protocol != PROTOCOL:
+            return None
+        require(hasattr(self, "_clearance_progress_binding"), "Actual clearance progress is not bound")
+        environment = self._temporal_credit_environment
+        result = dict(environment.stair_progress.clearance_progress_snapshot() or {},
+            contract=copy.deepcopy(self._clearance_progress_binding),
+            configuration_enabled=environment.cfg.stair_clearance_progress_potential,
+            outer_potential_weight=float(environment.reward_manager.get_term_cfg("potential").weight))
+        require(not clearance_progress_snapshot_errors(self._clearance_progress_binding, result,
+                                                       protocol=self.stair_trial_protocol),
+                "Actual clearance reward state differs from its immutable contract")
+        return result
+
     def process_env_step(self, rewards, dones, infos):
         result = super().process_env_step(rewards, dones, infos)
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             self.temporal_credit_snapshot()
             require(self.guard is not None, "Rollout credit step has no actual-input guard")
             if self.completed_updates == 0 and self.guard.bank_receipt["status"] == "collecting_first_rollout":
@@ -95,7 +119,7 @@ class H2GuardedStairPPO(H2GuardedPPO):
         return result
 
     def compute_returns(self, last_critic_obs):
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             temporal = self.temporal_credit_snapshot()
             require(self.storage.step == temporal["rollout_steps"]
                     and self.guard is not None and self.guard.bank_receipt["status"] == "sealed"
@@ -114,8 +138,10 @@ class H2GuardedStairPPO(H2GuardedPPO):
             result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
             result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
                 scope="stair_transfer_only", exact_binding="temporal_credit")
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             result["rollout_collection"] = self.rollout_collection_snapshot()
+        if self.stair_trial_protocol == PROTOCOL:
+            result["clearance_progress_potential"] = self.clearance_progress_snapshot()
         return result
 
     def packet(self, iteration, infos=None):
@@ -127,8 +153,10 @@ class H2GuardedStairPPO(H2GuardedPPO):
             result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
             result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
                 scope="stair_transfer_only", exact_binding="temporal_credit")
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             result["rollout_collection"] = self.rollout_collection_snapshot()
+        if self.stair_trial_protocol == PROTOCOL:
+            result["clearance_progress_potential"] = self.clearance_progress_snapshot()
         return result
 
 
@@ -145,11 +173,15 @@ def parent_admission(plan, root):
     if plan["trial_protocol"] in TEMPORAL_PROTOCOLS:
         require(not temporal_credit_config_errors(plan.get("temporal_credit"), protocol=plan["trial_protocol"]),
                 "Wrong stair temporal credit plan")
-    if plan["trial_protocol"] == PROTOCOL:
+    if plan["trial_protocol"] in ROLLOUT_CREDIT_PROTOCOLS:
         require(not rollout_credit_budget_errors(plan, protocol=plan["trial_protocol"])
                 and not rollout_credit_collection_errors(plan.get("rollout_collection"), protocol=plan["trial_protocol"])
                 and not rollout_credit_acquisition_errors(plan.get("audit_bank_source"), protocol=plan["trial_protocol"]),
                 "Wrong48-current/24-fixed stair collection plan")
+    if plan["trial_protocol"] == PROTOCOL:
+        require(not clearance_progress_config_errors(plan.get("clearance_progress_potential"),
+                                                     protocol=plan["trial_protocol"]),
+                "Wrong new clearance progress reward plan")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA

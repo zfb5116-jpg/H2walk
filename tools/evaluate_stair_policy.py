@@ -113,7 +113,7 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8")
+    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9")
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
     if stair_transfer:
@@ -128,7 +128,8 @@ def finite_checkpoint(torch, checkpoint):
                     "h2_guarded_stair_ppo_v5": ("accepted_flat_block_consistent_stair_clearance_v5", 1000),
                     "h2_guarded_stair_ppo_v6": ("accepted_flat_full_rms_exploration_stair_v6", 1000),
                     "h2_guarded_stair_ppo_v7": ("accepted_flat_temporal_credit_stair_v7", 1000),
-                    "h2_guarded_stair_ppo_v8": ("accepted_flat_rollout_credit_stair_v8", 1000)}
+                    "h2_guarded_stair_ppo_v8": ("accepted_flat_rollout_credit_stair_v8", 1000),
+                    "h2_guarded_stair_ppo_v9": ("accepted_flat_clearance_potential_stair_v9", 1000)}
         expected_protocol, expected_budget = profiles[saved["format"]]
         if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
                 or receipt.get("checkpoint_sha256") != sha256(checkpoint)
@@ -137,6 +138,17 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("iter") != expected_budget-1
                 or saved["guarded_ppo_state"]["completed_updates"] != expected_budget):
             raise ValueError("Typed stair replay requires its new complete natural-final CPU receipt")
+    if saved.get("format") == "h2_guarded_stair_ppo_v9":
+        from stair_initialization_binding import (clearance_progress_config_errors,
+            clearance_progress_snapshot_errors)
+        binding = receipt.get("clearance_progress_potential")
+        if (receipt.get("actual_clearance_reward_binding_passed") is not True
+                or clearance_progress_config_errors(binding, protocol=expected_protocol)
+                or clearance_progress_snapshot_errors(binding, saved.get("clearance_progress_potential"),
+                    protocol=expected_protocol, expected_updates=48000)
+                or saved.get("clearance_progress_potential") != receipt.get("actual_clearance_reward_state")
+                or saved["guarded_ppo_state"].get("clearance_progress_potential") != saved["clearance_progress_potential"]):
+            raise ValueError("New replay requires its actual clearance reward final-state binding")
     if not isinstance(saved, dict) or not required.issubset(saved):
         raise ValueError("Require a complete PPO checkpoint, including both normalizers and RND state")
     if int(saved["iter"]) < 0:
@@ -244,6 +256,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
         raise ValueError("Checkpoint action semantics disagree with direct position control")
     spec = gym.spec(args.task)
     cfg = load_config(spec.kwargs["env_cfg_entry_point"])
+    cfg.stair_clearance_progress_potential = saved.get("format") == "h2_guarded_stair_ppo_v9"
     cfg.scene.num_envs = args.num_envs
     cfg.seed = args.seed
     cfg.sim.device = args.device or "cuda:0"
@@ -304,6 +317,15 @@ def evaluate(args, app, metadata, source, expected_hashes):
         env = gym.make(args.task, cfg=cfg, render_mode="rgb_array")
         wrapped = RslRlVecEnvWrapper(env, clip_actions=agent.get("clip_actions"))
         raw = env.unwrapped
+        if saved.get("format") == "h2_guarded_stair_ppo_v9":
+            from stair_initialization_binding import clearance_progress_snapshot_errors
+            binding = json.loads(args.checkpoint.with_suffix(".validation.json").read_text())["clearance_progress_potential"]
+            actual = dict(raw.stair_progress.clearance_progress_snapshot() or {}, contract=binding,
+                configuration_enabled=raw.cfg.stair_clearance_progress_potential,
+                outer_potential_weight=float(raw.reward_manager.get_term_cfg("potential").weight))
+            if clearance_progress_snapshot_errors(binding, actual, protocol=saved["trial_protocol"], expected_updates=0):
+                raise ValueError("Actual evaluation clearance reward configuration disagrees with its producer")
+            metadata["clearance_progress_potential"] = actual
         robot, device, n = raw.scene["robot"], raw.device, args.num_envs
         term = raw.action_manager.get_term("JointPositionAction")
         if type(term) is not DirectLegPositionAction or term.gait_reference is not None:
@@ -334,7 +356,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8")
+        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9")
         actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
         if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")

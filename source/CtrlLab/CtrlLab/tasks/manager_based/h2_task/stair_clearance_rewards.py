@@ -71,3 +71,35 @@ def stair_swing_clearance_deficit(env):
     # Negative physical costs are not suppressed after a force-qualification
     # failure. Only invalid physical states are excluded by their own boundary.
     return cost * ~p.ever_invalid
+
+
+def clearance_progress_components(soles, rotations, origins, heights, corners, *,
+                                  approach=1.4, depth=0.35, steps=6):
+    """Two geometric potentials; contact and motion gates do not define state.
+
+    The existing real-riser selector and full collision sole are reused.  This
+    supplies no desired trajectory, phase, observation or joint target.
+    """
+    if not bool((heights > 0).all()):
+        raise ValueError("Clearance progress needs positive actual riser heights")
+    local = soles-origins[:, None]
+    world_corners = torch.einsum('nfij,fkj->nfki', rotations, corners)+local[:, :, None]
+    front = world_corners[..., 0].amax(-1)
+    rear = world_corners[..., 0].amin(-1)
+    bottom = world_corners[..., 2].amin(-1)
+    level, near = full_footprint_riser_target(front, rear, approach=approach,
+                                            depth=depth, steps=steps)
+    lower_plane = (level-1)*heights[:, None]
+    components = ((bottom-lower_plane)/(heights[:, None]+0.02)).clamp(0, 1)
+    return components*near, level, near
+
+
+def clearance_progress_delta(previous, current, positive_weight, positive_eligible, gamma=0.99):
+    """Gate each positive difference separately; never cancel a foot's debt.
+
+    The added real-arithmetic event lies in[-2,1.98]. Clamping the new positive
+    multiplier to[0,1] does not alter the original potential or its multiplier.
+    """
+    raw = gamma*current-previous
+    multiplier = positive_weight[:, None].clamp(0, 1)*positive_eligible
+    return raw, raw.clamp_max(0)+raw.clamp_min(0)*multiplier
