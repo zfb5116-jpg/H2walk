@@ -6,8 +6,10 @@ import json
 import math
 from pathlib import Path
 from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+    TEMPORAL_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
-    temporal_credit_config_errors, temporal_credit_snapshot_errors)
+    temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
+    rollout_credit_budget_errors, rollout_credit_seal_errors)
 
 
 def sha(path):
@@ -34,10 +36,11 @@ def validate_cpu(checkpoint, plan_path, scope):
     provenance = parent_admission(plan, root)
     protocol = plan["trial_protocol"]
     checkpoint_format = PROTOCOL_FORMATS[protocol]
+    rollout_steps = ROLLOUT_STEPS_BY_PROTOCOL[protocol]
     run = json.loads((checkpoint.parent/"run.json").read_text())
     require(run["task"] == TASK and run["trial_protocol"] == protocol and run["max_iterations"] == BUDGET
             and run["plan_sha256"] == sha(plan_path) and run["num_envs"] == 1024
-            and run["num_steps_per_env"] == 24 and run["policy_dimensions"] == [1034,871,73,12],
+            and run["num_steps_per_env"] == rollout_steps and run["policy_dimensions"] == [1034,871,73,12],
             "CPU admission belongs to a different run")
     if protocol in INITIALIZATION_PROTOCOLS:
         binding = plan["exploration_initialization"]
@@ -52,15 +55,27 @@ def validate_cpu(checkpoint, plan_path, scope):
         require(not exploration_snapshot_errors(binding, run.get("stair_exploration_budget"),
                     initial_learning_state=run.get("initial_learning_state"), at_initialization=True),
                 "Actual initial exploration snapshot changed")
-    if protocol == PROTOCOL:
+    if protocol in TEMPORAL_PROTOCOLS:
         temporal_credit = plan.get("temporal_credit")
-        require(not temporal_credit_config_errors(temporal_credit)
+        require(not temporal_credit_config_errors(temporal_credit, protocol=protocol)
                 and request.get("temporal_credit") == run.get("temporal_credit") == temporal_credit,
                 "Temporal credit plan/request/run binding changed")
         for snapshot in (run.get("runtime_temporal_credit_config"), run.get("runtime_temporal_credit"),
                          run.get("initial_learning_state", {}).get("temporal_credit")):
-            require(not temporal_credit_snapshot_errors(temporal_credit, snapshot),
+            require(not temporal_credit_snapshot_errors(temporal_credit, snapshot, protocol=protocol),
                     "Resolved or actual initial temporal credit changed")
+    if protocol == PROTOCOL:
+        require(not rollout_credit_budget_errors(request, protocol=protocol)
+                and not rollout_credit_budget_errors(run, protocol=protocol),
+                "New rollout source budget differs from plan/request/run")
+        collection = plan.get("rollout_collection")
+        require(not rollout_credit_collection_errors(collection, protocol=protocol)
+                and request.get("rollout_collection") == collection, "New current/fixed collection request changed")
+        for snapshot in (run.get("rollout_collection"), run.get("runtime_rollout_collection"),
+                         run.get("initial_learning_state", {}).get("rollout_collection"),
+                         run.get("guarded_stair_learning", {}).get("rollout_collection")):
+            require(not rollout_credit_collection_errors(snapshot, protocol=protocol) and snapshot == collection,
+                    "Actual initial48-current/24-fixed collection changed")
     source = Path(run["source_snapshot"]).resolve(strict=True)
     source_hashes = {"source/"+str(p.relative_to(source)):sha(p) for p in source.rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
@@ -73,9 +88,9 @@ def validate_cpu(checkpoint, plan_path, scope):
     require(saved["format"] == checkpoint_format and saved["trial_protocol"] == protocol and saved["task"] == TASK
             and saved["training_budget"] == BUDGET, "Wrong serialized stair type")
     gs = saved["guarded_ppo_state"]
-    if protocol == PROTOCOL:
-        require(not temporal_credit_snapshot_errors(temporal_credit, saved.get("temporal_credit"))
-                and not temporal_credit_snapshot_errors(temporal_credit, gs.get("temporal_credit")),
+    if protocol in TEMPORAL_PROTOCOLS:
+        require(not temporal_credit_snapshot_errors(temporal_credit, saved.get("temporal_credit"), protocol=protocol)
+                and not temporal_credit_snapshot_errors(temporal_credit, gs.get("temporal_credit"), protocol=protocol),
                 "Typed packet actual temporal credit binding changed")
         for record in (run, saved, gs):
             require(record.get("inherited_numeric_execution_profile_scope") == "numeric_executor_only"
@@ -90,14 +105,53 @@ def validate_cpu(checkpoint, plan_path, scope):
     else:
         require(completed == BUDGET and checkpoint.name == f"model_{BUDGET-1}.pt"
                 and run["status"] == "completed" and run["completed_iterations"] == BUDGET
-                and run["actual_sampled_environment_steps"] == BUDGET*1024*24
+                and run["actual_sampled_environment_steps"] == BUDGET*1024*rollout_steps
+                and run["total_timesteps"] == BUDGET*1024*rollout_steps
                 and run["discarded_uncommitted_rollout_steps"] == 0, "Not a natural complete stair final")
-    if protocol == PROTOCOL:
+    if protocol in TEMPORAL_PROTOCOLS:
         with (checkpoint.parent/"motion_metrics.jsonl").open() as stream:
             native_rows = [json.loads(line) for line in stream if line.endswith("\n") and line.strip()]
         native = [row for row in native_rows if row.get("iteration") == saved["iter"]]
-        require(len(native) == 1 and not temporal_credit_snapshot_errors(temporal_credit, native[0].get("temporal_credit")),
+        require(len(native) == 1 and not temporal_credit_snapshot_errors(temporal_credit, native[0].get("temporal_credit"),
+                                                                        protocol=protocol),
                 "Corresponding native iteration actual temporal credit binding changed")
+    if protocol == PROTOCOL:
+        for record in (saved, gs, native[0]):
+            require(not rollout_credit_collection_errors(record.get("rollout_collection"), protocol=protocol)
+                    and record["rollout_collection"] == collection,
+                    "Typed packet/state/native48-current/24-fixed collection changed")
+        bank = gs.get("audit_bank_acquisition")
+        require(not rollout_credit_seal_errors(bank, protocol=protocol)
+                and run["guarded_stair_learning"].get("fixed_real_bank") == bank,
+                "Actual post-step24/RND24 fixed-prefix seal is missing or changed")
+        case = Path(run["case"]).resolve(strict=True)
+        sealed_path = case/"actual_bank.sealed.json"
+        sealed = json.loads(sealed_path.read_text())
+        require(sealed.get("case") == str(case) and sealed.get("trial_protocol") == protocol
+                and sealed.get("checkpoint_format") == checkpoint_format
+                and sealed.get("request_sha256") == sha(case/"request.json")
+                and sealed.get("plan_sha256") == sha(plan_path) and sealed.get("fixed_real_bank") == bank
+                and not temporal_credit_snapshot_errors(temporal_credit, sealed.get("temporal_credit"), protocol=protocol)
+                and not rollout_credit_collection_errors(sealed.get("rollout_collection"), protocol=protocol)
+                and type(sealed.get("actual_seal_storage_step")) is int and sealed["actual_seal_storage_step"] == 24
+                and type(sealed.get("actual_seal_RND_counter")) is int and sealed["actual_seal_RND_counter"] == 24
+                and type(sealed.get("actual_current_rows_at_seal")) is int and sealed["actual_current_rows_at_seal"] == 520,
+                "Exclusive actual-bank publication did not observe the true post-step24 seal")
+        require(bank["bindings"] == dict(case=str(case),request_sha256=sha(case/"request.json"),
+                source_commit=run["git_commit"],source_sha256=run["source_sha256"],
+                training_tool_sha256=run["training_tool_sha256"],trial_protocol=protocol,
+                temporal_credit=temporal_credit,rollout_collection=collection,
+                plan_path=str(plan_path),plan_sha256=sha(plan_path),initial_policy_sha256=plan["initial_policy_sha256"]),
+                "Actual fixed-prefix source/request/plan bindings changed")
+        guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
+        for key, hash_key in (("bank_path","bank_sha256"), ("receipt_path","receipt_sha256"),
+                              ("acquisition_log_path","acquisition_log_sha256")):
+            path = Path(bank[key]).resolve(strict=True)
+            require(path.is_relative_to(guard_dir) and sha(path) == bank[hash_key],
+                    "Immutable new-run acquisition artifact changed")
+        receipt_json = json.loads(Path(bank["receipt_path"]).read_text())
+        require(receipt_json == {key:value for key,value in bank.items() if key not in ("receipt_path","receipt_sha256")},
+                "Actual fixed-prefix receipt bytes disagree with the typed packet")
     tensors = 0
     def finite(value):
         nonlocal tensors
@@ -127,8 +181,13 @@ def validate_cpu(checkpoint, plan_path, scope):
             "Split optimizer mapping changed")
     actor_steps = max(0,completed-40)*20
     critic_steps = completed*20
+    if protocol == PROTOCOL:
+        require(all(type(gs.get(key)) is int for key in ("completed_updates", "actor_optimizer_steps",
+                    "critic_optimizer_steps", "rnd_optimizer_steps", "rnd_update_counter"))
+                and type(saved["rnd_runtime"].get("update_counter")) is int,
+                "New accepted rollout counters require actual integer values")
     require(gs["actor_optimizer_steps"] == actor_steps and gs["critic_optimizer_steps"] == gs["rnd_optimizer_steps"] == critic_steps
-            and gs["rnd_update_counter"] == saved["rnd_runtime"]["update_counter"] == completed*24,
+            and gs["rnd_update_counter"] == saved["rnd_runtime"]["update_counter"] == completed*rollout_steps,
             "Serialized accepted counters changed")
     def check_optimizer(packet, parameter_names, steps, lr, parameters, foreach=None):
         groups = packet["param_groups"]
@@ -227,7 +286,7 @@ def validate_cpu(checkpoint, plan_path, scope):
         checkpoint_format=checkpoint_format,trial_protocol=protocol,task=TASK,iteration=saved["iter"],completed_updates=completed,
         finite_tensor_occurrences=tensors,network_dimensions=[1034,871,73,12],model_strict_load=True,
         actor_optimizer_steps=actor_steps,critic_optimizer_steps=critic_steps,rnd_optimizer_steps=critic_steps,
-        rnd_rollout_counter=completed*24,normalization_abi=abi,source_sha256=source_hashes,
+        rnd_rollout_counter=completed*rollout_steps,normalization_abi=abi,source_sha256=source_hashes,
         plan_path=str(plan_path),plan_sha256=sha(plan_path),parent_provenance=provenance,
         checkpoint_packet_loads=1,required_parent_packet_loads=1,parent_load_scope="coupled own-norm and startup actor inheritance",
         NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
@@ -235,10 +294,17 @@ def validate_cpu(checkpoint, plan_path, scope):
     if protocol in INITIALIZATION_PROTOCOLS:
         result["exploration_initialization"] = binding
         result["exploration_initialization_binding_passed"] = True
-    if protocol == PROTOCOL:
+    if protocol in TEMPORAL_PROTOCOLS:
         result["temporal_credit"] = temporal_credit
         result["actual_temporal_credit_binding_passed"] = True
         result["native_temporal_credit_iteration"] = saved["iter"]
+    if protocol == PROTOCOL:
+        result["rollout_collection"] = collection
+        result["actual_prefix24_seal_and_full48_packet_binding_passed"] = True
+        result["actual_prefix_seal"] = dict(sealed_record=str(sealed_path),sealed_record_sha256=sha(sealed_path),
+            storage_step=sealed["actual_seal_storage_step"],rnd_rollout_counter=bank["rnd_rollout_update_counter"],
+            current_rows_at_seal=bank["current_rows_at_seal"],full_guard_bank_assembled_at_seal=False,
+            completed_controls=bank["completed_controls"],receipt_sha256=bank["receipt_sha256"])
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

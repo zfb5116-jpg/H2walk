@@ -10,8 +10,11 @@ from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require
 from task_context_normalization import normalization_metadata
 from selected_row_block import SELECTED_ROW_BLOCK_POLICY
 from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+                                          TEMPORAL_PROTOCOLS, FIXED_BANK_COLLECTION_CONTROLS,
                                           initialization_config_errors, temporal_credit_config_errors,
-                                          temporal_credit_snapshot_errors)
+                                          temporal_credit_snapshot_errors, rollout_credit_collection_contract,
+                                          rollout_credit_collection_errors, rollout_credit_budget_errors,
+                                          rollout_credit_acquisition_errors)
 
 TASK = "Unitree-H2-Stair-Ascent-Policy"
 PARENT_SHA = "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f"
@@ -28,15 +31,16 @@ class H2GuardedStairPPO(H2GuardedPPO):
         # This selects the existing 5D, reserved, resource bounded, strict FP64
         # executor. It does not select a task, reward, terrain or training cap.
         super().__init__(*args, trial_protocol=LONGER_BUDGET_CONTEXT_TRIAL,
-                         stair_temporal_credit=trial_protocol == PROTOCOL, **kwargs)
+                         stair_temporal_credit=trial_protocol in TEMPORAL_PROTOCOLS, **kwargs)
         self.checkpoint_format = PROTOCOL_FORMATS[trial_protocol]
         self.selected_row_evaluation_policy = SELECTED_ROW_BLOCK_POLICY
 
     def bind_temporal_credit(self, runner, environment, binding):
         """Bind live runner/environment sources once, before the first rollout."""
-        require(self.stair_trial_protocol == PROTOCOL and runner.alg is self
+        require(self.stair_trial_protocol in TEMPORAL_PROTOCOLS and runner.alg is self
                 and not hasattr(self, "_temporal_credit_binding"), "Wrong or repeated temporal credit binding")
-        require(not temporal_credit_config_errors(binding, runner.cfg, control_dt_s=environment.step_dt),
+        require(not temporal_credit_config_errors(binding, runner.cfg, protocol=self.stair_trial_protocol,
+                                                  control_dt_s=environment.step_dt),
                 "Actual runner temporal configuration differs from its plan")
         self._temporal_credit_binding = copy.deepcopy(binding)
         self._temporal_credit_runner = runner
@@ -45,7 +49,7 @@ class H2GuardedStairPPO(H2GuardedPPO):
 
     def temporal_credit_snapshot(self):
         """Read actual algorithm attributes and live rollout/environment scalars."""
-        if self.stair_trial_protocol != PROTOCOL:
+        if self.stair_trial_protocol not in TEMPORAL_PROTOCOLS:
             return None
         require(hasattr(self, "_temporal_credit_binding"), "Actual temporal credit is not bound")
         steps = self._temporal_credit_runner.num_steps_per_env
@@ -54,9 +58,50 @@ class H2GuardedStairPPO(H2GuardedPPO):
                 "Actual rollout storage and runner lengths disagree")
         result = dict(gamma=self.gamma, gae_lambda=self.lam, rollout_steps=steps,
                       control_dt_s=self._temporal_credit_environment.step_dt)
-        require(not temporal_credit_snapshot_errors(self._temporal_credit_binding, result),
+        require(not temporal_credit_snapshot_errors(self._temporal_credit_binding, result,
+                                                    protocol=self.stair_trial_protocol),
                 "Actual temporal credit differs from the immutable plan")
         return result
+
+    def rollout_collection_snapshot(self):
+        """Bind declared prefix/current lengths to the already live storage."""
+        if self.stair_trial_protocol != PROTOCOL:
+            return None
+        temporal = self.temporal_credit_snapshot()
+        result = rollout_credit_collection_contract(protocol=self.stair_trial_protocol)
+        require(temporal["rollout_steps"] == result["training_rollout_steps"],
+                "Live rollout differs from its current-bank declaration")
+        if self.guard is not None:
+            require(self.guard.current_rollout_steps == result["current_collection_controls"]
+                    and self.guard.fixed_collection_controls == result["fixed_bank_collection_controls"],
+                    "Actual guard collection differs from the live rollout")
+        return result
+
+    def process_env_step(self, rewards, dones, infos):
+        result = super().process_env_step(rewards, dones, infos)
+        if self.stair_trial_protocol == PROTOCOL:
+            self.temporal_credit_snapshot()
+            require(self.guard is not None, "Rollout credit step has no actual-input guard")
+            if self.completed_updates == 0 and self.guard.bank_receipt["status"] == "collecting_first_rollout":
+                step = self.storage.step
+                if type(step) is not int or not 1 <= step <= FIXED_BANK_COLLECTION_CONTROLS:
+                    self.guard._acquisition_reject("Fixed bank missed its post-step24 seal boundary")
+                if step == FIXED_BANK_COLLECTION_CONTROLS:
+                    self.guard.seal_first_rollout(step, self.completed_updates,
+                        seal_hook="post_inherited_process_env_step")
+            require(self.guard.bank_receipt["status"] == "sealed"
+                    or (self.completed_updates == 0 and self.storage.step < FIXED_BANK_COLLECTION_CONTROLS),
+                    "Fixed bank must seal before the next control24 act")
+        return result
+
+    def compute_returns(self, last_critic_obs):
+        if self.stair_trial_protocol == PROTOCOL:
+            temporal = self.temporal_credit_snapshot()
+            require(self.storage.step == temporal["rollout_steps"]
+                    and self.guard is not None and self.guard.bank_receipt["status"] == "sealed"
+                    and len(self.guard.current) == temporal["rollout_steps"],
+                    "The single48-control rollout must finish with its prefix bank already sealed")
+        return super().compute_returns(last_critic_obs)
 
     def learning_state(self):
         result = super().learning_state()
@@ -64,22 +109,26 @@ class H2GuardedStairPPO(H2GuardedPPO):
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
         result["proposal_projection"]["protocol"] = self.stair_trial_protocol
         result["proposal_projection"]["selected_row_evaluation_policy"] = SELECTED_ROW_BLOCK_POLICY
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in TEMPORAL_PROTOCOLS:
             result["temporal_credit"] = self.temporal_credit_snapshot()
             result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
             result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
                 scope="stair_transfer_only", exact_binding="temporal_credit")
+        if self.stair_trial_protocol == PROTOCOL:
+            result["rollout_collection"] = self.rollout_collection_snapshot()
         return result
 
     def packet(self, iteration, infos=None):
         result = super().packet(iteration, infos)
         result.update(trial_protocol=self.stair_trial_protocol, task=TASK, training_budget=BUDGET,
                       inherited_numeric_execution_profile=LONGER_BUDGET_CONTEXT_TRIAL)
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in TEMPORAL_PROTOCOLS:
             result["temporal_credit"] = self.temporal_credit_snapshot()
             result["inherited_numeric_execution_profile_scope"] = "numeric_executor_only"
             result["ppo_temporal_credit_override"] = dict(parameter="gae_lambda", value=self.lam,
                 scope="stair_transfer_only", exact_binding="temporal_credit")
+        if self.stair_trial_protocol == PROTOCOL:
+            result["rollout_collection"] = self.rollout_collection_snapshot()
         return result
 
 
@@ -93,9 +142,14 @@ def parent_admission(plan, root):
         require(plan.get("checkpoint_format") == PROTOCOL_FORMATS[plan["trial_protocol"]]
                 and not initialization_config_errors(plan.get("exploration_initialization")),
                 "Wrong fresh stair exploration initialization plan")
-    if plan["trial_protocol"] == PROTOCOL:
-        require(not temporal_credit_config_errors(plan.get("temporal_credit")),
+    if plan["trial_protocol"] in TEMPORAL_PROTOCOLS:
+        require(not temporal_credit_config_errors(plan.get("temporal_credit"), protocol=plan["trial_protocol"]),
                 "Wrong stair temporal credit plan")
+    if plan["trial_protocol"] == PROTOCOL:
+        require(not rollout_credit_budget_errors(plan, protocol=plan["trial_protocol"])
+                and not rollout_credit_collection_errors(plan.get("rollout_collection"), protocol=plan["trial_protocol"])
+                and not rollout_credit_acquisition_errors(plan.get("audit_bank_source"), protocol=plan["trial_protocol"]),
+                "Wrong48-current/24-fixed stair collection plan")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA

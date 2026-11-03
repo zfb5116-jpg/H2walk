@@ -113,7 +113,7 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7")
+    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8")
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
     if stair_transfer:
@@ -127,7 +127,8 @@ def finite_checkpoint(torch, checkpoint):
                     "h2_guarded_stair_ppo_v4": ("accepted_flat_full_footprint_stair_clearance_v4", 1000),
                     "h2_guarded_stair_ppo_v5": ("accepted_flat_block_consistent_stair_clearance_v5", 1000),
                     "h2_guarded_stair_ppo_v6": ("accepted_flat_full_rms_exploration_stair_v6", 1000),
-                    "h2_guarded_stair_ppo_v7": ("accepted_flat_temporal_credit_stair_v7", 1000)}
+                    "h2_guarded_stair_ppo_v7": ("accepted_flat_temporal_credit_stair_v7", 1000),
+                    "h2_guarded_stair_ppo_v8": ("accepted_flat_rollout_credit_stair_v8", 1000)}
         expected_protocol, expected_budget = profiles[saved["format"]]
         if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
                 or receipt.get("checkpoint_sha256") != sha256(checkpoint)
@@ -333,7 +334,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7")
+        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8")
         actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
         if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")

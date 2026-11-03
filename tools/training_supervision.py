@@ -489,6 +489,9 @@ class SupervisedRunner(OnPolicyRunner):
             temporal_credit = self.alg.temporal_credit_snapshot()
             if temporal_credit is not None:
                 point["temporal_credit"] = temporal_credit
+            rollout_collection = self.alg.rollout_collection_snapshot()
+            if rollout_collection is not None:
+                point["rollout_collection"] = rollout_collection
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

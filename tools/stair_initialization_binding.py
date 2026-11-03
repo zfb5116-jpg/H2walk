@@ -6,19 +6,28 @@ checkpoint, or change the inherited exploration arithmetic or optimizer hook.
 import math
 
 
-PROTOCOL = "accepted_flat_temporal_credit_stair_v7"
-FORMAT = "h2_guarded_stair_ppo_v7"
+PROTOCOL = "accepted_flat_rollout_credit_stair_v8"
+FORMAT = "h2_guarded_stair_ppo_v8"
 LEGACY_PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
 LEGACY_INITIALIZATION_PROTOCOL = "accepted_flat_full_rms_exploration_stair_v6"
+LEGACY_TEMPORAL_PROTOCOL = "accepted_flat_temporal_credit_stair_v7"
 PROTOCOL_FORMATS = {LEGACY_PROTOCOL: "h2_guarded_stair_ppo_v5",
-                    LEGACY_INITIALIZATION_PROTOCOL: "h2_guarded_stair_ppo_v6", PROTOCOL: FORMAT}
-INITIALIZATION_PROTOCOLS = (LEGACY_INITIALIZATION_PROTOCOL, PROTOCOL)
+                    LEGACY_INITIALIZATION_PROTOCOL: "h2_guarded_stair_ppo_v6",
+                    LEGACY_TEMPORAL_PROTOCOL: "h2_guarded_stair_ppo_v7", PROTOCOL: FORMAT}
+INITIALIZATION_PROTOCOLS = (LEGACY_INITIALIZATION_PROTOCOL, LEGACY_TEMPORAL_PROTOCOL, PROTOCOL)
+TEMPORAL_CREDIT_BY_PROTOCOL = {
+    LEGACY_TEMPORAL_PROTOCOL: {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 24, "control_dt_s": 0.02},
+    PROTOCOL: {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 48, "control_dt_s": 0.02},
+}
+TEMPORAL_PROTOCOLS = tuple(TEMPORAL_CREDIT_BY_PROTOCOL)
+ROLLOUT_STEPS_BY_PROTOCOL = {LEGACY_PROTOCOL: 24, LEGACY_INITIALIZATION_PROTOCOL: 24,
+                             LEGACY_TEMPORAL_PROTOCOL: 24, PROTOCOL: 48}
+FIXED_BANK_COLLECTION_CONTROLS = 24
 MAXIMUM_ANGLE_STD_RAD = (0.02, 0.015, 0.015, 0.02, 0.01, 0.0075) * 2
 _BINDING_KEYS = {"initial_fraction", "minimum_fraction", "maximum_angle_std_rad"}
 _RUNNER_KEYS = {"initial_fraction", "minimum_fraction", "maximum_angle_std"}
-_TEMPORAL_CREDIT = {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 24, "control_dt_s": 0.02}
 _TEMPORAL_ADMISSION = dict(enabled=True, algorithm_class="H2GuardedStairPPO",
-    algorithm_module="guarded_stair_transfer", stair_trial_protocol=PROTOCOL,
+    algorithm_module="guarded_stair_transfer", stair_trial_protocol=None,
     numeric_execution_profile="explicit_task_context_longer_budget_v1", gamma=0.99, gae_lambda=0.99)
 _UNSET = object()
 # Products and quotients in the existing float32 snapshot are compared within
@@ -50,34 +59,37 @@ def temporal_credit_config_snapshot(runner_config, *, control_dt_s):
                 control_dt_s=control_dt_s)
 
 
-def temporal_credit_config_errors(binding, runner_config=_UNSET, *, control_dt_s=_UNSET):
+def temporal_credit_config_errors(binding, runner_config=_UNSET, *, protocol, control_dt_s=_UNSET):
     """Validate the exact declaration and optionally its resolved runner source.
 
     The runner keeps its original gamma/lam and num_steps_per_env field names.
     Its environment's resolved control period must be supplied explicitly.
     """
+    expected_credit = TEMPORAL_CREDIT_BY_PROTOCOL.get(protocol) if type(protocol) is str else None
+    if expected_credit is None:
+        return ["unknown temporal credit protocol"]
     errors = []
-    if not isinstance(binding, dict) or set(binding) != set(_TEMPORAL_CREDIT):
+    if not isinstance(binding, dict) or set(binding) != set(expected_credit):
         return ["temporal_credit requires exactly gamma, gae_lambda, rollout_steps and control_dt_s"]
-    for key, expected in _TEMPORAL_CREDIT.items():
+    for key, expected in expected_credit.items():
         actual = binding[key]
         valid = type(actual) is int if key == "rollout_steps" else _number(actual)
         if not valid or actual != expected:
             errors.append("temporal_credit has incorrect " + key)
     if runner_config is not _UNSET:
         actual = temporal_credit_config_snapshot(runner_config, control_dt_s=control_dt_s)
-        errors.extend("resolved runner: " + error for error in temporal_credit_config_errors(actual))
+        errors.extend("resolved runner: " + error for error in temporal_credit_config_errors(actual, protocol=protocol))
         if actual != binding:
             errors.append("resolved runner temporal credit disagrees with the immutable plan")
     return errors
 
 
-def temporal_credit_snapshot_errors(binding, snapshot):
+def temporal_credit_snapshot_errors(binding, snapshot, *, protocol):
     """Compare a JSON snapshot with the declaration, retaining strict scalar types."""
-    errors = temporal_credit_config_errors(binding)
+    errors = temporal_credit_config_errors(binding, protocol=protocol)
     if errors:
         return errors
-    errors.extend("temporal snapshot: " + error for error in temporal_credit_config_errors(snapshot))
+    errors.extend("temporal snapshot: " + error for error in temporal_credit_config_errors(snapshot, protocol=protocol))
     if snapshot != binding:
         errors.append("temporal snapshot disagrees with the immutable plan")
     return errors
@@ -91,12 +103,113 @@ def temporal_credit_admission_errors(admission):
     """
     if not isinstance(admission, dict) or set(admission) != set(_TEMPORAL_ADMISSION):
         return ["temporal credit constructor admission has undeclared fields"]
+    protocol = admission.get("stair_trial_protocol")
+    if protocol not in TEMPORAL_PROTOCOLS:
+        return ["temporal credit constructor admission has unknown protocol"]
     errors = []
     for key, expected in _TEMPORAL_ADMISSION.items():
+        if key == "stair_trial_protocol":
+            expected = protocol
         actual = admission[key]
         valid = actual is True if key == "enabled" else (_number(actual) if key in ("gamma", "gae_lambda") else type(actual) is str)
         if not valid or actual != expected:
             errors.append("temporal credit constructor admission has incorrect " + key)
+    return errors
+
+
+def rollout_credit_collection_contract(*, protocol):
+    """Declare the new rollout and its separately sealed fixed-bank prefix."""
+    if protocol != PROTOCOL:
+        raise ValueError("unknown rollout credit collection protocol")
+    steps = TEMPORAL_CREDIT_BY_PROTOCOL[protocol]["rollout_steps"]
+    return dict(training_rollout_steps=steps,
+        fixed_bank_collection_controls=FIXED_BANK_COLLECTION_CONTROLS,
+        collection_rollout_steps_inclusive=[0, FIXED_BANK_COLLECTION_CONTROLS-1],
+        seal_hook="post_inherited_process_env_step", seal_storage_step=FIXED_BANK_COLLECTION_CONTROLS,
+        seal_rnd_rollout_update_counter=FIXED_BANK_COLLECTION_CONTROLS, completed_updates_at_seal=0,
+        first_bootstrap_pending_at_seal=True, current_rows_per_rollout=1024,
+        current_collection_controls=steps,
+        current_rows_per_control=[1024//steps + int(k < 1024 % steps) for k in range(steps)],
+        total_guard_rows=5120)
+
+
+def _exact_json_value(actual, expected):
+    if type(expected) is list:
+        return (type(actual) is list and len(actual) == len(expected)
+                and all(_exact_json_value(a, e) for a, e in zip(actual, expected)))
+    return type(actual) is type(expected) and actual == expected
+
+
+def rollout_credit_collection_errors(binding, *, protocol):
+    """Check declared 48-current/24-fixed metadata without framework imports."""
+    if protocol != PROTOCOL:
+        return ["unknown rollout credit collection protocol"]
+    expected = rollout_credit_collection_contract(protocol=protocol)
+    if not isinstance(binding, dict) or set(binding) != set(expected):
+        return ["rollout_collection requires exactly its declared fields"]
+    return ["rollout_collection has incorrect " + key for key, value in expected.items()
+            if not _exact_json_value(binding[key], value)]
+
+
+def rollout_credit_budget_errors(record, *, protocol):
+    """Bind the new source budget; historical parent counts are outside it."""
+    if protocol != PROTOCOL or not isinstance(record, dict):
+        return ["unknown rollout credit budget protocol"]
+    expected = dict(trial_protocol=protocol, checkpoint_format=PROTOCOL_FORMATS[protocol],
+                    num_envs=1024, max_iterations=1000, num_steps_per_env=48,
+                    expected_total_timesteps=49152000)
+    return ["rollout credit budget has incorrect " + key for key, value in expected.items()
+            if not _exact_json_value(record.get(key), value)]
+
+
+def rollout_credit_acquisition_contract(*, protocol):
+    """Keep the17-field acquisition declaration separate from current quotas."""
+    if protocol != PROTOCOL:
+        raise ValueError("unknown rollout credit acquisition protocol")
+    return dict(kind="new_run_first_rollout_actual_preaction_v1", status="planned_new_run_not_acquired",
+        fixed_rows=4096, current_rows=1024, phases=4, rows_per_phase=1024,
+        proposed_phase_controls=[[0,5],[6,11],[12,17],[18,23]],
+        collection_window="First actual24 controls0..23 of the single48-control rollout with actor/std unchanged, all optimizer counters0 and actual RND24. Seal immediately after inherited process_env_step stores transition24, before next act24. The first bootstrap/update waits until48 real stored transitions. No extra NN forward, second rollout or old-data fill.",
+        admission="All actual raw1034/native limits/K/caps finite, valid lower<upper/K>0/cap>0, actual forcebit0or1 allowed, existing sampledraw12 finite/unclipped at±100 and native fulltanh finite within softlimits. This is an input/request schema, not safe/walking/teacher valid_label.",
+        source_policy="Independently accepted direct flat926 same-width parent; fresh stair run first24controls, no old dataset/heldout/formal inputs.",
+        freeze="ROOTsource/tools/plan/oldparent+ancestors/old216dataset frozen from launch. Only declared acquisition output may populate in the preactor window; then seal immutable manifest/hash. No other active source exceptions.",
+        shortfall="Preserve actual acquisition evidence and safely stop at specified windowend if exact4096 real stratified valid rows unavailable. No synthetic fill, fallback, retry or extension.",
+        no_synthetic_context=True, no_old_dataset_padding=True, no_heldout_or_formal_rows=True,
+        phase_step_quotas=[171,171,171,171,170,170], seal_hook="post_inherited_process_env_step")
+
+
+def rollout_credit_acquisition_errors(binding, *, protocol):
+    """Validate only the new profile's original17 acquisition fields."""
+    if protocol != PROTOCOL:
+        return ["unknown rollout credit acquisition protocol"]
+    expected = rollout_credit_acquisition_contract(protocol=protocol)
+    if not isinstance(binding, dict) or set(binding) != set(expected):
+        return ["audit_bank_source requires exactly its17 declared fields"]
+    return ["audit_bank_source has incorrect " + key for key, value in expected.items()
+            if not _exact_json_value(binding[key], value)]
+
+
+def rollout_credit_seal_errors(receipt, *, protocol):
+    """Validate actual prefix-seal evidence, without reading bank arrays."""
+    if protocol != PROTOCOL or not isinstance(receipt, dict):
+        return ["unknown rollout credit seal protocol"]
+    contract = rollout_credit_collection_contract(protocol=protocol)
+    errors = rollout_credit_collection_errors(
+        {key: receipt.get(key) for key in contract}, protocol=protocol)
+    errors.extend(temporal_credit_config_errors(receipt.get("temporal_credit"), protocol=protocol))
+    actual_prefix_rows = sum(contract["current_rows_per_control"][:FIXED_BANK_COLLECTION_CONTROLS])
+    expected = dict(trial_protocol=protocol, status="sealed", rows=4096, completed_controls=24,
+        rnd_rollout_update_counter=24, source_actor_optimizer_steps=0, source_critic_optimizer_steps=0,
+        source_rnd_optimizer_steps=0, first_bootstrap_pending=True,
+        current_controls_at_seal=24, current_rows_at_seal=actual_prefix_rows,
+        full_guard_bank_assembled_at_seal=False)
+    errors.extend("rollout credit seal has incorrect " + key for key, value in expected.items()
+                  if not _exact_json_value(receipt.get(key), value))
+    controls = receipt.get("control_steps")
+    if (type(controls) is not list or len(controls) != 24
+            or any(type(value) is not int for value in controls)
+            or controls != list(range(controls[0], controls[0]+24))):
+        errors.append("rollout credit seal lacks its first24 contiguous actual controls")
     return errors
 
 

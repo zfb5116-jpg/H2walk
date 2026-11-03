@@ -725,6 +725,26 @@ class RealInputFunctionalGuard:
         self.algorithm, self.normalizers, self.exploration = algorithm, normalizers, exploration
         self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
         self.context_mode=getattr(algorithm,"trial_protocol",None) in CONTEXT_TRIALS
+        self.current_rollout_steps=ROLLOUT_STEPS
+        self.fixed_collection_controls=ROLLOUT_STEPS
+        self.rollout_credit_mode=False;self.rollout_collection=None
+        stair_protocol=getattr(algorithm,"stair_trial_protocol",None)
+        if stair_protocol is not None:
+            from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, TEMPORAL_PROTOCOLS,
+                FIXED_BANK_COLLECTION_CONTROLS, temporal_credit_config_errors)
+            require(stair_protocol in PROTOCOL_FORMATS,"Undeclared stair guard collection profile")
+            self.fixed_collection_controls=FIXED_BANK_COLLECTION_CONTROLS
+            if stair_protocol in TEMPORAL_PROTOCOLS:
+                temporal=algorithm.temporal_credit_snapshot()
+                require(not temporal_credit_config_errors(temporal,protocol=stair_protocol),
+                        "Stair guard has no exact live temporal binding")
+                self.current_rollout_steps=temporal["rollout_steps"]
+            self.rollout_credit_mode=stair_protocol==PROTOCOL
+            if self.rollout_credit_mode:
+                self.rollout_collection=algorithm.rollout_collection_snapshot()
+        require(type(algorithm.storage.num_transitions_per_env) is int
+                and algorithm.storage.num_transitions_per_env==self.current_rollout_steps,
+                "Actual guard and rollout storage lengths disagree")
         self.fixed=None;self.fixed_digest=None;self._sealed_file_hashes={}
         if not self.context_mode:
             with np.load(fixed_bank,allow_pickle=False) as saved: self.fixed={key:saved[key].copy() for key in saved.files}
@@ -743,6 +763,18 @@ class RealInputFunctionalGuard:
                     and acquisition_spec.get("wrapper_clip_actions")==100.
                     and isinstance(acquisition_spec.get("bindings"),dict) and acquisition_spec["bindings"],
                     "Actual bank acquisition lacks its declared real-window/source binding")
+            if self.rollout_credit_mode:
+                from stair_initialization_binding import (rollout_credit_collection_errors,
+                    rollout_credit_acquisition_contract, rollout_credit_acquisition_errors)
+                acquisition_keys=rollout_credit_acquisition_contract(protocol=stair_protocol)
+                require(acquisition_spec.get("trial_protocol")==stair_protocol
+                        and acquisition_spec.get("temporal_credit")==temporal
+                        and acquisition_spec.get("rollout_collection")==self.rollout_collection
+                        and not rollout_credit_collection_errors(acquisition_spec.get("rollout_collection"),
+                                                                  protocol=stair_protocol)
+                        and not rollout_credit_acquisition_errors(
+                            {key:acquisition_spec.get(key) for key in acquisition_keys}, protocol=stair_protocol),
+                        "New fixed-prefix acquisition differs from the actual48-control rollout")
             require(algorithm.completed_updates==0 and algorithm.actor_optimizer_steps==0
                     and algorithm.critic_optimizer_steps==0 and algorithm.rnd_optimizer_steps==0,
                     "Real bank acquisition cannot start after optimization")
@@ -789,11 +821,15 @@ class RealInputFunctionalGuard:
         require(self.pending is not None,"PPO act did not receive an actual raw-input packet")
         p=self.pending;clock=(self.algorithm.completed_updates,int(rollout_step),p["control_step"])
         require(clock!=self.last_consumed,"Actual raw guard packet consumed twice")
-        require(0<=rollout_step<ROLLOUT_STEPS,"Guard rollout sampling must cover the original24 control steps")
+        require(type(rollout_step) is int and 0<=rollout_step<self.current_rollout_steps
+                and len(self.current)==rollout_step,"Guard missed its exact actual rollout control sequence")
+        if self.rollout_credit_mode and self.bank_receipt["status"]=="collecting_first_rollout" \
+                and rollout_step>=self.fixed_collection_controls:
+            self._acquisition_reject("Fixed bank must seal after real control23 before act24")
         with torch.no_grad():
             expected=self.normalizers["actor"](p["obs"])
             require(bool(torch.equal(expected,normalized_obs)),"PPO input is not exactly one own-frozen normalization of actual raw")
-        amount=CURRENT_BANK_ROWS//ROLLOUT_STEPS+int(rollout_step<CURRENT_BANK_ROWS%ROLLOUT_STEPS)
+        amount=CURRENT_BANK_ROWS//self.current_rollout_steps+int(rollout_step<CURRENT_BANK_ROWS%self.current_rollout_steps)
         ids=(torch.arange(amount,device=p["obs"].device)*(1024//amount)
              +self.algorithm.completed_updates*73+rollout_step*17)%1024
         entry={name:p[name][ids].detach().cpu().numpy().copy() for name in ("obs","lower","upper","stiffness","caps")}
@@ -817,6 +853,7 @@ class RealInputFunctionalGuard:
         step=token["rollout_step"];p=token["packet"]
         require(token["normalization_verified"] is True and token["clock"]==self.last_consumed
                 and step==len(self._acquisition_controls)==self.algorithm.storage.step
+                and 0<=step<self.fixed_collection_controls
                 and self.algorithm.completed_updates==0 and self.algorithm.actor_optimizer_steps==0
                 and actual_actions.shape==action_mean.shape==action_sigma.shape==(1024,12),
                 "Actual bank action/input/clock does not match the original PPO act")
@@ -888,10 +925,29 @@ class RealInputFunctionalGuard:
         os.link(temporary,final)
         temporary.unlink()
 
-    def seal_first_rollout(self,storage_step,completed_updates):
+    def seal_first_rollout(self,storage_step,completed_updates,*,seal_hook=None):
         require(self.context_mode,"Only the new context profile seals a rollout bank")
         if self.bank_receipt["status"]=="sealed":return self.acquisition_state()
         require(self.bank_receipt["status"]=="collecting_first_rollout","Actual bank is no longer collecting")
+        rollout_credit_fields={}
+        if self.rollout_credit_mode:
+            from stair_initialization_binding import rollout_credit_seal_errors
+            rollout_credit_fields=dict(self.rollout_collection,
+                trial_protocol=self.algorithm.stair_trial_protocol,
+                temporal_credit=self.algorithm.temporal_credit_snapshot(),seal_hook=seal_hook,
+                seal_storage_step=storage_step,completed_updates_at_seal=completed_updates,
+                first_bootstrap_pending=True,current_controls_at_seal=len(self.current),
+                current_rows_at_seal=sum(len(part["obs"]) for part in self.current),
+                full_guard_bank_assembled_at_seal=self._bank is not None)
+            candidate=dict(rollout_credit_fields,status="sealed",rows=self.bank_receipt["rows"],
+                completed_controls=len(self._acquisition_controls),
+                control_steps=[entry["control_step"] for entry in self._acquisition_controls],
+                rnd_rollout_update_counter=int(self.algorithm.rnd.update_counter),
+                source_actor_optimizer_steps=self.algorithm.actor_optimizer_steps,
+                source_critic_optimizer_steps=self.algorithm.critic_optimizer_steps,
+                source_rnd_optimizer_steps=self.algorithm.rnd_optimizer_steps)
+            if rollout_credit_seal_errors(candidate,protocol=self.algorithm.stair_trial_protocol):
+                self._acquisition_reject("Actual fixed-prefix seal missed its24-step/RND24/prebootstrap boundary")
         if storage_step!=24 or completed_updates!=0 or len(self._acquisition_controls)!=24:
             self._acquisition_reject("The first real24-control rollout did not complete before sealing")
         counters=[entry["control_step"] for entry in self._acquisition_controls]
@@ -934,7 +990,8 @@ class RealInputFunctionalGuard:
             action_semantics="actual sampled12raw and native full_soft_tanh position request; not a teacher label or measured torque",
             selection="four chronological6-control strata; deterministic disjoint env partitions; no replacement",
             initial_partial_is_input_not_completed_episode=True,qualification_zero_allowed=True,
-            extra_NN_forward=False,formal_or_heldout_data_used=False,physical_acceptance_claimed=False)
+            extra_NN_forward=False,formal_or_heldout_data_used=False,physical_acceptance_claimed=False,
+            **rollout_credit_fields)
         temp_receipt=self._receipt_path.with_name(self._receipt_path.name+".pending")
         with temp_receipt.open("x") as stream:
             stream.write(json.dumps(receipt,ensure_ascii=False,indent=2,allow_nan=False)+"\n")
@@ -971,7 +1028,16 @@ class RealInputFunctionalGuard:
 
     def _assemble(self):
         if self.context_mode:require(self.bank_receipt["status"]=="sealed","Actual bank was not sealed before actor update")
-        require(len(self.current)==ROLLOUT_STEPS,"Guard missed an actual rollout control step")
+        require(len(self.current)==self.current_rollout_steps,"Guard missed an actual rollout control step")
+        controls=[]
+        for step,part in enumerate(self.current):
+            amount=CURRENT_BANK_ROWS//self.current_rollout_steps+int(step<CURRENT_BANK_ROWS%self.current_rollout_steps)
+            require(len(part["obs"])==amount and np.all(part["rollout_step"]==step)
+                    and np.all(part["control_step"]==part["control_step"][0]),
+                    "Current real-bank quota or control provenance differs from the exact rollout")
+            controls.append(int(part["control_step"][0]))
+        require(controls==list(range(controls[0],controls[0]+self.current_rollout_steps)),
+                "Current guard inputs are not one contiguous real rollout")
         current={name:np.concatenate([part[name] for part in self.current]) for name in self.current[0]}
         require(len(current["obs"])==CURRENT_BANK_ROWS,"Expected1024 time-stratified real current inputs")
         self._bank={name:np.concatenate([self.fixed[name],current[name]]) for name in ("obs","lower","upper","stiffness","caps")}
@@ -1093,8 +1159,10 @@ class H2GuardedPPO(PPO):
             require(type(self) is H2GuardedStairPPO and not temporal_credit_admission_errors(admission),
                     "Temporal credit admission belongs only to the exact declared stair type")
         else:
-            require(getattr(self,"stair_trial_protocol",None)!="accepted_flat_temporal_credit_stair_v7",
-                    "Declared temporal credit stair type requires its exact constructor flag")
+            if getattr(self,"stair_trial_protocol",None) is not None:
+                from stair_initialization_binding import TEMPORAL_PROTOCOLS
+                require(self.stair_trial_protocol not in TEMPORAL_PROTOCOLS,
+                        "Declared temporal credit stair type requires its exact constructor flag")
         require(self.lam==(.99 if stair_temporal_credit else .95), "Undeclared GAE lambda constructor override")
         require((trial_protocol=="guarded_flat_balance_v1" and actor_action_budget_penalty_weight==0.)
                 or (trial_protocol==MARGIN_TRIAL and actor_action_budget_penalty_weight==.01
@@ -1195,8 +1263,8 @@ class H2GuardedPPO(PPO):
         return actions
 
     def compute_returns(self,last_critic_obs):
-        # The original RSL loop reaches here only after24real env.step and
-        # process_env_step returns. Seal before its ordinary critic bootstrap.
+        # Legacy profiles seal at their24-control rollout end. The new stair
+        # profile arrives with its first24-control prefix already sealed.
         if self.trial_protocol in CONTEXT_TRIALS:
             require(self.guard is not None,"Context rollout has no real-input bank guard")
             if self.guard.bank_receipt["status"]=="collecting_first_rollout":
