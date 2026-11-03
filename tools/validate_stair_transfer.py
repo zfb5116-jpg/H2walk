@@ -407,7 +407,8 @@ def validate_cpu(checkpoint, plan_path, scope):
         rnd_rollout_counter=completed*rollout_steps,normalization_abi=abi,source_sha256=source_hashes,
         plan_path=str(plan_path),plan_sha256=sha(plan_path),parent_provenance=provenance,
         checkpoint_packet_loads=1,required_parent_packet_loads=1,parent_load_scope="coupled own-norm and startup actor inheritance",
-        NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
+        NN_forward_batches=2+(bridge_cpu["CPU_forward_batches"] if bridge_cpu is not None else 0),
+        policy_NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
         complete_policy_CPU_validation=True,physical_or_stair_acceptance=False)
     if protocol in INITIALIZATION_PROTOCOLS:
         result["exploration_initialization"] = binding
