@@ -113,7 +113,7 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9")
+    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10")
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
     if stair_transfer:
@@ -129,7 +129,8 @@ def finite_checkpoint(torch, checkpoint):
                     "h2_guarded_stair_ppo_v6": ("accepted_flat_full_rms_exploration_stair_v6", 1000),
                     "h2_guarded_stair_ppo_v7": ("accepted_flat_temporal_credit_stair_v7", 1000),
                     "h2_guarded_stair_ppo_v8": ("accepted_flat_rollout_credit_stair_v8", 1000),
-                    "h2_guarded_stair_ppo_v9": ("accepted_flat_clearance_potential_stair_v9", 1000)}
+                    "h2_guarded_stair_ppo_v9": ("accepted_flat_clearance_potential_stair_v9", 1000),
+                    "h2_guarded_stair_ppo_v10": ("accepted_flat_fixed_target_height_course_stair_v10", 1000)}
         expected_protocol, expected_budget = profiles[saved["format"]]
         if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
                 or receipt.get("checkpoint_sha256") != sha256(checkpoint)
@@ -138,7 +139,7 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("iter") != expected_budget-1
                 or saved["guarded_ppo_state"]["completed_updates"] != expected_budget):
             raise ValueError("Typed stair replay requires its new complete natural-final CPU receipt")
-    if saved.get("format") == "h2_guarded_stair_ppo_v9":
+    if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10"):
         from stair_initialization_binding import (clearance_progress_config_errors,
             clearance_progress_snapshot_errors)
         binding = receipt.get("clearance_progress_potential")
@@ -149,6 +150,14 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("clearance_progress_potential") != receipt.get("actual_clearance_reward_state")
                 or saved["guarded_ppo_state"].get("clearance_progress_potential") != saved["clearance_progress_potential"]):
             raise ValueError("New replay requires its actual clearance reward final-state binding")
+    if saved.get("format") == "h2_guarded_stair_ppo_v10":
+        from stair_curriculum_binding import profile_snapshot_errors
+        if (receipt.get("actual_height_profile_binding_passed") is not True
+                or profile_snapshot_errors(receipt.get("height_course"), receipt.get("training_video"),
+                    saved.get("height_profile"), expected_controls=48000)
+                or saved.get("height_profile") != receipt.get("actual_height_profile")
+                or saved["guarded_ppo_state"].get("height_profile") != saved.get("height_profile")):
+            raise ValueError("Course replay requires its actual own final profile admission")
     if not isinstance(saved, dict) or not required.issubset(saved):
         raise ValueError("Require a complete PPO checkpoint, including both normalizers and RND state")
     if int(saved["iter"]) < 0:
@@ -256,7 +265,14 @@ def evaluate(args, app, metadata, source, expected_hashes):
         raise ValueError("Checkpoint action semantics disagree with direct position control")
     spec = gym.spec(args.task)
     cfg = load_config(spec.kwargs["env_cfg_entry_point"])
-    cfg.stair_clearance_progress_potential = saved.get("format") == "h2_guarded_stair_ppo_v9"
+    cfg.stair_clearance_progress_potential = saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10")
+    if saved.get("format") == "h2_guarded_stair_ppo_v10":
+        # Construct a fresh original formal scene. No training terrain importer,
+        # course/cohort or post-construction relocation enters first episodes.
+        from isaaclab.terrains import TerrainImporter
+        cfg.stair_height_course = None
+        cfg.scene.terrain.class_type = TerrainImporter
+        cfg.events.reset_base.params["pose_range"]["x"] = (-0.25, 0.25)
     cfg.scene.num_envs = args.num_envs
     cfg.seed = args.seed
     cfg.sim.device = args.device or "cuda:0"
@@ -317,7 +333,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
         env = gym.make(args.task, cfg=cfg, render_mode="rgb_array")
         wrapped = RslRlVecEnvWrapper(env, clip_actions=agent.get("clip_actions"))
         raw = env.unwrapped
-        if saved.get("format") == "h2_guarded_stair_ppo_v9":
+        if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10"):
             from stair_initialization_binding import clearance_progress_snapshot_errors
             binding = json.loads(args.checkpoint.with_suffix(".validation.json").read_text())["clearance_progress_potential"]
             actual = dict(raw.stair_progress.clearance_progress_snapshot() or {}, contract=binding,
@@ -356,7 +372,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9")
+        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10")
         actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
         if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")
@@ -476,6 +492,29 @@ def evaluate(args, app, metadata, source, expected_hashes):
                 sampled_delay_min=None if lags is None else int(lags.min()),
                 sampled_delay_max=None if lags is None else int(lags.max()))
         metadata["native_actuator_certificate"] = actuator_certificate
+        if saved.get("format") == "h2_guarded_stair_ppo_v10":
+            if (hasattr(raw, "stair_height_course") or raw.cfg.stair_height_course is not None
+                    or raw.cfg.scene.terrain.terrain_generator.num_rows != 2
+                    or raw._stair_minimum_height != .15 or raw._stair_maximum_height != .15
+                    or tuple(raw.cfg.events.reset_base.params["pose_range"]["x"]) != (-.25, .25)
+                    or bool((raw.episode_length_buf != 0).any())):
+                raise RuntimeError("Course producer did not restore original formal first-episode configuration")
+            root = raw.asset.data.root_pos_w
+            default_x = raw.asset.data.default_root_state[:, 0]
+            origins_x = raw.scene.env_origins[:, 0]
+            lower_x = (default_x + origins_x) - .25
+            upper_x = (default_x + origins_x) + .25
+            if (root.dtype != torch.float32 or default_x.dtype != torch.float32
+                    or bool((default_x != 0).any())
+                    or bool(((root[:, 0] < lower_x) | (root[:, 0] > upper_x)).any())):
+                raise RuntimeError("Actual formal initial root positions differ from original reset distribution")
+            metadata["course_producer_formal_binding"] = dict(training_course_disabled=True,
+                fixed_target_cohort_disabled=True, actual_riser_min_max_m=[raw._stair_minimum_height,raw._stair_maximum_height],
+                terrain_rows=2, initial_episode_buffers_all_zero=True,
+                root_x_range_m=[-.25,.25], actual_world_X_range_passed_all1024=True,
+                world_bound_arithmetic="float32 (defaultX+scene_originX)+bound, no epsilon",
+                actual_importer=type(raw.scene.terrain).__module__+"."+type(raw.scene.terrain).__name__)
+
 
         def capture(ids):
             """One same-post-physics measurement per alive environment/epoch."""

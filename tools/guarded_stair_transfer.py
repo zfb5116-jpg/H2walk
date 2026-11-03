@@ -9,7 +9,7 @@ import torch
 from guarded_flat_ppo import (H2GuardedPPO, LONGER_BUDGET_CONTEXT_TRIAL, require, sha, state_digest)
 from task_context_normalization import normalization_metadata
 from selected_row_block import SELECTED_ROW_BLOCK_POLICY
-from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
                                           TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, FIXED_BANK_COLLECTION_CONTROLS,
                                           initialization_config_errors, temporal_credit_config_errors,
                                           temporal_credit_snapshot_errors, rollout_credit_collection_contract,
@@ -79,7 +79,7 @@ class H2GuardedStairPPO(H2GuardedPPO):
         return result
 
     def bind_clearance_progress(self, environment, binding):
-        require(self.stair_trial_protocol == PROTOCOL
+        require(self.stair_trial_protocol in CLEARANCE_PROGRESS_PROTOCOLS
                 and environment is self._temporal_credit_environment
                 and not hasattr(self, "_clearance_progress_binding")
                 and not clearance_progress_config_errors(binding, protocol=self.stair_trial_protocol),
@@ -88,7 +88,7 @@ class H2GuardedStairPPO(H2GuardedPPO):
         return self.clearance_progress_snapshot()
 
     def clearance_progress_snapshot(self):
-        if self.stair_trial_protocol != PROTOCOL:
+        if self.stair_trial_protocol not in CLEARANCE_PROGRESS_PROTOCOLS:
             return None
         require(hasattr(self, "_clearance_progress_binding"), "Actual clearance progress is not bound")
         environment = self._temporal_credit_environment
@@ -99,6 +99,29 @@ class H2GuardedStairPPO(H2GuardedPPO):
         require(not clearance_progress_snapshot_errors(self._clearance_progress_binding, result,
                                                        protocol=self.stair_trial_protocol),
                 "Actual clearance reward state differs from its immutable contract")
+        return result
+
+    def bind_height_profile(self, environment, observer, video, binding, video_binding):
+        from stair_curriculum_binding import course_config_errors
+        from training_video import video_config_errors
+        require(self.stair_trial_protocol == PROTOCOL and not hasattr(self, "_height_profile")
+                and environment is self._temporal_credit_environment
+                and environment.cfg.stair_height_course == binding
+                and not course_config_errors(binding) and not video_config_errors(video_binding),
+                "Wrong or repeated height/video profile binding")
+        self._height_profile = (environment, observer, video, copy.deepcopy(binding), copy.deepcopy(video_binding))
+        return self.height_profile_snapshot()
+
+    def height_profile_snapshot(self):
+        if self.stair_trial_protocol != PROTOCOL:
+            return None
+        from stair_curriculum_binding import profile_snapshot_errors
+        require(hasattr(self, "_height_profile"), "Actual height/video profile is not bound")
+        environment, observer, video, binding, video_binding = self._height_profile
+        result = dict(height_course=environment.stair_height_course.snapshot(),
+                      training_video=video.snapshot(), credit_coverage=observer.snapshot())
+        require(not profile_snapshot_errors(binding, video_binding, result),
+                "Actual height/video/credit state disagrees with the admitted profile")
         return result
 
     def process_env_step(self, rewards, dones, infos):
@@ -140,8 +163,10 @@ class H2GuardedStairPPO(H2GuardedPPO):
                 scope="stair_transfer_only", exact_binding="temporal_credit")
         if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             result["rollout_collection"] = self.rollout_collection_snapshot()
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in CLEARANCE_PROGRESS_PROTOCOLS:
             result["clearance_progress_potential"] = self.clearance_progress_snapshot()
+        if self.stair_trial_protocol == PROTOCOL:
+            result["height_profile"] = self.height_profile_snapshot()
         return result
 
     def packet(self, iteration, infos=None):
@@ -155,8 +180,10 @@ class H2GuardedStairPPO(H2GuardedPPO):
                 scope="stair_transfer_only", exact_binding="temporal_credit")
         if self.stair_trial_protocol in ROLLOUT_CREDIT_PROTOCOLS:
             result["rollout_collection"] = self.rollout_collection_snapshot()
-        if self.stair_trial_protocol == PROTOCOL:
+        if self.stair_trial_protocol in CLEARANCE_PROGRESS_PROTOCOLS:
             result["clearance_progress_potential"] = self.clearance_progress_snapshot()
+        if self.stair_trial_protocol == PROTOCOL:
+            result["height_profile"] = self.height_profile_snapshot()
         return result
 
 
@@ -178,10 +205,17 @@ def parent_admission(plan, root):
                 and not rollout_credit_collection_errors(plan.get("rollout_collection"), protocol=plan["trial_protocol"])
                 and not rollout_credit_acquisition_errors(plan.get("audit_bank_source"), protocol=plan["trial_protocol"]),
                 "Wrong48-current/24-fixed stair collection plan")
-    if plan["trial_protocol"] == PROTOCOL:
+    if plan["trial_protocol"] in CLEARANCE_PROGRESS_PROTOCOLS:
         require(not clearance_progress_config_errors(plan.get("clearance_progress_potential"),
                                                      protocol=plan["trial_protocol"]),
                 "Wrong new clearance progress reward plan")
+    if plan["trial_protocol"] == PROTOCOL:
+        from stair_curriculum_binding import course_config_errors, early_policy_errors
+        from training_video import video_config_errors
+        require(not course_config_errors(plan.get("height_course"))
+                and not video_config_errors(plan.get("training_video"))
+                and not early_policy_errors(json.loads(Path(plan["early_progress_policy"]).read_text())),
+                "Missing human-approved fixed-target height/video plan")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA

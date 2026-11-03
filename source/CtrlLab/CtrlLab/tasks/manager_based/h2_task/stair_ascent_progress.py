@@ -263,6 +263,10 @@ class StairAscentProgress:
                                                 eligible, self.gamma)
         if not torch.isfinite(raw).all() or not torch.isfinite(applied).all():
             raise RuntimeError("Non-finite clearance progress difference")
+        observer = getattr(self, "credit_observer", None)
+        if observer is not None:
+            observer.note_clearance(eligible, positive_weight, self.clearance_level,
+                                    self.clearance_near, raw, applied)
         self.clearance_raw_delta.copy_(raw)
         self.clearance_applied_delta.copy_(applied)
         # The old event has already received its own original sign gate. Each
@@ -644,8 +648,10 @@ class StairAscentProgress:
         self.goal_first_counter[ids] = -1
         self.footfalls.reset(ids)
 
-    def summary(self):
-        if not self.recent:
+    def summary(self, *, records=None, completed_count=None):
+        recent = self.recent if records is None else records
+        count = self.completed_episode_count if completed_count is None else completed_count
+        if not recent:
             return {"episode_count": 0, "window_episode_count": 0, "completed_episode_count": 0,
                     "survival20s_fraction": 0.0, "survival_horizon_fraction": 0.0,
                     "median_episode_s": 0.0, "mean_episode_s": 0.0, "command_progress_ratio": 0.0,
@@ -653,7 +659,7 @@ class StairAscentProgress:
                     "stair_success_fraction": 0.0, "mean_completed_levels": 0.0,
                     "first_level_bilateral_fraction": 0.0, "all_levels_bilateral_fraction": 0.0,
                     "invalid_physical_episode_fraction": 0.0, "physical_valid_episode_count": 0}
-        rows = np.asarray(self.recent)
+        rows = np.asarray(recent)
         c = {key: rows[:, i] for i, key in enumerate(self.SUMMARY_FIELDS)}
         physically_valid = c["ever_invalid"] == 0
         eligible = physically_valid.copy()
@@ -667,7 +673,7 @@ class StairAscentProgress:
         # before SupervisedRunner assesses patience. Invalid rows remain in the
         # denominator as zero-valued failures, rather than being filtered away.
         return {"episode_count": len(rows), "window_episode_count": len(rows),
-                "completed_episode_count": self.completed_episode_count,
+                "completed_episode_count": count,
                 "survival20s_fraction": float(c["survived20s"].mean()),
                 "survival_horizon_fraction": float(survived.mean()),
                 "mean_episode_s": float(c["eligible_duration_s"].mean()),

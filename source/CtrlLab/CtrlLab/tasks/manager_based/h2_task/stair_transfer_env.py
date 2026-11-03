@@ -16,6 +16,9 @@ class StairTransferEnv(StairAscentEnv):
         if cfg.stair_task_context_dim != 5 or not cfg.stair_strict_episode_force:
             raise RuntimeError("Stair transfer requires its exact five-channel and force-qualification contract")
         self.stair_task_context_contract = stair_task_context_runtime_contract(self)
+        if cfg.stair_height_course is not None:
+            from .stair_height_course import StairHeightCourse
+            self.stair_height_course = StairHeightCourse(self)
 
     def _reset_idx(self, env_ids):
         if not hasattr(self, "initialization_reset_generation"):

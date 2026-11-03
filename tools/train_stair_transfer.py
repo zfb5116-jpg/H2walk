@@ -34,6 +34,9 @@ from guarded_stair_transfer import (TASK, PROTOCOL, FORMAT, BUDGET, parent_admis
 from guarded_flat_ppo import FunctionalUpdateRejected
 from task_context_normalization import make_task_context_normalizers, normalization_metadata
 from stair_exploration import StairExplorationBudget
+from stair_curriculum_binding import course_config_errors
+from training_video import TrainingVideo, video_config_errors
+from stair_credit_probe import StairCreditProbe
 from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors,
     ROLLOUT_STEPS_BY_PROTOCOL, rollout_credit_collection_errors, rollout_credit_budget_errors,
@@ -69,6 +72,15 @@ def main():
     cfg = load_config(spec.kwargs["env_cfg_entry_point"])
     agent = load_config(spec.kwargs["rsl_rl_cfg_entry_point"])
     cfg.stair_clearance_progress_potential = True
+    height_course = plan.get("height_course")
+    training_video = plan.get("training_video")
+    if course_config_errors(height_course) or video_config_errors(training_video) or args.enable_cameras is not True:
+        raise RuntimeError("Missing reviewed height course/offscreen video configuration")
+    from h2_task.stair_height_course import configure_height_course
+    configure_height_course(cfg, height_course)
+    cfg.viewer.origin_type, cfg.viewer.env_index = "env", 0
+    cfg.viewer.eye, cfg.viewer.lookat = tuple(training_video["eye"]), tuple(training_video["lookat"])
+    cfg.viewer.resolution = tuple(training_video["resolution"])
     cfg.scene.num_envs = 1024
     cfg.seed = agent.seed = 42
     cfg.sim.device = agent.device = args.device or "cuda:0"
@@ -78,6 +90,8 @@ def main():
         raise RuntimeError("Stair configuration differs from the reviewed budget/type")
     request_path = args.supervision_state.resolve().parent/"request.json"
     request = json.loads(request_path.read_text())
+    if request.get("height_course") != height_course or request.get("training_video") != training_video:
+        raise RuntimeError("Plan/request height/video declarations differ")
     initialization = plan.get("exploration_initialization")
     config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
     temporal_credit = plan.get("temporal_credit")
@@ -117,7 +131,8 @@ def main():
                   "functional_proposal.py", "selected_row_block.py", "stair_exploration.py", "stair_initialization_binding.py", "training_supervision.py",
                   "task_context_normalization.py", "task_context_metadata.py", "v11_parent_custody.py",
                   "evaluate_stair_policy.py", "evaluate_stair_policy.sh", "validate_stair_transfer.py", "launch_stair_transfer.py",
-                  "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py"]
+                  "launch_stair_learning.py", "launch_stair_evaluation.py", "launch_residual_learning.py",
+                  "stair_curriculum_binding.py", "training_video.py", "stair_credit_probe.py", "watch_stair_progress.py"]
     for name in tool_names:
         shutil.copy2(ROOT/"tools"/name, snapshot/name)
     shutil.copy2(args.plan, snapshot/"stair_transfer_plan.json")
@@ -130,6 +145,9 @@ def main():
     dump_pickle(str(log_dir/"params/env.pkl"), cfg)
     dump_pickle(str(log_dir/"params/agent.pkl"), agent)
     dependencies = [Path(cfg.scene.robot.spawn.usd_path), Path(cfg.observations.policy.height_scanner.params["checkpoint"])]
+    dependencies.extend(Path(name) for name in plan["external_dependency_sha256"])
+    if any(sha(name) != expected for name, expected in plan["external_dependency_sha256"].items()):
+        raise RuntimeError("Reviewed external terrain/reset/render/encoder source changed")
     metadata = dict(task=TASK, trial_protocol=PROTOCOL, checkpoint_format=FORMAT, asset=str(cfg.scene.robot.spawn.usd_path),
         case=str(args.supervision_state.resolve().parent),
         git_commit=commit, source_branch=subprocess.check_output(["git","branch","--show-current"],cwd=ROOT,text=True).strip(),
@@ -147,6 +165,11 @@ def main():
         temporal_credit=temporal_credit,
         rollout_collection=rollout_collection,
         clearance_progress_potential=clearance_progress, runtime_clearance_progress_config=clearance_config,
+        height_course=height_course, training_video=training_video,
+        runtime_height_config=dict(minimum=cfg.stair_minimum_height, maximum=cfg.stair_maximum_height,
+            rows=cfg.stair_height_levels, root_x=list(cfg.events.reset_base.params["pose_range"]["x"]),
+            importer=cfg.scene.terrain.class_type.__module__+"."+cfg.scene.terrain.class_type.__name__,
+            enable_cameras=args.enable_cameras, render_interval=cfg.sim.render_interval),
         runtime_temporal_credit_config=temporal_credit_config_snapshot(
             runner_config, control_dt_s=resolved_control_dt_s),
         inherited_numeric_execution_profile_scope="numeric_executor_only",
@@ -163,8 +186,9 @@ def main():
     state.update(status="initializing", run_dir=str(log_dir), metadata=str(log_dir/"run.json"), source_hashes=source_hashes)
     write_json(args.supervision_state, state)
     print("[H2] Stair log directory: "+str(log_dir), flush=True)
-    env = gym.make(TASK, cfg=cfg)
+    env = gym.make(TASK, cfg=cfg, render_mode="rgb_array")
     runner = None
+    video = observer = None
     try:
         env = ProbedVecEnv(env, clip_actions=agent.clip_actions)
         raw = env.unwrapped
@@ -182,6 +206,18 @@ def main():
         if type(command).__name__ != "WorldStairVelocityCommand":
             raise RuntimeError("Target-height training requires its fixed world stair command")
         metadata["world_stair_command"] = command.runtime_contract()
+        root_x = raw.asset.data.root_pos_w[:, 0]
+        default_x = raw.asset.data.default_root_state[:, 0]
+        origins_x = raw.scene.env_origins[:, 0]
+        if (root_x.dtype != torch.float32 or default_x.dtype != torch.float32
+                or bool((default_x != 0).any()) or bool((raw.episode_length_buf != 0).any())
+                or bool(((root_x < (default_x+origins_x)-.25)
+                         | (root_x > (default_x+origins_x)+.25)).any())):
+            raise RuntimeError("Actual first training root state differs from its original reset distribution")
+        metadata["actual_initial_course_state"] = dict(initial_episode_lengths_all_zero=True,
+            actual_world_X_bounds_all1024=True, root_X_bounds_m=[-.25,.25],
+            arithmetic="float32 (defaultX+scene_originX)+bound; no epsilon",
+            cohort_assignment=raw.stair_height_course.snapshot())
         from h2_task.stair_clearance_rewards import full_footprint_clearance_contract
         metadata["stair_clearance_target"] = full_footprint_clearance_contract(
             approach=raw.stair_progress.approach, depth=raw.stair_progress.depth,
@@ -228,6 +264,13 @@ def main():
         if not torch.equal(runner.alg.policy.std, runner.stair_exploration_budget.initial):
             raise RuntimeError("Fresh stair exploration was not reset to its reviewed configured initial fraction")
         metadata["stair_exploration_budget"] = runner.stair_exploration_budget.snapshot()
+        observer = StairCreditProbe(raw, runner, log_dir/"credit_coverage", training_video)
+        raw.stair_training_observer = observer
+        raw.stair_progress.credit_observer = observer
+        video = TrainingVideo(raw, runner, log_dir/"training_videos", training_video)
+        observer.video = video
+        metadata["runtime_height_profile"] = runner.alg.bind_height_profile(
+            raw, observer, video, height_course, training_video)
         metadata["initial_learning_state"] = dict(iteration=int(runner.current_learning_iteration),
             actor_optimizer_state_entries=len(runner.alg.actor_optimizer.state),
             critic_optimizer_state_entries=len(runner.alg.critic_optimizer.state),
@@ -236,7 +279,8 @@ def main():
             policy_std=runner.alg.policy.std.detach().cpu().tolist(),
             temporal_credit=runner.alg.temporal_credit_snapshot(),
             rollout_collection=runner.alg.rollout_collection_snapshot(),
-            clearance_progress_potential=runner.alg.clearance_progress_snapshot())
+            clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
+            height_profile=runner.alg.height_profile_snapshot())
         initialization_errors = exploration_snapshot_errors(initialization, metadata["stair_exploration_budget"],
             initial_learning_state=metadata["initial_learning_state"], at_initialization=True)
         if initialization_errors:
@@ -255,6 +299,7 @@ def main():
             fixed_real_bank=bank_receipt, current_rollout_real_rows=1024, total_guard_rows=5120,
             rollout_collection=runner.alg.rollout_collection_snapshot(),
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
+            height_profile=runner.alg.height_profile_snapshot(),
             normalization_abi=normalization_metadata(normalizers), normalizers_frozen=True)
         def bank_sealed(receipt):
             if (sha(request_path) != request_sha or sha(args.plan) != plan_sha
@@ -281,6 +326,7 @@ def main():
                                    temporal_credit=runner.alg.temporal_credit_snapshot(),
                                    rollout_collection=runner.alg.rollout_collection_snapshot(),
                                    clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
+                                   height_profile=runner.alg.height_profile_snapshot(),
                                    actual_seal_storage_step=runner.alg.storage.step,
                                    actual_seal_RND_counter=int(runner.alg.rnd.update_counter),
                                    actual_current_rows_at_seal=receipt["current_rows_at_seal"],
@@ -292,10 +338,11 @@ def main():
             bindings=dict(case=str(case),request_sha256=request_sha,source_commit=commit,
                 source_sha256=source_hashes,training_tool_sha256=metadata["training_tool_sha256"],
                 trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
-                clearance_progress_potential=clearance_progress,
+                clearance_progress_potential=clearance_progress, height_course=height_course, training_video=training_video,
                 plan_path=str(args.plan.resolve()),plan_sha256=plan_sha,initial_policy_sha256=plan["initial_policy_sha256"]))
         runner.alg.attach_guard(normalizers, runner.stair_exploration_budget, None, guard_dir,
             plan["initial_policy_sha256"], acquisition_spec=acquisition, on_bank_sealed=bank_sealed)
+        runner.alg.guard.stair_height_source = observer
         metadata["runtime_rollout_collection"] = runner.alg.rollout_collection_snapshot()
         def capture(observation):
             limits = robot.data.soft_joint_pos_limits[:,ids]
@@ -312,7 +359,8 @@ def main():
             guarded_stair_learning=metadata["guarded_stair_learning"], runtime_stair_geometry=metadata["runtime_stair_geometry"],
             temporal_credit=metadata["runtime_temporal_credit"],
             rollout_collection=metadata["runtime_rollout_collection"],
-            clearance_progress_potential=runner.alg.clearance_progress_snapshot())
+            clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
+            height_profile=runner.alg.height_profile_snapshot())
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
         except FunctionalUpdateRejected as error:
@@ -344,7 +392,15 @@ def main():
     finally:
         if runner is not None and runner.writer is not None:
             runner.writer.flush(); runner.writer.close()
-        env.close()
+        try:
+            if video is not None:
+                video.close()
+        finally:
+            try:
+                if observer is not None:
+                    observer.close()
+            finally:
+                env.close()
 
 
 if __name__ == "__main__":

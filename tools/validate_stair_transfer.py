@@ -5,7 +5,9 @@ import importlib.util
 import json
 import math
 from pathlib import Path
-from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+from stair_curriculum_binding import course_config_errors, profile_snapshot_errors
+from training_video import video_config_errors
+from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
     TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
@@ -37,6 +39,10 @@ def validate_cpu(checkpoint, plan_path, scope):
     provenance = parent_admission(plan, root)
     protocol = plan["trial_protocol"]
     checkpoint_format = PROTOCOL_FORMATS[protocol]
+    if protocol == PROTOCOL:
+        height_course, training_video = plan.get("height_course"), plan.get("training_video")
+        require(not course_config_errors(height_course) and not video_config_errors(training_video),
+                "Wrong new course/video declaration")
     rollout_steps = ROLLOUT_STEPS_BY_PROTOCOL[protocol]
     run = json.loads((checkpoint.parent/"run.json").read_text())
     require(run["task"] == TASK and run["trial_protocol"] == protocol and run["max_iterations"] == BUDGET
@@ -77,7 +83,7 @@ def validate_cpu(checkpoint, plan_path, scope):
                          run.get("guarded_stair_learning", {}).get("rollout_collection")):
             require(not rollout_credit_collection_errors(snapshot, protocol=protocol) and snapshot == collection,
                     "Actual initial48-current/24-fixed collection changed")
-    if protocol == PROTOCOL:
+    if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
         clearance_progress = plan.get("clearance_progress_potential")
         require(run.get("clearance_progress_potential") == request.get("clearance_progress_potential")
                 == clearance_progress and not clearance_progress_config_errors(clearance_progress,
@@ -155,8 +161,10 @@ def validate_cpu(checkpoint, plan_path, scope):
                 training_tool_sha256=run["training_tool_sha256"],trial_protocol=protocol,
                 temporal_credit=temporal_credit,rollout_collection=collection,
                 plan_path=str(plan_path),plan_sha256=sha(plan_path),initial_policy_sha256=plan["initial_policy_sha256"])
-        if protocol == PROTOCOL:
+        if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
             expected_bindings["clearance_progress_potential"] = clearance_progress
+        if protocol == PROTOCOL:
+            expected_bindings.update(height_course=height_course, training_video=training_video)
         require(bank["bindings"] == expected_bindings,
                 "Actual fixed-prefix source/request/plan bindings changed")
         guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
@@ -168,7 +176,7 @@ def validate_cpu(checkpoint, plan_path, scope):
         receipt_json = json.loads(Path(bank["receipt_path"]).read_text())
         require(receipt_json == {key:value for key,value in bank.items() if key not in ("receipt_path","receipt_sha256")},
                 "Actual fixed-prefix receipt bytes disagree with the typed packet")
-    if protocol == PROTOCOL:
+    if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
         for record in (saved, gs, native[0]):
             require(not clearance_progress_snapshot_errors(clearance_progress,
                 record.get("clearance_progress_potential"), protocol=protocol, expected_updates=completed*rollout_steps),
@@ -268,10 +276,38 @@ def validate_cpu(checkpoint, plan_path, scope):
                 "Typed packet exploration initialization binding changed")
         require(saved["model_state_dict"]["std"].tolist() == ex["policy_std"],
                 "Typed packet exploration snapshot disagrees with the serialized policy std")
+    if protocol == PROTOCOL:
+        require(request.get("height_course") == run.get("height_course") == height_course
+                and request.get("training_video") == run.get("training_video") == training_video,
+                "Typed new training profile disagrees with its request/plan")
+        initial_state=run.get("actual_initial_course_state", {})
+        require(initial_state.get("initial_episode_lengths_all_zero") is True
+                and initial_state.get("actual_world_X_bounds_all1024") is True
+                and initial_state.get("root_X_bounds_m") == [-.25,.25]
+                and initial_state.get("cohort_assignment") == run.get("runtime_height_profile", {}).get("height_course"),
+                "Missing actual first training pose/cohort admission")
+        for value in (run.get("runtime_height_profile"), run.get("initial_learning_state", {}).get("height_profile"),
+                      run.get("guarded_stair_learning", {}).get("height_profile")):
+            require(not profile_snapshot_errors(height_course, training_video, value, expected_controls=0),
+                    "Actual initial height/video/credit binding changed")
+        for value in (saved.get("height_profile"), gs.get("height_profile"), native[0].get("height_profile")):
+            require(not profile_snapshot_errors(height_course, training_video, value,
+                                                expected_controls=completed*rollout_steps),
+                    "Typed actual course/video/credit state differs")
+        require(saved["height_profile"] == gs["height_profile"] == native[0]["height_profile"],
+                "Packet/state/native new profile states disagree")
+        require(not profile_snapshot_errors(height_course, training_video, sealed.get("height_profile"),
+                                            expected_controls=24), "Prefix24 new profile state differs")
+        require(run["external_dependency_sha256"] == {**run["external_dependency_sha256"],
+                **plan["external_dependency_sha256"]}, "External profile dependency receipt differs")
+        for name, expected in plan["external_dependency_sha256"].items():
+            require(sha(name) == expected, "External profile source/encoder changed")
+        require(saved["height_profile"]["training_video"]["encoder_binary_sha256"]
+                == plan["external_dependency_sha256"][training_video["encoder_binary"]], "Wrong actual encoder binary")
     geometry = run["runtime_stair_geometry"]
-    require(geometry["levels"] == 6 and geometry["riser_min_m"] == .15 and geometry["riser_max_m"] == .15
+    require(geometry["levels"] == 6 and geometry["riser_min_m"] == (.05 if protocol == PROTOCOL else .15) and geometry["riser_max_m"] == .15
             and geometry["depth_m"] == .35 and geometry["width_m"] == 2.4 and geometry["approach_m"] == 1.4
-            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == 2
+            and geometry["episode_length_s"] == 90 and geometry["terrain_rows"] == (3 if protocol == PROTOCOL else 2)
             and geometry["scripted_gait_installed"] is False and len(geometry["termination_terms"]) == 7,
             "Actual staircase or native terminations changed")
     command = run["world_stair_command"]
@@ -331,11 +367,14 @@ def validate_cpu(checkpoint, plan_path, scope):
             storage_step=sealed["actual_seal_storage_step"],rnd_rollout_counter=bank["rnd_rollout_update_counter"],
             current_rows_at_seal=bank["current_rows_at_seal"],full_guard_bank_assembled_at_seal=False,
             completed_controls=bank["completed_controls"],receipt_sha256=bank["receipt_sha256"])
-    if protocol == PROTOCOL:
+    if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
         result["clearance_progress_potential"] = clearance_progress
         result["actual_clearance_reward_binding_passed"] = True
         result["actual_clearance_reward_state"] = saved["clearance_progress_potential"]
         result["native_clearance_reward_iteration"] = saved["iter"]
+    if protocol == PROTOCOL:
+        result.update(height_course=height_course, training_video=training_video,
+            actual_height_profile=saved["height_profile"], actual_height_profile_binding_passed=True)
     with checkpoint.with_suffix(".validation.json").open("x") as stream:
         json.dump(result,stream,indent=2,allow_nan=False);stream.write("\n")
     return result

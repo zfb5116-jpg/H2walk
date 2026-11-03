@@ -16,12 +16,15 @@ from zoneinfo import ZoneInfo
 from launch_stair_evaluation import (active_simulators, birth, digest, gpu_snapshot,
                                     immutable, process_check, write)
 from launch_stair_learning import parse_training_log, fatal_lines, tail_jsonl, stop_policy
-from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS,
+from stair_initialization_binding import (FORMAT, PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
     TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_errors, temporal_credit_snapshot_errors, rollout_credit_collection_errors,
     rollout_credit_budget_errors, rollout_credit_seal_errors, rollout_credit_acquisition_errors,
     clearance_progress_config_errors, clearance_progress_snapshot_errors)
+
+from stair_curriculum_binding import (course_config_errors, profile_snapshot_errors, early_policy_errors)
+from training_video import video_config_errors
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -90,6 +93,15 @@ def no_sim():
         for row in launch.get("processes",[]):
             entry=row.get("entrypoint") or next((x for x in row["argv"] if x.endswith(".py") and "/tools/" in x),None)
             require(not process_check(row,entry)["identity_matches"], "A recorded previous birth is still alive")
+        run_dir = state.get("run_dir")
+        if run_dir:
+            video_manifest = Path(run_dir)/"training_videos/manifest.json"
+            if video_manifest.exists():
+                for window in read(video_manifest).get("windows", []):
+                    encoder = window.get("encoder_birth")
+                    if encoder:
+                        require(not process_check(encoder, encoder["argv"][0])["identity_matches"],
+                                "An owned previous CPU video encoder is still alive")
     require(not gpu_snapshot()["compute_processes"], "GPU compute is still occupied")
     require(not active_simulators(), "Another simulator/manager is active")
 
@@ -131,13 +143,15 @@ def preflight(plan_path):
         require(digest(path) == plan[label+"_sha256"] and read(path)["status"] == "passed", "Missing reviewed admission: "+label)
     progress=read(plan["early_progress_policy"])
     require(digest(plan["early_progress_policy"]) == plan["early_progress_policy_sha256"]
-            == "73fd9fd42ad787724b45d73c3244648ec7e2d3f7d88da8957e6d98d06d4f9b95"
-            and progress["status"] == "active_for_subsequent_training_decisions"
-            and progress["original_source_cap"] == progress["continue_upper_cap"] == BUDGET
-            and progress["decision_checkpoint_iteration"] == 500
-            and progress["required_native_window_iterations"] == [299,399,499]
-            and progress["required_complete_episodes_per_window"] == 5000,
-            "Missing user-authorized saved500 early-progress decision policy")
+            and not early_policy_errors(progress), "Missing approved fixed-target15 early policy")
+    choice=read(progress["human_course_choice_file"])
+    require(digest(progress["human_course_choice_file"]) == progress["human_course_choice_sha256"]
+            and choice["status"] == "explicit_human_choice_received"
+            and choice["answer"] == "采用该课程方案", "Missing direct human course choice")
+    require(not course_config_errors(plan.get("height_course"))
+            and not video_config_errors(plan.get("training_video")), "Wrong new course/video profile")
+    for name, expected in plan["external_dependency_sha256"].items():
+        require(digest(name) == expected, "Reviewed external terrain/reset/render/encoder dependency changed: "+name)
     require(digest(plan["initial_policy"]) == plan["initial_policy_sha256"] == "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f", "Wrong accepted flat parent")
     require(digest(plan["initial_policy_CPU_receipt"]) == "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1", "Wrong complete parent CPU receipt")
     formal=read(plan["initial_policy_formal_review"])
@@ -204,7 +218,7 @@ def startup(metadata,request):
         bank=metadata.get("guarded_stair_learning", {}).get("fixed_real_bank", {})
         if bank.get("status") == "sealed":
             errors.extend(rollout_credit_seal_errors(bank, protocol=protocol))
-    if protocol == PROTOCOL:
+    if protocol in CLEARANCE_PROGRESS_PROTOCOLS:
         binding=request.get("clearance_progress_potential")
         check(metadata.get("clearance_progress_potential") == binding,
               "clearance progress plan/request/run disagree")
@@ -214,6 +228,27 @@ def startup(metadata,request):
                          metadata.get("initial_learning_state", {}).get("clearance_progress_potential"),
                          metadata.get("guarded_stair_learning", {}).get("clearance_progress_potential")):
             errors.extend(clearance_progress_snapshot_errors(binding, snapshot, protocol=protocol, expected_updates=0))
+    if protocol == PROTOCOL:
+        check(metadata.get("height_course") == request.get("height_course")
+              and metadata.get("training_video") == request.get("training_video"), "new profile declarations disagree")
+        errors.extend(course_config_errors(request.get("height_course")))
+        errors.extend(video_config_errors(request.get("training_video")))
+        for profile in (metadata.get("runtime_height_profile"),
+                        metadata.get("initial_learning_state", {}).get("height_profile"),
+                        metadata.get("guarded_stair_learning", {}).get("height_profile")):
+            errors.extend(profile_snapshot_errors(request.get("height_course"), request.get("training_video"),
+                                                   profile, expected_controls=0))
+        initial_state=metadata.get("actual_initial_course_state", {})
+        check(initial_state.get("initial_episode_lengths_all_zero") is True
+              and initial_state.get("actual_world_X_bounds_all1024") is True
+              and initial_state.get("root_X_bounds_m") == [-.25,.25]
+              and initial_state.get("cohort_assignment") == metadata.get("runtime_height_profile", {}).get("height_course"),
+              "actual original first training distribution was not bound")
+        config=metadata.get("runtime_height_config", {})
+        check(config.get("minimum") == .05 and config.get("maximum") == .15 and config.get("rows") == 3
+              and config.get("root_x") == [-.25,.25] and config.get("enable_cameras") is True
+              and config.get("importer") == "h2_task.stair_height_course.FixedTargetTerrainImporter",
+              "actual initial course config is missing")
     check(metadata.get("num_envs") == 1024 and metadata.get("max_iterations") == BUDGET
           and metadata.get("num_steps_per_env") == (ROLLOUT_STEPS_BY_PROTOCOL.get(protocol) if type(protocol) is str else None),
           "wrong budget")
@@ -225,8 +260,8 @@ def startup(metadata,request):
     check(initial.get("actor_optimizer_state_entries") == initial.get("critic_optimizer_state_entries")
           == initial.get("rnd_optimizer_state_entries") == 0, "optimizers are not fresh")
     geo=metadata.get("runtime_stair_geometry",{})
-    check(geo.get("levels") == 6 and geo.get("riser_min_m") == .15 and geo.get("riser_max_m") == .15
-          and geo.get("terrain_rows") == 2
+    check(geo.get("levels") == 6 and geo.get("riser_min_m") == (.05 if protocol == PROTOCOL else .15) and geo.get("riser_max_m") == .15
+          and geo.get("terrain_rows") == (3 if protocol == PROTOCOL else 2)
           and geo.get("episode_length_s") == 90 and geo.get("scripted_gait_installed") is False, "incorrect staircase/controller")
     command=metadata.get("world_stair_command",{})
     check(command.get("kind") == "fixed_world_plusX_base_command_v1"
@@ -486,6 +521,9 @@ def dispatch(plan_path,start,validation_parent=None):
         frozen=dict(read(plan["custody_input_manifest"])["frozen_files"])
         frozen.update({str(ROOT/name):sha for name,sha in plan["implementation_sha256"].items()})
         frozen[str(plan_path)]=digest(plan_path)
+        frozen.update(plan["external_dependency_sha256"])
+        choice=read(plan["early_progress_policy"])["human_course_choice_file"]
+        frozen[choice]=digest(choice)
         for label in ("implementation_review","pre_change_custody_review","custody_input_manifest"):
             frozen[plan[label]]=digest(plan[label])
         frozen[plan["early_progress_policy"]]=digest(plan["early_progress_policy"])
@@ -495,6 +533,8 @@ def dispatch(plan_path,start,validation_parent=None):
         frozen[str(case/"stop_policy.json")]=digest(case/"stop_policy.json")
         entry=str(ROOT/"tools/evaluate_stair_policy.py") if validation_parent else str(ENTRY)
         command=["/home/nsgm/isaac-sim/python.sh",entry,"--headless","--device","cuda:0"]
+        if not validation_parent:
+            command.append("--enable_cameras")
         if validation_parent:
             command += ["--checkpoint",str(validation_parent),"--output",str(case/"evaluation"),"--num_envs","1024","--seed","42"]
         else:
@@ -507,6 +547,8 @@ def dispatch(plan_path,start,validation_parent=None):
             temporal_credit=plan["temporal_credit"],
             rollout_collection=plan["rollout_collection"],
             clearance_progress_potential=plan["clearance_progress_potential"],
+            height_course=plan["height_course"], training_video=plan["training_video"],
+            external_dependency_sha256=plan["external_dependency_sha256"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=rollout_steps,save_interval=500,
@@ -532,6 +574,8 @@ def dispatch(plan_path,start,validation_parent=None):
             max_iterations=BUDGET,num_envs=1024,num_steps_per_env=rollout_steps,
             temporal_credit=plan["temporal_credit"],rollout_collection=plan["rollout_collection"],
             clearance_progress_potential=plan["clearance_progress_potential"],
+            height_course=plan["height_course"], training_video=plan["training_video"],
+            external_dependency_sha256=plan["external_dependency_sha256"],
             expected_final_iteration=BUDGET-1,expected_total_timesteps=BUDGET*1024*rollout_steps,
             monitor_snapshot_tool=str(SELF),monitor_snapshot_command=[sys.executable,str(SELF),"--monitor",str(case)])
         write(POINTER,pointer)

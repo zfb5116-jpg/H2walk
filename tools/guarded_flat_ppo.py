@@ -839,6 +839,10 @@ class RealInputFunctionalGuard:
             for name in ("reset_generation","episode_length_buf"):
                 entry[name]=p[name][ids].detach().cpu().numpy().astype("int64",copy=True)
         self.current.append(entry);self.last_consumed=clock;self.pending=None
+        height_source=getattr(self,"stair_height_source",None)
+        if height_source is not None:
+            height_source.record_selected_rows(ids,p["control_step"],self.algorithm.completed_updates,
+                rollout_step,kind="current")
         if self.context_mode and self.bank_receipt["status"]=="collecting_first_rollout":
             return dict(packet=p,rollout_step=int(rollout_step),clock=clock,normalization_verified=True)
 
@@ -880,6 +884,10 @@ class RealInputFunctionalGuard:
         for key,value in (("actual_raw_action",actual_actions),("action_mean",action_mean),
                           ("action_sigma",action_sigma),("native_q_request",decoded)):
             entry[key]=value[accepted].detach().cpu().numpy().copy()
+        height_source=getattr(self,"stair_height_source",None)
+        if height_source is not None:
+            height_source.record_selected_rows(accepted,p["control_step"],self.algorithm.completed_updates,
+                step,kind="fixed")
         count=int(accepted.numel())
         entry.update(env_id=accepted.cpu().numpy().astype("int32"),
             sample_uid=(p["control_step"]*1024+accepted).cpu().numpy().astype("int64"),

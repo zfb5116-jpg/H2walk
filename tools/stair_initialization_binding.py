@@ -6,17 +6,20 @@ checkpoint, or change the inherited exploration arithmetic or optimizer hook.
 import math
 
 
-PROTOCOL = "accepted_flat_clearance_potential_stair_v9"
-FORMAT = "h2_guarded_stair_ppo_v9"
+PROTOCOL = "accepted_flat_fixed_target_height_course_stair_v10"
+FORMAT = "h2_guarded_stair_ppo_v10"
+LEGACY_CLEARANCE_PROTOCOL = "accepted_flat_clearance_potential_stair_v9"
+CLEARANCE_PROGRESS_PROTOCOLS = (LEGACY_CLEARANCE_PROTOCOL, PROTOCOL)
 LEGACY_ROLLOUT_PROTOCOL = "accepted_flat_rollout_credit_stair_v8"
-ROLLOUT_CREDIT_PROTOCOLS = (LEGACY_ROLLOUT_PROTOCOL, PROTOCOL)
+ROLLOUT_CREDIT_PROTOCOLS = (LEGACY_ROLLOUT_PROTOCOL, *CLEARANCE_PROGRESS_PROTOCOLS)
 LEGACY_PROTOCOL = "accepted_flat_block_consistent_stair_clearance_v5"
 LEGACY_INITIALIZATION_PROTOCOL = "accepted_flat_full_rms_exploration_stair_v6"
 LEGACY_TEMPORAL_PROTOCOL = "accepted_flat_temporal_credit_stair_v7"
 PROTOCOL_FORMATS = {LEGACY_PROTOCOL: "h2_guarded_stair_ppo_v5",
                     LEGACY_INITIALIZATION_PROTOCOL: "h2_guarded_stair_ppo_v6",
                     LEGACY_TEMPORAL_PROTOCOL: "h2_guarded_stair_ppo_v7",
-                    LEGACY_ROLLOUT_PROTOCOL: "h2_guarded_stair_ppo_v8", PROTOCOL: FORMAT}
+                    LEGACY_ROLLOUT_PROTOCOL: "h2_guarded_stair_ppo_v8",
+                    LEGACY_CLEARANCE_PROTOCOL: "h2_guarded_stair_ppo_v9", PROTOCOL: FORMAT}
 INITIALIZATION_PROTOCOLS = (LEGACY_INITIALIZATION_PROTOCOL, LEGACY_TEMPORAL_PROTOCOL, *ROLLOUT_CREDIT_PROTOCOLS)
 TEMPORAL_CREDIT_BY_PROTOCOL = {
     LEGACY_TEMPORAL_PROTOCOL: {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 24, "control_dt_s": 0.02},
@@ -145,7 +148,7 @@ def _exact_json_value(actual, expected):
 
 
 def clearance_progress_contract(*, protocol):
-    if protocol != PROTOCOL:
+    if protocol not in CLEARANCE_PROGRESS_PROTOCOLS:
         raise ValueError("unknown clearance progress protocol")
     return dict(kind="per_foot_real_riser_clearance_potential_v1", enabled=True, gamma=0.99,
         inner_coefficient=1.0, outer_potential_weight=1.0, foot_components=2,
@@ -159,7 +162,7 @@ def clearance_progress_contract(*, protocol):
 
 
 def clearance_progress_config_errors(binding, config=_UNSET, *, protocol):
-    if protocol != PROTOCOL:
+    if protocol not in CLEARANCE_PROGRESS_PROTOCOLS:
         return ["unknown clearance progress protocol"]
     expected = clearance_progress_contract(protocol=protocol)
     if not isinstance(binding, dict) or set(binding) != set(expected):

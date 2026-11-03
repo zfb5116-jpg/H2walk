@@ -29,6 +29,7 @@ class StairTransferEnvCfg(StairAscentEnvCfg):
     stair_height_levels: int = 2
     # Activated only by the explicitly bound new training/evaluation profile.
     stair_clearance_progress_potential: bool = False
+    stair_height_course: dict | None = None
 
     def __post_init__(self):
         super().__post_init__()

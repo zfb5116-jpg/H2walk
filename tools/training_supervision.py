@@ -495,6 +495,14 @@ class SupervisedRunner(OnPolicyRunner):
             clearance_progress = self.alg.clearance_progress_snapshot()
             if clearance_progress is not None:
                 point["clearance_progress_potential"] = clearance_progress
+            height_profile = self.alg.height_profile_snapshot()
+            if height_profile is not None:
+                point["height_profile"] = height_profile
+                course = self.env.unwrapped.stair_height_course
+                point["height_course"] = height_profile["height_course"]
+                point["target15_progress"] = course.target_summary()
+                point["per_height_training_progress"] = course.per_height_summary()
+                point["mixed_motion_is_not_target15_success"] = True
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():
