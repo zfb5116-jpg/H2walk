@@ -65,9 +65,10 @@ def finite(value):
 
 class ContactPredictor(nn.Module):
     """Explicit initialization consumes only the dedicated CPU generator."""
-    def __init__(self, generator):
+    def __init__(self, generator, *, widths=(883,256,128,10)):
         super().__init__()
-        for i, (a, b) in enumerate(zip((883, 128, 64), (128, 64, 10))):
+        require(tuple(widths) in ((883,128,64,10),(883,256,128,10)), "Undeclared bridge model shape")
+        for i, (a, b) in enumerate(zip(widths[:-1],widths[1:])):
             w = torch.empty((b, a), dtype=torch.float32, device="cpu")
             w.uniform_(-math.sqrt(6/(a+b)), math.sqrt(6/(a+b)), generator=generator)
             self.register_parameter(f"w{i}", nn.Parameter(w))
@@ -174,11 +175,12 @@ class ContactBridge:
         self.directory = Path(directory); self.directory.mkdir(exist_ok=False)
         self.log = (self.directory/"auxiliary_transactions.jsonl").open("x")
         self.rng = torch.Generator(device="cpu").manual_seed(20261104)
-        self.learner = ContactPredictor(self.rng).to(algorithm.device)
+        self.learner = ContactPredictor(self.rng,widths=binding["layers"]).to(algorithm.device)
         self.service = copy.deepcopy(self.learner).eval().requires_grad_(False)
         self.optimizer = torch.optim.Adam(self.learner.parameters(), lr=3e-4, betas=(.9,.999), eps=1e-8,
             weight_decay=0., amsgrad=False, foreach=False, fused=False)
-        require(sum(p.numel() for p in self.learner.parameters()) == 122058,
+        self.parameter_count = sum(p.numel() for p in self.learner.parameters())
+        require(self.parameter_count == binding["parameters"] == 260490,
                 "Bridge actual independent parameter count differs")
         actor_ids = {id(p) for p in self.alg.policy.parameters()}
         require(not actor_ids.intersection(id(p) for p in self.learner.parameters()), "Bridge shares policy parameters")
@@ -188,6 +190,7 @@ class ContactBridge:
         self.controls = self.data_epoch = self.seal_id = self.anchors = 0
         self.serving_forwards = self.learner_forwards = self.calibration_forwards = 0
         self.backwards = self.Adam_attempts = self.Adam_commits = 0
+        self.aux_rolled_back_commits = self.aux_failed_Adam_attempts = self.skipped_data_rollouts = 0
         self.serving_version = self.last_reward_model_version = 0
         self.armed = self.closed_down = False
         self.ledger = {k: 0 for k in ("joint_positive", "joint_negative", "contact_positive", "contact_negative",
@@ -285,7 +288,7 @@ class ContactBridge:
             shaped = out.reshape(1024,2,5)
             self.quality.copy_(.25+.75*torch.sigmoid(shaped[...,3]).double()*torch.sigmoid(shaped[...,4]).double())
             self.pending["prediction"][slot] = out.detach().cpu().numpy()
-            self._gpu_scratch = x.numel()*4+out.numel()*4+1024*(128+64)*8
+            self._gpu_scratch = x.numel()*4+out.numel()*4+1024*sum(self.contract["layers"][1:-1])*8
         self._critic = None; self._received_epoch = self.controls
 
     def note_physical_foot(self, ids, foot, level):
@@ -488,12 +491,13 @@ class ContactBridge:
                 and self._critic is None, "Auxiliary update is not a sealed48-control boundary")
         self._baseline = None
         rollback = self._train_state()
+        attempts_before = self.Adam_attempts
         next_completed = self.alg.completed_updates+1
         eligible = self._ordered_indices(False)
         try:
             with torch.inference_mode(False), torch.enable_grad(), torch.autocast(device_type=torch.device(self.alg.device).type, enabled=False):
                 if len(eligible) >= 512:
-                    for _ in range(8):
+                    for _ in range(self.contract["Adam_steps_per_rollout"]):
                         draw = torch.randint(len(eligible),(512,),generator=self.rng,device="cpu",dtype=torch.int64).numpy()
                         x,y,m = self._batch(eligible[draw])
                         self.optimizer.zero_grad(set_to_none=True)
@@ -508,8 +512,10 @@ class ContactBridge:
                         require(finite(self.learner.state_dict()) and finite(self.optimizer.state_dict()),
                                 "Nonfinite bridge Adam state")
                         self.last_loss = float(loss.detach())
-                        self._gpu_scratch = 512*(883+2*128+2*64+10+16)*4
+                        self._gpu_scratch = 512*(883+2*sum(self.contract["layers"][1:-1])+10+16)*4
                         del x,y,m,pred,loss
+                else:
+                    self.skipped_data_rollouts += 1
                 if next_completed >= 40 and next_completed%10 == 0:
                     self.calibration = self._calibrate(next_completed)
                 if next_completed >= 40 and next_completed%10 == 0:
@@ -519,8 +525,13 @@ class ContactBridge:
                     self.serving_version += 1; self.armed = True
             self.optimizer.zero_grad(set_to_none=True)
         except BaseException as error:
+            rolled_back = self.Adam_commits-rollback["Adam_commits"]
+            self.aux_rolled_back_commits += rolled_back
+            self.aux_failed_Adam_attempts += self.Adam_attempts-attempts_before-rolled_back
             self._restore_train(rollback)
             self._journal("auxiliary_restored_stop",dict(error=repr(error), calibration=self.calibration,
+                actual_rolled_back_commits=rolled_back,
+                actual_Adam_attempts=self.Adam_attempts-attempts_before,
                 physical_data_epoch_unchanged=self.data_epoch, snapshot=self.snapshot()))
             raise
         self.seal_id += 1; self._lease_epoch = self.data_epoch
@@ -591,18 +602,22 @@ class ContactBridge:
                           for t in m.parameters())
         optimizer_bytes = sum(t.numel()*t.element_size() for state in self.optimizer.state.values()
                               for t in state.values() if torch.is_tensor(t))
-        gpu = model_bytes+optimizer_bytes+122058*4+self._gpu_scratch
+        gpu = model_bytes+optimizer_bytes+self.parameter_count*4+self._gpu_scratch
         rings = self.pending.nbytes+self.closed.nbytes
         require(gpu <= 134217728 and rings+96468992 <= 536870912, "Bridge owned storage cap exceeded")
         return dict(contract=copy.deepcopy(self.contract), controls=self.controls,
             actual_environment_controls=int(self.raw.common_step_counter),
             pending_control=self.controls if self._endpoint_epoch != self.controls else None,
-            parameters=122058, actor_parameters_shared=False, CPU_ring_bytes=rings,
+            parameters=self.parameter_count, actor_parameters_shared=False, CPU_ring_bytes=rings,
             CPU_owned_bytes=rings+96468992, CPU_scratch_reservation_bytes=96468992,
             GPU_owned_bytes=gpu, original_numeric_arena_unchanged=True,
             serving_forwards=self.serving_forwards, learner_forwards=self.learner_forwards,
             calibration_forwards=self.calibration_forwards, backwards=self.backwards,
             Adam_attempts=self.Adam_attempts, Adam_commits=self.Adam_commits,
+            aux_steps_per_rollout=self.contract["Adam_steps_per_rollout"],
+            aux_rolled_back_commits=self.aux_rolled_back_commits,
+            aux_failed_Adam_attempts=self.aux_failed_Adam_attempts,
+            skipped_data_rollouts=self.skipped_data_rollouts,
             serving_version=self.serving_version, last_reward_model_version=self.last_reward_model_version,
             seal_id=self.seal_id, data_epoch=self.data_epoch, anchors=self.anchors,
             pending_records=int(self.pending["flags"][...,0].any(-1).sum()),
@@ -681,10 +696,11 @@ def validate_bridge_payload(payload, binding, snapshot, *, completed):
     require(digest(train) == snapshot["seal_digest"] and train["Adam_commits"] == snapshot["Adam_commits"]
             and train["serving_version"] == snapshot["serving_version"], "Typed bridge committed model seal differs")
     generator = torch.Generator(device="cpu").manual_seed(20261104)
-    learner, service = ContactPredictor(generator), ContactPredictor(generator)
+    learner = ContactPredictor(generator,widths=binding["layers"])
+    service = ContactPredictor(generator,widths=binding["layers"])
     for model, key in ((learner,"learner"),(service,"service")):
         model.load_state_dict(train[key],strict=True)
-        require(sum(p.numel() for p in model.parameters()) == 122058 and finite(model.state_dict()),
+        require(sum(p.numel() for p in model.parameters()) == binding["parameters"] and finite(model.state_dict()),
                 "Typed bridge strict finite parameter schema differs")
     optimizer = train["optimizer"]
     group = optimizer["param_groups"]
@@ -692,7 +708,7 @@ def validate_bridge_payload(payload, binding, snapshot, *, completed):
             and group[0]["foreach"] is False and group[0]["fused"] is False,
             "Typed independent auxiliary Adam schema differs")
     steps = train["Adam_commits"]
-    require(0 <= steps <= completed*8 and len(optimizer["state"]) == (6 if steps else 0),
+    require(0 <= steps <= completed*binding["Adam_steps_per_rollout"] and len(optimizer["state"]) == (6 if steps else 0),
             "Typed bridge actual optimizer counter differs")
     for index,param in zip(group[0]["params"],learner.parameters()):
         if steps:
@@ -714,7 +730,7 @@ def validate_bridge_payload(payload, binding, snapshot, *, completed):
     if completed == 1000:
         require(snapshot["pending_records"] == 0 and not bool((payload["previous"] != 0).any()),
                 "Natural bridge budget did not close actual debt/censor futures")
-    return dict(actual_schema_passed=True, parameters=122058, optimizer_parameter_tensors=6,
+    return dict(actual_schema_passed=True, parameters=binding["parameters"], optimizer_parameter_tensors=6,
         actual_Adam_commits=steps, CPU_forward_batches=2, queue_records_inspected=64*1024+49152,
         unknown_masks_preserved=True, own_private_rng_valid=True, snapshot=snapshot,
         training_labels_are_not_formal_acceptance=True)

@@ -341,7 +341,7 @@ def validate_cpu(checkpoint, plan_path, scope):
     if protocol in BRIDGE_PROTOCOLS:
         from stair_contact_bridge import validate_bridge_payload
         contact_bridge = plan.get("contact_bridge")
-        require(not bridge_config_errors(contact_bridge)
+        require(not bridge_config_errors(contact_bridge,allow_legacy=protocol != PROTOCOL)
                 and request.get("contact_bridge") == run.get("contact_bridge") == contact_bridge,
                 "New bridge source/plan/request declaration differs")
         for value in (run.get("runtime_contact_bridge"),

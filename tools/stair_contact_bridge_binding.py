@@ -1,18 +1,20 @@
 """JSON contract for training-only future contact and local support credit."""
 from stair_execution_binding import _same, finite_json
 
-PROTOCOL = "accepted_flat_fixed_target_height_course_anticipatory_support_bridge_v1"
-FORMAT = "h2_guarded_stair_ppo_bridge_v1"
+LEGACY_PROTOCOL = "accepted_flat_fixed_target_height_course_anticipatory_support_bridge_v1"
+LEGACY_FORMAT = "h2_guarded_stair_ppo_bridge_v1"
+PROTOCOL = "accepted_flat_fixed_target_height_course_anticipatory_support_bridge_v2_location_fit"
+FORMAT = "h2_guarded_stair_ppo_bridge_v2_location_fit"
 
 
-def bridge_contract():
-    return dict(kind="anticipatory_support_credit_bridge_v1", enabled=True,
-        input_width=883, output_width=10, layers=[883, 128, 64, 10], parameters=122058,
+def bridge_contract(*, legacy=False):
+    result = dict(kind="anticipatory_support_credit_bridge_v2_location_fit", enabled=True,
+        input_width=883, output_width=10, layers=[883, 256, 128, 10], parameters=260490,
         independent_actor_parameters=True, critic_input_width=871, received_action_width=12,
         action_feature="tanh_actual_received_pre_transport_delay_action",
         contact_controls=32, recovery_controls=32, pending_controls=64,
         closed_capacity=49152, record_bytes=3840, CPU_cap_bytes=536870912,
-        GPU_owned_cap_bytes=134217728, Adam_steps_per_rollout=8, batch_records=512,
+        GPU_owned_cap_bytes=134217728, Adam_steps_per_rollout=32, batch_records=512,
         Adam_learning_rate=0.0003, gradient_clip=1.0, private_CPU_seed=20261104,
         warmup_updates=40, calibration_cadence=10, calibration_records=4096,
         lookahead_m=0.60, preparation_m=0.25, retention_floor=0.25,
@@ -32,14 +34,19 @@ def bridge_contract():
         pre_super_aux_commit=True, physical_rewind=False,
         serving_publication="only_scheduled_calibrated_candidate",
         formal_bridge_enabled=False, original_target500_policy_preserved=True)
+    if legacy:
+        result.update(kind="anticipatory_support_credit_bridge_v1",layers=[883,128,64,10],
+                      parameters=122058,Adam_steps_per_rollout=8)
+    return result
 
 
-def bridge_config_errors(value):
-    return [] if _same(value, bridge_contract()) else ["wrong exact future-contact bridge contract"]
+def bridge_config_errors(value, *, allow_legacy=False):
+    legacy = allow_legacy and type(value) is dict and value.get("kind") == "anticipatory_support_credit_bridge_v1"
+    return [] if _same(value, bridge_contract(legacy=legacy)) else ["wrong exact future-contact bridge contract"]
 
 
 def bridge_snapshot_errors(binding, snapshot, *, expected_controls=None):
-    errors = bridge_config_errors(binding)
+    errors = bridge_config_errors(binding,allow_legacy=True)
     if errors or type(snapshot) is not dict:
         return errors or ["missing live contact bridge"]
     if not _same(snapshot.get("contract"), binding) or not finite_json(snapshot):
@@ -49,7 +56,7 @@ def bridge_snapshot_errors(binding, snapshot, *, expected_controls=None):
         errors.append("bridge actual physical control count differs")
     if snapshot.get("actual_environment_controls") != n or snapshot.get("pending_control") is not None:
         errors.append("bridge has not completed its actual environment control")
-    if (snapshot.get("parameters") != 122058 or snapshot.get("actor_parameters_shared") is not False
+    if (snapshot.get("parameters") != binding["parameters"] or snapshot.get("actor_parameters_shared") is not False
             or snapshot.get("CPU_ring_bytes") != (64*1024+49152)*3840
             or snapshot.get("CPU_owned_bytes", 2**63) > binding["CPU_cap_bytes"]
             or snapshot.get("GPU_owned_bytes", 2**63) > binding["GPU_owned_cap_bytes"]):
@@ -64,6 +71,16 @@ def bridge_snapshot_errors(binding, snapshot, *, expected_controls=None):
             errors.append("bridge anchor denominator differs from actual1024 controls")
         if snapshot.get("serving_forwards", 2**63) > max(0, n-40*48):
             errors.append("bridge extra or premature serving forward")
+        cap = ((n+47)//48)*binding["Adam_steps_per_rollout"]
+        if (snapshot.get("learner_forwards",2**63)>cap or snapshot.get("Adam_attempts",2**63)>cap
+                or snapshot.get("Adam_commits",2**63)>snapshot.get("Adam_attempts",-1)):
+            errors.append("bridge auxiliary attempts exceed its actual rollout budget")
+    if binding["kind"] == "anticipatory_support_credit_bridge_v2_location_fit":
+        if snapshot.get("aux_steps_per_rollout") != 32:
+            errors.append("wrong actual32-step auxiliary schedule")
+        for name in ("aux_rolled_back_commits","aux_failed_Adam_attempts","skipped_data_rollouts"):
+            if type(snapshot.get(name)) is not int or snapshot[name] < 0:
+                errors.append("invalid actual auxiliary transaction counter "+name)
     if snapshot.get("original_numeric_arena_unchanged") is not True:
         errors.append("bridge did not preserve the original projection arena")
     return errors

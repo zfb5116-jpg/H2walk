@@ -286,7 +286,8 @@ def parent_admission(plan, root):
                 "Missing bounded existing-execution observer contract")
     if plan["trial_protocol"] in BRIDGE_PROTOCOLS:
         from stair_contact_bridge_binding import bridge_config_errors
-        require(not bridge_config_errors(plan.get("contact_bridge")), "Missing training contact bridge contract")
+        require(not bridge_config_errors(plan.get("contact_bridge"),allow_legacy=plan["trial_protocol"] != PROTOCOL),
+                "Missing training contact bridge contract")
     parent = Path(plan["initial_policy"]).resolve(strict=True)
     canonical = root/"logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt"
     require(parent == canonical and plan["initial_policy_sha256"] == PARENT_SHA
