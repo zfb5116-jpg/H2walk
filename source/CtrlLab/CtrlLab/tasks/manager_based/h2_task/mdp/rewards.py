@@ -620,6 +620,29 @@ def walk_support_quality(env: RobotEnv) -> torch.Tensor:
     return env.walking_reward_state.support_quality
 
 
+def terrain_walk_swing(env: RobotEnv) -> torch.Tensor:
+    """Moving-swing tracking of a fixed start/apex/landing sole reference."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.swing_tracking
+
+
+def terrain_walk_support(env: RobotEnv) -> torch.Tensor:
+    """Nonnegative scan-geometry/contact/no-support cost, not a balance proof."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.support_cost
+
+
+def terrain_walk_landing(env: RobotEnv) -> torch.Tensor:
+    """Excess vertical landing load event rate; integrated once per landing."""
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.landing_cost
+
+
+def terrain_walk_failure(env: RobotEnv) -> torch.Tensor:
+    """Failure event rate; the manager's timeout-only rows are not failures."""
+    return env.termination_manager.terminated.float() / env.step_dt
+
+
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     feet_acc = asset.data.body_lin_acc_w[:, asset_cfg.body_ids]

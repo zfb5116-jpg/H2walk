@@ -27,6 +27,7 @@ class RewardRecorder:
 
 def make_env(env_type, mode="alternating_v1"):
     env_type.__init__.__globals__["WalkingRewardState"] = RewardRecorder
+    env_type.__init__.__globals__["TerrainWalkingRewardState"] = RewardRecorder
     return env_type(Box(feet_body_names=["left", "right"], walking_reward_mode=mode))
 
 
@@ -35,6 +36,8 @@ def test_only_opt_in_mode_constructs_reward_state(env_type):
     assert isinstance(env.walking_reward_state, RewardRecorder)
     baseline = make_env(env_type, "legacy")
     assert baseline.walking_reward_state is None
+    terrain = make_env(env_type, "terrain_v2")
+    assert isinstance(terrain.walking_reward_state, RewardRecorder)
 
 
 def test_begin_captures_executed_command_and_pre_physics_position(env_type):

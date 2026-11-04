@@ -38,10 +38,10 @@ def profile_module():
     return _load_profile_module()
 
 
-def _config():
-    return SimpleNamespace(
+def _config(reward_mode="alternating_v1"):
+    cfg = SimpleNamespace(
         use_lidar_reconstruction=False,
-        walking_reward_parameters=_load_profile_module().WALK_REWARD_PARAMETERS.copy(),
+        walking_reward_parameters=_load_profile_module().reward_parameters(reward_mode).copy(),
         episode_length_s=20.0,
         scene=SimpleNamespace(
             height_scanner=SimpleNamespace(pattern_cfg=SimpleNamespace(resolution=.05, size=[1.6, .8]), mesh_prim_paths=["/World/ground"]),
@@ -82,9 +82,19 @@ def _config():
             walk_support_quality=SimpleNamespace(weight=0., params={}),
         ),
     )
+    # Containers for every active terrain-budget term; production function
+    # declarations are tested separately through the real config class AST.
+    for name in _load_profile_module().TERRAIN_REWARD_WEIGHTS:
+        if not hasattr(cfg.rewards, name):
+            setattr(cfg.rewards, name, SimpleNamespace(func=abs, weight=-1., params={}))
+    for term in vars(cfg.rewards).values():
+        if term is not None and not hasattr(term, "func"):
+            term.func = abs
+    return cfg
 
 
 def _apply(module, cfg, stage, **kwargs):
+    kwargs.setdefault("reward_mode", "alternating_v1")
     terrain = _load_terrain_configs()
     module.apply_walking_profile(
         cfg, stage, terrain_template=terrain["MIXED_WALK_TERRAINS_CFG"],
@@ -119,7 +129,7 @@ def test_bootstrap_keeps_scan_actions_and_terminations(profile_module):
 
 @pytest.mark.parametrize("stage", ["shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20"])
 def test_stage_has_persistent_flat_up_and_down_columns_without_mutating_templates(profile_module, stage):
-    cfg = _config()
+    cfg = _config("terrain_v2")
     terrain = _load_terrain_configs()
     saved = deepcopy(terrain["MIXED_WALK_TERRAINS_CFG"])
     profile_module.apply_walking_profile(
@@ -257,7 +267,7 @@ def test_missing_reset_rejects_profile_before_mutation(profile_module):
 
 
 def _resolved_profile(module, stage="shallow", speed=.2, **flags):
-    cfg = _config()
+    cfg = _config(flags.get("reward_mode", "alternating_v1"))
     cfg.walking_forward_speed = speed
     for flag in ("enable_push", "enable_domain_randomization", "enable_observation_noise", "enable_actuator_delay"):
         setattr(cfg, "walking_" + flag, flags.get(flag, False))

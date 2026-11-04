@@ -20,13 +20,14 @@ def module():
     return value
 
 
-def protocol(mod, stage="bootstrap", mode="bounded"):
+def protocol(mod, stage="bootstrap", mode="bounded", reward_mode="alternating_v1"):
     return mod.make_protocol(
         stage,
         mode,
         0.5,
         {"git_commit": None, "source_sha256": "a" * 64},
         configuration_sha256="b" * 64,
+        reward_mode=reward_mode,
     )
 
 

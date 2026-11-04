@@ -34,7 +34,7 @@ def build_parser(
         epilog="Isaac AppLauncher options (including --headless and --device) are accepted at runtime.",
     )
     parser.add_argument("--task", choices=TASKS, default=TASKS[0])
-    parser.add_argument("--reward_mode", choices=("alternating_v1", "legacy"), default="alternating_v1")
+    parser.add_argument("--reward_mode", choices=("terrain_v2", "alternating_v1", "legacy"), default="terrain_v2")
     parser.add_argument("--cross_time_mode", choices=("bounded", "legacy"), default="bounded")
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument(

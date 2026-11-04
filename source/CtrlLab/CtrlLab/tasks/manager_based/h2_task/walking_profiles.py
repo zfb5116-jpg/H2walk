@@ -14,14 +14,53 @@ from typing import Any
 
 from .staged_curriculum import STAGE_HEIGHT_RANGES, STAGE_ORDER, stage_column_families
 from .walking_rewards import WALK_REWARD_PARAMETERS
+from .terrain_gait import TERRAIN_REWARD_PARAMETERS
 
 
 WALK_REWARD_VERSION = "h2_walk_rewards_v1"
+REWARD_VERSIONS = {"legacy": WALK_REWARD_VERSION, "alternating_v1": WALK_REWARD_VERSION,
+                   "terrain_v2": "h2_walk_rewards_v2"}
 WALK_REWARD_WEIGHTS = {
     "walk_signed_progress": 1.0,
     "walk_alternating_steps": .5,
     "walk_support_quality": .25,
 }
+TERRAIN_REWARD_WEIGHTS = {
+    "track_lin_vel_xy": 3.0, "track_ang_vel_z": 1.0,
+    "walk_signed_progress": 1.0, "walk_alternating_steps": .5,
+    "terrain_walk_swing": .75, "terrain_walk_support": -1.0,
+    "terrain_walk_landing": -.25, "terrain_walk_failure": -2.0,
+    "flat_orientation": -4.0, "base_angular_velocity": -.05,
+    "joint_acc": -2.5e-7, "joint_power": -1e-4, "action_rate": -.02,
+    "joint_waist_deviation": -.5, "joint_arm_deviation": -.1,
+    "dof_pos_limits": -10.0, "dof_vel_limits": -1.0, "dof_tor_limits": -1.0,
+    "feet_slide": -.5, "feet_stumble": -1.5,
+    "undesired_contacts": -2.0, "fall_body_contacts": -12.0,
+}
+TERRAIN_ONLY_TERMS = ("terrain_walk_swing", "terrain_walk_support", "terrain_walk_landing", "terrain_walk_failure")
+
+
+def reward_parameters(mode: str) -> dict:
+    return TERRAIN_REWARD_PARAMETERS if mode == "terrain_v2" else WALK_REWARD_PARAMETERS
+
+
+def _reward_configuration(rewards: Any) -> Any:
+    """Comparable resolved configuration, including callable and parameter changes."""
+    def value(item):
+        if item is None or type(item) in (str, bool, int, float):
+            return item
+        if isinstance(item, slice):
+            return ("slice", item.start, item.stop, item.step)
+        if isinstance(item, dict):
+            return tuple((key, value(part)) for key, part in item.items())
+        if isinstance(item, (list, tuple)):
+            return tuple(value(part) for part in item)
+        if callable(item):
+            return ("callable", item.__module__, item.__qualname__)
+        if callable(getattr(item, "to_dict", None)):
+            return value(item.to_dict())
+        return value(vars(item))
+    return value(rewards)
 
 
 def _validate_scan(cfg: Any) -> None:
@@ -93,15 +132,25 @@ def validate_walking_profile(cfg: Any) -> None:
                 "Legacy terrain or speed progression is enabled inside a fixed stage")
 
         reward_mode = cfg.walking_reward_mode
-        require(isinstance(reward_mode, str) and reward_mode in ("legacy", "alternating_v1"),
+        require(isinstance(reward_mode, str) and reward_mode in REWARD_VERSIONS,
                 "Invalid resolved reward_mode")
-        require(cfg.walking_reward_version == WALK_REWARD_VERSION,
+        require(cfg.walking_reward_version == REWARD_VERSIONS[reward_mode],
                 "Unknown walking reward version")
         require(cfg.walking_resolved_reward_mode == reward_mode,
                 "Resolved reward mode changed after profile construction")
-        require(cfg.walking_reward_parameters == WALK_REWARD_PARAMETERS,
+        require(cfg.walking_reward_parameters == reward_parameters(reward_mode),
                 "Walking reward parameters disagree with the versioned implementation")
-        if reward_mode == "alternating_v1":
+        if reward_mode == "terrain_v2":
+            for name, term in vars(cfg.rewards).items():
+                if term is not None and hasattr(term, "weight"):
+                    require(term.weight == TERRAIN_REWARD_WEIGHTS.get(name, 0.0),
+                            f"Resolved terrain reward weight changed for {name}")
+            for name, weight in TERRAIN_REWARD_WEIGHTS.items():
+                require(getattr(cfg.rewards, name).weight == weight,
+                        f"Resolved terrain reward missing or changed for {name}")
+            require(_reward_configuration(cfg.rewards) == cfg.walking_resolved_rewards,
+                    "Resolved terrain reward function or parameters changed")
+        elif reward_mode == "alternating_v1":
             require(cfg.rewards.feet_swing_height.params.get("swing_mode") == "alternating_v1",
                     "Resolved swing reward mode disagrees with walking reward mode")
             for name in ("feet_air_time", "feet_contact_time"):
@@ -116,6 +165,9 @@ def validate_walking_profile(cfg: Any) -> None:
             for name in WALK_REWARD_WEIGHTS:
                 require(getattr(cfg.rewards, name) is None,
                         f"New walking reward {name} is active in legacy mode")
+        if reward_mode != "terrain_v2":
+            require(all(getattr(cfg.rewards, name, None) is None for name in TERRAIN_ONLY_TERMS),
+                    "Terrain rewards are active in a previous reward mode")
 
         mode = cfg.walking_cross_time_mode
         difference_limit = cfg.walking_max_time_difference
@@ -194,7 +246,7 @@ def apply_walking_profile(
     enable_actuator_delay: bool = False,
     cross_time_mode: str = "bounded",
     max_time_difference: float = .5,
-    reward_mode: str = "alternating_v1",
+    reward_mode: str = "terrain_v2",
 ) -> None:
     """Apply one explicit stage while preserving the scan/action architecture.
 
@@ -217,9 +269,10 @@ def apply_walking_profile(
     reward explicitly selects a bounded air/contact difference by default;
     ``cross_time_mode='legacy'`` retains its previous cross-time formula for
     comparison. ``reward_mode='legacy'`` retains the previous walking rewards
-    on a fresh configuration. The new mode gates swing shaping by real motion,
-    holds stair targets, replaces fixed-duration event losses with qualified
-    alternating landings, and adds signed progress and support-quality terms.
+    on a fresh configuration. ``alternating_v1`` retains its previous held-Z
+    experiment. ``terrain_v2`` uses one explicit reward budget for every stage,
+    replacing duplicate motion penalties and clearance rewards with shared
+    terrain-aware swing, support and landing terms.
     """
     if not isinstance(stage, str) or stage not in STAGE_ORDER:
         raise ValueError(f"Unknown walking stage: {stage!r}; expected one of {STAGE_ORDER}")
@@ -228,8 +281,8 @@ def apply_walking_profile(
         raise ValueError("Walking profile ablation flags must be booleans")
     if not isinstance(cross_time_mode, str) or cross_time_mode not in ("legacy", "bounded"):
         raise ValueError("cross_time_mode must be 'legacy' or 'bounded'")
-    if not isinstance(reward_mode, str) or reward_mode not in ("legacy", "alternating_v1"):
-        raise ValueError("reward_mode must be 'legacy' or 'alternating_v1'")
+    if not isinstance(reward_mode, str) or reward_mode not in REWARD_VERSIONS:
+        raise ValueError("reward_mode must be 'legacy', 'alternating_v1' or 'terrain_v2'")
     if (isinstance(max_time_difference, bool) or not isinstance(max_time_difference, (int, float))
             or not math.isfinite(max_time_difference) or max_time_difference <= 0):
         raise ValueError("max_time_difference must be finite and positive")
@@ -242,8 +295,12 @@ def apply_walking_profile(
         for name in ("feet_swing_height", "feet_air_time", "feet_contact_time", "feet_stair_clearance", *WALK_REWARD_WEIGHTS):
             if getattr(cfg.rewards, name, None) is None:
                 raise ValueError(f"Alternating walking reward requires {name}")
-    if getattr(cfg, "walking_reward_parameters", None) != WALK_REWARD_PARAMETERS:
-        raise ValueError("Walking reward parameters disagree with alternating_v1")
+    elif reward_mode == "terrain_v2":
+        for name in TERRAIN_REWARD_WEIGHTS:
+            if getattr(cfg.rewards, name, None) is None:
+                raise ValueError(f"Terrain walking reward requires {name}")
+    if getattr(cfg, "walking_reward_parameters", None) != reward_parameters(reward_mode):
+        raise ValueError(f"Walking reward parameters disagree with {reward_mode}")
     if isinstance(forward_speed, bool) or not isinstance(forward_speed, (int, float)):
         raise ValueError("forward_speed must be a finite speed in m/s")
     if not math.isfinite(forward_speed) or forward_speed < .1:
@@ -320,8 +377,15 @@ def apply_walking_profile(
     cfg.walking_max_time_difference = float(max_time_difference)
     timing.params = timing_params
     cfg.walking_reward_mode = cfg.walking_resolved_reward_mode = reward_mode
-    cfg.walking_reward_version = WALK_REWARD_VERSION
-    if reward_mode == "alternating_v1":
+    cfg.walking_reward_version = REWARD_VERSIONS[reward_mode]
+    if reward_mode == "terrain_v2":
+        # Keep disabled terms at zero so the explicit timing ablation metadata
+        # remains readable, while none of its duration cost enters this budget.
+        for name, term in vars(cfg.rewards).items():
+            if term is not None and hasattr(term, "weight"):
+                term.weight = TERRAIN_REWARD_WEIGHTS.get(name, 0.0)
+        cfg.walking_resolved_rewards = _reward_configuration(cfg.rewards)
+    elif reward_mode == "alternating_v1":
         for name in ("feet_air_time", "feet_contact_time"):
             getattr(cfg.rewards, name).weight = 0.0
         swing = cfg.rewards.feet_swing_height
@@ -333,3 +397,8 @@ def apply_walking_profile(
     else:
         for name in WALK_REWARD_WEIGHTS:
             setattr(cfg.rewards, name, None)
+    if reward_mode != "terrain_v2":
+        for name in TERRAIN_ONLY_TERMS:
+            # These are dynamic Walk fields, absent from the original reward
+            # config. Do not add None keys to previous-mode fingerprints.
+            vars(cfg.rewards).pop(name, None)

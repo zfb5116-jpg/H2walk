@@ -31,10 +31,11 @@ class WalkingRewardState:
     feet leaving support invalidate jumping as an alternating walking step.
     """
 
-    def __init__(self, num_envs: int, device: str | torch.device):
+    def __init__(self, num_envs: int, device: str | torch.device, *, parameters=None):
         if isinstance(num_envs, bool) or not isinstance(num_envs, int) or num_envs <= 0:
             raise ValueError("num_envs must be a positive integer")
         self.num_envs, self.device = num_envs, torch.device(device)
+        self.parameters = WALK_REWARD_PARAMETERS if parameters is None else parameters
         for name in ("armed", "swing", "liftoff", "landing", "moving_swing", "_cycle_valid",
                      "_other_supported", "_target_valid", "_candidate_valid"):
             setattr(self, name, torch.zeros(num_envs, 2, dtype=torch.bool, device=device))
@@ -97,7 +98,7 @@ class WalkingRewardState:
         self._direction = world / self._speed.clamp_min(1e-12)[:, None]
         self._input_valid = (torch.isfinite(root_xy).all(dim=-1) & q_finite & torch.isfinite(q_norm) & (q_norm > 1e-6)
                              & torch.isfinite(command).all(dim=-1) & torch.isfinite(self._speed))
-        self._active = self._input_valid & (self._speed >= WALK_REWARD_PARAMETERS["min_command_speed"])
+        self._active = self._input_valid & (self._speed >= self.parameters["min_command_speed"])
         # Keep an armed stance across the short raw-contact history delay.
         # A fault seen before physics still invalidates this cycle if the
         # channel has recovered by the reward-phase sample of the same step.
@@ -117,10 +118,10 @@ class WalkingRewardState:
         self.support_quality.zero_()
 
     @torch.no_grad()
-    def finish_transition(self, root_xy, feet, contacts, support, valid) -> None:
+    def finish_transition(self, root_xy, feet, contacts, support, valid, *, landing_quality=None) -> None:
         if not self._pending:
             raise RuntimeError("Walking reward transition is not pending")
-        p = WALK_REWARD_PARAMETERS
+        p = self.parameters
         delta = root_xy-self._position
         good = (self._input_valid & torch.isfinite(root_xy).all(dim=-1)
                 & (delta.norm(dim=-1) <= p["max_step_speed"]*self._dt+1e-6))
@@ -158,6 +159,8 @@ class WalkingRewardState:
                      & (root_progress >= p["min_root_progress"]-1e-6)
                      & ((self._signed_distance-self._credit_frontier)[:, None]
                         >= p["min_root_progress"]-1e-6))
+        if landing_quality is not None:
+            qualified &= landing_quality
         # At most one event. Simultaneous landing never represents alternation.
         unique = qualified.sum(dim=-1) == 1
         index = qualified.long().argmax(dim=-1)

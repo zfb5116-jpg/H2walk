@@ -1,11 +1,13 @@
 """Reward-mode wiring and resume contracts, using config containers and spies."""
 
+import ast
 from copy import deepcopy
+import math
 from types import SimpleNamespace
 
 import pytest
 
-from test_walking_profiles import _config, _load_profile_module, _apply, _resolved_profile
+from test_walking_profiles import TASK, _config, _load_profile_module, _apply, _resolved_profile
 from test_walk_entry import module as entry_module
 from test_walk_protocol import module as protocol_module, protocol, checkpoint, runner
 
@@ -87,8 +89,11 @@ def test_walk_class_wires_declared_reward_functions_only_for_walk():
 
     namespace = _load_configs()
     cfg = _new_cfg(namespace, "RobotWalkBootstrapEnvCfg")
-    for name in ("walk_signed_progress", "walk_alternating_steps", "walk_support_quality"):
+    for name in ("walk_signed_progress", "walk_alternating_steps", "terrain_walk_swing",
+                 "terrain_walk_support", "terrain_walk_landing", "terrain_walk_failure"):
         assert getattr(cfg.rewards, name).func is getattr(namespace["h2_mdp"], name)
+    assert cfg.walking_reward_mode == "terrain_v2"
+    assert cfg.rewards.walk_support_quality.weight == 0.
     legacy = namespace["RobotWalkBootstrapEnvCfg"]()
     legacy.walking_reward_mode = "legacy"
     legacy.__post_init__()
@@ -149,3 +154,116 @@ def test_old_or_changed_reward_protocol_rejects_before_state_application(mutatio
     with pytest.raises(ValueError, match="protocol|reward"):
         mod.restore_checkpoint(value, saved, protocol(mod))
     assert value.calls == []
+
+
+@pytest.mark.parametrize("stage", ["bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20"])
+def test_terrain_mode_has_one_explicit_budget_for_every_stage(stage):
+    module = _load_profile_module()
+    cfg = _resolved_profile(module, stage, reward_mode="terrain_v2")
+    active = {name: term.weight for name, term in vars(cfg.rewards).items()
+              if term is not None and term.weight != 0.}
+    assert active == module.TERRAIN_REWARD_WEIGHTS
+    assert len(active) == 22
+    assert cfg.walking_reward_version == "h2_walk_rewards_v2"
+    assert cfg.walking_reward_parameters == module.TERRAIN_REWARD_PARAMETERS
+    assert cfg.rewards.feet_air_time_variance.weight == 0.
+    assert cfg.rewards.feet_stair_clearance.weight == cfg.rewards.feet_swing_height.weight == 0.
+    module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("mutation", ["weight", "parameter", "function", "disabled", "extra", "mode", "version", "state"])
+def test_terrain_budget_rejects_post_resolution_semantic_changes(mutation):
+    module = _load_profile_module()
+    cfg = _resolved_profile(module, reward_mode="terrain_v2")
+    if mutation == "weight":
+        cfg.rewards.terrain_walk_swing.weight = 1.
+    elif mutation == "parameter":
+        cfg.rewards.feet_slide.params["new_threshold"] = 1.
+    elif mutation == "function":
+        cfg.rewards.feet_slide.func = max
+    elif mutation == "disabled":
+        cfg.rewards.feet_swing_height.weight = .1
+    elif mutation == "extra":
+        cfg.rewards.extra = SimpleNamespace(func=abs, weight=0., params={})
+    elif mutation == "mode":
+        cfg.walking_reward_mode = "alternating_v1"
+    elif mutation == "version":
+        cfg.walking_reward_version = "h2_walk_rewards_v1"
+    else:
+        cfg.walking_reward_parameters["semantic_version"] = "changed"
+    with pytest.raises(ValueError, match="reward|version"):
+        module.validate_walking_profile(cfg)
+
+
+def test_terrain_cli_default_and_explicit_previous_modes_are_available():
+    entry = entry_module()
+    assert entry.parse_args([]).reward_mode == "terrain_v2"
+    for mode in ("legacy", "alternating_v1", "terrain_v2"):
+        assert entry.parse_args(["--reward_mode", mode]).reward_mode == mode
+
+
+def test_all_reward_versions_are_mode_specific_and_cross_mode_restore_rejects():
+    mod = protocol_module()
+    for mode, version in (("legacy", "h2_walk_rewards_v1"),
+                          ("alternating_v1", "h2_walk_rewards_v1"),
+                          ("terrain_v2", "h2_walk_rewards_v2")):
+        marker = protocol(mod, reward_mode=mode)
+        assert marker["reward_version"] == version
+        mod.validate_protocol(marker)
+    saved = checkpoint(mod)
+    value = runner()
+    with pytest.raises(ValueError, match="reward|protocol"):
+        mod.restore_checkpoint(value, saved, protocol(mod, reward_mode="terrain_v2"))
+    assert value.calls == []
+    saved["infos"]["h2_walk_protocol"] = protocol(mod, reward_mode="terrain_v2")
+    assert mod.validate_checkpoint(saved, protocol(mod, "stairs_20", reward_mode="terrain_v2")) == 10
+
+
+def test_terrain_budget_closes_over_every_real_rewards_cfg_declaration():
+    """Execute the real term/config statements with backend-free containers."""
+    from test_walking_env_config import _load_configs
+
+    class Functions:
+        def __getattr__(self, name):
+            return abs
+
+    path = TASK / "config/rewards_cfg.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    body = [node for node in tree.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
+    scope = {
+        "math": math, "mdp": Functions(), "h2_mdp": Functions(),
+        "RewTerm": lambda **kwargs: SimpleNamespace(**{"params": {}, **kwargs}),
+        "SceneEntityCfg": lambda name, **kwargs: SimpleNamespace(name=name, **kwargs),
+        "configclass": lambda cls: cls,
+    }
+    for name in ("H2_ARM_JOINT_NAMES", "H2_BASE_BODY_NAMES", "H2_FALL_CONTACT_BODY_NAMES",
+                 "H2_FOOT_BODY_NAMES", "H2_LEG_JOINT_NAMES", "H2_UNDESIRED_CONTACT_BODY_NAMES",
+                 "H2_WAIST_JOINT_NAMES"):
+        scope[name] = (name,)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), scope)
+    declarations = {name: deepcopy(term) for name, term in vars(scope["RewardsCfg"]).items()
+                    if not name.startswith("_")}
+    cfg = _resolved_profile(_load_profile_module(), reward_mode="terrain_v2")
+    cfg.rewards = SimpleNamespace(**declarations)
+    cfg.walking_reward_mode = "terrain_v2"
+    _load_configs()["_configure_walking_reward_terms"](cfg)
+
+    source = TASK / "robot_env_cfg.py"
+    tracking = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_configure_walking_tracking_rewards")
+    tracking_scope = {}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[tracking], type_ignores=[])), str(source), "exec"), tracking_scope)
+    cfg.walking_tracking_mode, cfg.walking_tracking_relative_weight = "command_relative_mixed", .75
+    tracking_scope[tracking.name](cfg)
+    original_tracking = deepcopy(cfg.rewards.track_lin_vel_xy.params)
+    module = _load_profile_module()
+    _apply(module, cfg, "shallow", reward_mode="terrain_v2")
+    active = {name: term.weight for name, term in vars(cfg.rewards).items()
+              if term is not None and term.weight != 0.}
+    assert active == module.TERRAIN_REWARD_WEIGHTS
+    assert cfg.rewards.track_lin_vel_xy.params == original_tracking
+    for name in ("track_forward_progress", "base_linear_velocity", "base_height", "action_rate2",
+                 "joint_leg_deviation", "feet_air_vel", "feet_vel", "feet_acc", "feet_clearance",
+                 "feet_swing_height", "feet_stair_clearance", "support_force_z_axis", "stand_still"):
+        assert getattr(cfg.rewards, name).weight == 0.
+    module.validate_walking_profile(cfg)

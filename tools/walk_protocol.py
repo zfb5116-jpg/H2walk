@@ -19,6 +19,8 @@ from typing import Any, TypeGuard
 STAGES = ("bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20")
 PROTOCOL_ID = "h2_walk_fixed_scales_v2"
 REWARD_VERSION = "h2_walk_rewards_v1"
+REWARD_VERSIONS = {"legacy": REWARD_VERSION, "alternating_v1": REWARD_VERSION,
+                   "terrain_v2": "h2_walk_rewards_v2"}
 FORBIDDEN_STATES = {
     "obs_norm_state_dict",
     "privileged_obs_norm_state_dict",
@@ -124,7 +126,8 @@ def validate_protocol(value: Any) -> None:
         for key, expected in fixed.items()
     ):
         raise _error("Incompatible walking observation/normalization/RND protocol")
-    if value.get("reward_mode") not in ("legacy", "alternating_v1") or value.get("reward_version") != REWARD_VERSION:
+    mode = value.get("reward_mode")
+    if not isinstance(mode, str) or mode not in REWARD_VERSIONS or value.get("reward_version") != REWARD_VERSIONS[mode]:
         raise _error("Missing or incompatible walking reward protocol")
     if value.get("stage") not in STAGES or value.get("cross_time_mode") not in (
         "legacy",
@@ -157,7 +160,7 @@ def make_protocol(
     source: Mapping[str, Any],
     *,
     configuration_sha256: str,
-    reward_mode: str = "alternating_v1",
+    reward_mode: str = "terrain_v2",
 ) -> dict[str, Any]:
     value = {
         "id": PROTOCOL_ID,
@@ -171,7 +174,7 @@ def make_protocol(
         "cross_time_mode": cross_time_mode,
         "max_time_difference": max_time_difference,
         "reward_mode": reward_mode,
-        "reward_version": REWARD_VERSION,
+        "reward_version": REWARD_VERSIONS.get(reward_mode) if isinstance(reward_mode, str) else None,
         "source": deepcopy(dict(source)),
         "configuration_sha256": configuration_sha256,
     }
