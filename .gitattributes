@@ -7,3 +7,5 @@ tools/** -text
 *.pt binary
 *.mp4 binary
 *.png binary
+*.xz binary -delta
+artifacts/stair_current/*.part* binary -delta

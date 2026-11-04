@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "case": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7",
+  "iteration": 93,
+  "completed": 94,
+  "total_timesteps": 4620288,
+  "ETA": "04:48:29",
+  "pending": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/monitor.pending_a046b0a1199a.json",
+  "pending_sha256": "fd4e32684c1df347f5e96c00835b348d2a8ea75334e77f43f3a67a8da0f4bf9d",
+  "all19reward7native_scalarfinite": true,
+  "raw_records_read": 0
+}

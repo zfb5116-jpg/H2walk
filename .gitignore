@@ -17,3 +17,16 @@ venv/
 # A published, explicit artifact bundle is kept under artifacts/.
 *.tmp
 *.pending.json
+
+# Published model selection: one flat record and one current training record.
+*.pt
+!artifacts/flat_forward/model_999.pt
+
+# Video files are kept locally and excluded from publication.
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+artifacts/stair_current/model_*.pt.xz

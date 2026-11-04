@@ -1,0 +1,451 @@
+{
+  "job_kind": "guarded_stair_transfer_ppo_learning",
+  "task": "Unitree-H2-Stair-Ascent-Policy",
+  "trial_protocol": "accepted_flat_supported_clearance_terrain_observed_height_course_v2",
+  "checkpoint_format": "h2_guarded_stair_ppo_supported_clearance_v2",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "plan_path": "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json",
+  "plan_sha256": "c69720ba816685d9d5d6a0e1d34f753975eccaa38d2adb08501431d7a50f7143",
+  "temporal_credit": {
+    "gamma": 0.99,
+    "gae_lambda": 0.99,
+    "rollout_steps": 48,
+    "control_dt_s": 0.02
+  },
+  "rollout_collection": {
+    "training_rollout_steps": 48,
+    "fixed_bank_collection_controls": 24,
+    "collection_rollout_steps_inclusive": [
+      0,
+      23
+    ],
+    "seal_hook": "post_inherited_process_env_step",
+    "seal_storage_step": 24,
+    "seal_rnd_rollout_update_counter": 24,
+    "completed_updates_at_seal": 0,
+    "first_bootstrap_pending_at_seal": true,
+    "current_rows_per_rollout": 1024,
+    "current_collection_controls": 48,
+    "current_rows_per_control": [
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      22,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21,
+      21
+    ],
+    "total_guard_rows": 5120
+  },
+  "height_course": {
+    "kind": "fixed_target_real_height_course_v1",
+    "heights_m": [
+      0.05,
+      0.1,
+      0.15
+    ],
+    "num_envs": 1024,
+    "target_ids_inclusive": [
+      0,
+      255
+    ],
+    "curriculum_ids_inclusive": [
+      256,
+      1023
+    ],
+    "target_row": 2,
+    "initial_curriculum_row": 0,
+    "promotion_window": 5,
+    "promotion_required": 4,
+    "certificate_minimum_s": 20.0,
+    "certificate_levels": 2,
+    "certificate_tilt_lt_rad": 0.5,
+    "certificate_positive_root_rise": true,
+    "certificate_transfers": true,
+    "terminal_force_and_physical_recheck": true,
+    "initial_partial_excluded": true,
+    "promotion_only_at_true_reset": true,
+    "maximum_promotions_per_env": 2,
+    "original_root_x_m": [
+      -0.25,
+      0.25
+    ],
+    "target_window_episodes": 5000,
+    "target_window_iterations": [
+      299,
+      399,
+      499
+    ],
+    "target_cohort_only": true,
+    "incomplete_window_action": "needs_attention_no_signal_no_extension",
+    "formal_heights_m": [
+      0.15,
+      0.15
+    ],
+    "formal_root_x_m": [
+      -0.25,
+      0.25
+    ],
+    "formal_first_envs": 1024,
+    "formal_duration_s": 90.0,
+    "formal_required": 922
+  },
+  "training_video": {
+    "kind": "same_sim_env0_three_bounded_training_windows_v1",
+    "enabled": true,
+    "env_id": 0,
+    "resolution": [
+      512,
+      384
+    ],
+    "fps": 10,
+    "control_dt_s": 0.02,
+    "capture_every_controls": 5,
+    "windows": [
+      [
+        0,
+        10,
+        500,
+        100
+      ],
+      [
+        480,
+        500,
+        1000,
+        200
+      ],
+      [
+        979,
+        999,
+        1000,
+        200
+      ]
+    ],
+    "maximum_frames": 500,
+    "maximum_manual_renders": 504,
+    "static_warmup_renders": 4,
+    "queue_frames": 2,
+    "cpu_codec": "libx264",
+    "encoder_binary": "/home/nsgm/anaconda3/envs/env_isaaclab/lib/python3.11/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2",
+    "eye": [
+      -1.2,
+      -3.6,
+      2.5
+    ],
+    "lookat": [
+      2.2,
+      0.0,
+      0.8
+    ],
+    "viewer_origin": "env",
+    "viewer_env_index": 0,
+    "camera_sensor_added": false,
+    "expected_has_rtx_sensors": false,
+    "render_recompute": false,
+    "training_not_formal": true,
+    "reset_frames_labelled": true
+  },
+  "execution_chain": {
+    "kind": "existing_env0_policy_native_execution_chain_terrain_v2",
+    "enabled": true,
+    "env_id": 0,
+    "completed_updates_inclusive": [
+      480,
+      500
+    ],
+    "maximum_controls": 1000,
+    "physics_substeps_per_control": 4,
+    "maximum_physics_substeps": 4000,
+    "control_dt_s": 0.02,
+    "physics_dt_s": 0.005,
+    "policy_source": "existing_PPO_transition_action_mean_action_sigma_actions",
+    "native_source": "after_original_Articulation_write_data_to_sim_before_physics",
+    "endpoint_source": "original_credit_observer_post_reward_before_reset",
+    "effort_semantics": "existing_implicit_PD_computed_and_clipped_estimates_only",
+    "true_PhysX_PD_drive_torque_available": false,
+    "extra_actor_forwards": 0,
+    "extra_RNG_draws": 0,
+    "extra_physics_steps": 0,
+    "terrain_input": {
+      "source": "existing_transition_and_already_computed_lidar_caches",
+      "normalized_actor_slice": [
+        468,
+        1029
+      ],
+      "height_grid_yx": [
+        17,
+        33
+      ],
+      "capture_phase": "preaction_after_real_PPO_act_before_physics",
+      "observation_producer_epoch": "action_control_minus1",
+      "missing_or_stale": "explicit_null_status_no_recompute_no_zero_fill",
+      "sensor_pose": "existing_latest_pose_ring_only_no_sensor_data_access",
+      "extra_NN_forwards": 0,
+      "extra_raycasts": 0,
+      "new_observation_channels": 0
+    },
+    "new_policy_observation": false,
+    "original_command_result_returned": true
+  },
+  "contact_bridge": {
+    "kind": "anticipatory_support_credit_bridge_v2_location_fit",
+    "enabled": true,
+    "input_width": 883,
+    "output_width": 10,
+    "layers": [
+      883,
+      256,
+      128,
+      10
+    ],
+    "parameters": 260490,
+    "independent_actor_parameters": true,
+    "critic_input_width": 871,
+    "received_action_width": 12,
+    "action_feature": "tanh_actual_received_pre_transport_delay_action",
+    "contact_controls": 32,
+    "recovery_controls": 32,
+    "pending_controls": 64,
+    "closed_capacity": 49152,
+    "record_bytes": 3840,
+    "CPU_cap_bytes": 536870912,
+    "GPU_owned_cap_bytes": 134217728,
+    "Adam_steps_per_rollout": 32,
+    "batch_records": 512,
+    "Adam_learning_rate": 0.0003,
+    "gradient_clip": 1.0,
+    "private_CPU_seed": 20261104,
+    "warmup_updates": 40,
+    "calibration_cadence": 10,
+    "calibration_records": 4096,
+    "lookahead_m": 0.6,
+    "preparation_m": 0.25,
+    "retention_floor": 0.25,
+    "potential_weights": [
+      0.25,
+      0.25,
+      0.5
+    ],
+    "gamma": 0.99,
+    "inner_coefficient": 1.0,
+    "contact_height_tolerance_m": 0.02,
+    "sole_margin_m": 0.008,
+    "sole_side_margin_m": 0.02,
+    "recovery_tilt_limit_rad": 0.5,
+    "final_tilt_limit_rad": 0.15,
+    "final_angular_XY_limit_rad_s": 0.75,
+    "final_tilt_change_limit_rad": 0.01,
+    "final_controls": 4,
+    "loaded_controls": 4,
+    "unloaded_controls": 2,
+    "contact_force_N": 5.0,
+    "support_weight_fraction": 0.7,
+    "calibration_minimums": {
+      "joint_labels": 2048,
+      "joint_positive": 128,
+      "joint_negative": 128,
+      "contact_positive": 128,
+      "contact_negative": 128,
+      "contact_locations": 1024
+    },
+    "calibration_thresholds": {
+      "Brier_max": 0.2,
+      "ECE10_max": 0.1,
+      "AUROC_min": 0.65,
+      "location_median_m_max": 0.1,
+      "location_p90_m_max": 0.25,
+      "fully_censored_fraction_max": 0.75
+    },
+    "unknown_future_is_censored": true,
+    "floor_labels_are_not_stair_feet": true,
+    "no_new_policy_observation": true,
+    "no_joint_command_override": true,
+    "pre_super_aux_commit": true,
+    "physical_rewind": false,
+    "serving_publication": "only_scheduled_calibrated_candidate",
+    "formal_bridge_enabled": false,
+    "original_target500_policy_preserved": true
+  },
+  "reward_balance_profile": {
+    "kind": "reward_only_supported_clearance_v2",
+    "terms": {
+      "world_forward": {
+        "weight": 12.0,
+        "function": "stair_signed_forward",
+        "params": {}
+      },
+      "heading_error": {
+        "weight": -1.0,
+        "function": "stair_heading_error",
+        "params": {}
+      },
+      "platform_hold": {
+        "weight": 1.5,
+        "function": "stair_qualified_platform_hold",
+        "params": {}
+      },
+      "potential": {
+        "weight": 1.0,
+        "function": "stair_event",
+        "params": {
+          "name": "potential"
+        }
+      },
+      "first_valid_foot": {
+        "weight": 3.0,
+        "function": "stair_event",
+        "params": {
+          "name": "foot"
+        }
+      },
+      "bilateral_level": {
+        "weight": 8.0,
+        "function": "stair_event",
+        "params": {
+          "name": "pair"
+        }
+      },
+      "high_foot_transfer": {
+        "weight": 3.0,
+        "function": "stair_event",
+        "params": {
+          "name": "transfer"
+        }
+      },
+      "stable_top": {
+        "weight": 30.0,
+        "function": "stair_event",
+        "params": {
+          "name": "top"
+        }
+      },
+      "failure": {
+        "weight": -20.0,
+        "function": "stair_first_qualified_failure",
+        "params": {}
+      },
+      "stance_slip": {
+        "weight": -0.3,
+        "function": "stair_stance_slip",
+        "params": {}
+      },
+      "tilt_margin": {
+        "weight": -4.0,
+        "function": "stair_tilt_margin",
+        "params": {
+          "free_angle": 0.1,
+          "angle_scale": 0.4
+        }
+      },
+      "drive_request": {
+        "weight": -0.001,
+        "function": "stair_drive_request",
+        "params": {}
+      },
+      "target_change": {
+        "weight": -0.5,
+        "function": "stair_target_change",
+        "params": {
+          "max_fraction": 0.5,
+          "same_generation_only": true
+        }
+      },
+      "native_overspeed": {
+        "weight": -0.1,
+        "function": "stair_native_overspeed",
+        "params": {}
+      },
+      "soft_limit_excess": {
+        "weight": -5.0,
+        "function": "stair_soft_limit_excess",
+        "params": {}
+      },
+      "world_forward_excess_speed": {
+        "weight": -33.333333333333336,
+        "function": "stair_forward_excess_speed",
+        "params": {}
+      },
+      "outward_tilt_growth": {
+        "weight": -74.54032904283262,
+        "function": "stair_outward_tilt_growth",
+        "params": {
+          "margin_angle": 0.0
+        }
+      },
+      "body_angular_rate": {
+        "weight": -0.025,
+        "function": "stair_body_angular_rate",
+        "params": {}
+      },
+      "swing_clearance_deficit": {
+        "weight": -4.0,
+        "function": "stair_swing_clearance_deficit",
+        "params": {
+          "preview": 0.55,
+          "full_target_distance": 0.2,
+          "terrain_normalized_envelope": true,
+          "motion_floor": 0.25
+        }
+      }
+    },
+    "changed_terms": [
+      "swing_clearance_deficit"
+    ],
+    "inherited_reward_balance_terms": [
+      "tilt_margin",
+      "target_change"
+    ],
+    "term_count": 19,
+    "continuous_payment_dt_s": 0.02,
+    "first_action_history_source": "common_step_counter_minus_episode_start_counter_gt1",
+    "new_reward_terms": 0,
+    "new_learning_modules": 0,
+    "extra_NN_forwards": 0,
+    "actor_observation_added": false,
+    "physical_or_acceptance_threshold_changed": false
+  },
+  "max_iterations": 1000,
+  "num_envs": 1024,
+  "num_steps_per_env": 48
+}

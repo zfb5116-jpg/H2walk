@@ -1,0 +1,1222 @@
+{
+  "snapshot_at": "2026-11-04T11:17:09.440002+00:00",
+  "repository": "zfb5116-jpg/H2walk",
+  "branch": "codex/h2-flat-forward-verified-20261030",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "model_record_count": 2,
+  "PT_files_in_tree": [
+    "artifacts/flat_forward/model_999.pt"
+  ],
+  "compressed_PT_records": [
+    "artifacts/stair_current/model_0.pt.xz.part01",
+    "artifacts/stair_current/model_0.pt.xz.part02",
+    "artifacts/stair_current/model_0.pt.xz.part03",
+    "artifacts/stair_current/model_0.pt.xz.part04",
+    "artifacts/stair_current/model_0.pt.xz.part05",
+    "artifacts/stair_current/model_0.pt.xz.part06"
+  ],
+  "current_archive_restores_exact_original_PT": true,
+  "decoded_current_checkpoint_SHA256": "f53007e24e8d41b6565021a54c97d4e2b03dd72e4bb4a3da8b2292b1da10567a",
+  "videos_in_current_tree": [],
+  "omitted_from_current_tree": [
+    "artifacts/flat_forward/verification/env0.mp4",
+    "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt"
+  ],
+  "historical_receipts_preserved_without_recount_or_revalidation": true,
+  "historical_video_and_weight_blobs_not_reuploaded_or_history_rewritten": true,
+  "files": {
+    "artifacts/dependencies.json": {
+      "bytes": 886,
+      "sha256": "2d9ee401c2796a9abe53b939aa757f9d943064047a6dfe98272199f4bfc9152b",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/acceptance.json": {
+      "bytes": 1679,
+      "sha256": "04caf4a0aedd912920cea71c34c70014282288e2c22e0ae81724ec534b53c6f3",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/manifest.sha256.json": {
+      "bytes": 8063,
+      "sha256": "f28cb903a5eaa67dd5cb42bc65d29e366a65a498eb07d203b56f55d3f1169a11",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/model_999.pt": {
+      "bytes": 16851531,
+      "sha256": "2b06db2e09061cc660d46578b112ea29d0e601c3e75ac2163f8425aa24553fcb",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/model_999.validation.json": {
+      "bytes": 809,
+      "sha256": "68dd7b9e2baee458d87363ca60c06d2f8beb19fc5b98d6aeb366a06b9af00037",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/params/agent.yaml": {
+      "bytes": 1237,
+      "sha256": "e6cde63bb77ac7c96da3617d2d444a834a016079adcb023b5a2a2892ccc557be",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/params/env.yaml": {
+      "bytes": 82671,
+      "sha256": "a31ab80e8e584a13e82ff44c3a875b3e0b2d337d4ac7bcf4aced6553de8939a7",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/run.json": {
+      "bytes": 5562,
+      "sha256": "040e1fad132165b3216deafcec2f8f96717942ff11bebf987274013188849612",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/runtime_versions.json": {
+      "bytes": 341,
+      "sha256": "17d4c21b0197542fb1eaa9f81ab31a2ec426f756d20c35e0a704b593c5eb6583",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/__init__.py": {
+      "bytes": 23,
+      "sha256": "e6a54c5477d3323c9854899a2bb70f4ea503c1ea4f24c5e8d4b4fec4ccd29127",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/__init__.py.bak": {
+      "bytes": 47,
+      "sha256": "948a4c1e50ecf74901a108be815ae6349e48c473fa03ca996fa07b7ec3c3d114",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/__init__.py": {
+      "bytes": 2113,
+      "sha256": "235fa7152462fc8a29eb32bbdee84b641347f975266c4345feba0abf362d4c6e",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/action_contract.py": {
+      "bytes": 1286,
+      "sha256": "48590b69cc4a2486938c178f0bfb87277ecb6de98c6a5174a6e1eed747adb529",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/__init__.py": {
+      "bytes": 125,
+      "sha256": "edf01b8701cdb85d3d121aff97364a00601fe678bc00f95d5c2d89b736dd375a",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/rsl_rl_ppo_cfg.py": {
+      "bytes": 2129,
+      "sha256": "0298be156c125c91c2db58f9ba7c6706178b814ab11a705be111245c8a844eef",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/__init__.py": {
+      "bytes": 20,
+      "sha256": "f327ab690835a3dbbd147a77b20065657dd1afcffddee3fface205242b725cb2",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/h2_leg_chain.json": {
+      "bytes": 26874,
+      "sha256": "93ab30e0c337a821054fad12b99f4fe9a7c061877ec0d69d17ffde69a847b5e0",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/robot.py": {
+      "bytes": 7001,
+      "sha256": "53787f447c130f328cddda0499d38109ccf1ef23186d5074eb0628521eb87ee4",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/__init__.py": {
+      "bytes": 228,
+      "sha256": "37582134d28e5b8d0800a3e1d6b153a3c462acd96515909e7b4a08a5dd76d485",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/actions_cfg.py": {
+      "bytes": 454,
+      "sha256": "72f8cd326165908ae7390b061ebff54a0c0f923431741a97ca7f182de6a80e47",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/commands_cfg.py": {
+      "bytes": 1290,
+      "sha256": "f153e93ae6045d42b23048b42256273c982bcb9b4d076f4ef9c95954696cbe31",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/curriculum_cfg.py": {
+      "bytes": 424,
+      "sha256": "fb01770d5d6f8d7eaae533ccbae1b8bdf583569177689119b34bf23f83ec9d91",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/events_cfg.py": {
+      "bytes": 2079,
+      "sha256": "a68d39d74ddde18b634962467ea978721c9878cbb81323decdd9c80e37b03050",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/observations_cfg.py": {
+      "bytes": 6092,
+      "sha256": "468c0a649948fdf262515509bbfb36c786bf3741ddd96a11ef254beaed7a44bc",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/rewards_cfg.py": {
+      "bytes": 8955,
+      "sha256": "91d0c5efcbcaaeee722081155ee7a0e2fd1135999f0f283761b0da5967b3f6ea",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/terminations_cfg.py": {
+      "bytes": 1371,
+      "sha256": "977b26b3d36ee9342d7989b48ff9deea223366065983426b27ad97ba5c5f1241",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/terrain_cfg.py": {
+      "bytes": 7733,
+      "sha256": "c0b5b0f78999b41b56bd397d9a53019141317f6651ff6286275dc4186ffee333",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/leg_kinematics.py": {
+      "bytes": 5674,
+      "sha256": "4f27e3f7beacd3109ffeb8b4ea41181c156c3bb60794641698f0ea715bfbab17",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/lidar_hb_pattern.py": {
+      "bytes": 3596,
+      "sha256": "9556b2130dfc5bfe37b4bb20a9e95f5481cac6794d9efd62377756ca9df84113",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/locomotion_progress.py": {
+      "bytes": 7193,
+      "sha256": "f5a7ed51cd72f344c1cdeb9c012a259ba0195e95795bcad67526fd9893ad8293",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/__init__.py": {
+      "bytes": 49,
+      "sha256": "e66268f2f4038dcc00615809f74a4a9ce179dcdea4b5733247746286ee84803e",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/action_manager.py": {
+      "bytes": 2789,
+      "sha256": "71ff0358b2271410688587ddacac10b4bb50e2ffc9aebb2409b24a2a9f8cdf0a",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/actuators.py": {
+      "bytes": 1871,
+      "sha256": "def368eae58bc7f6a6c9e7fc0be96fb00647166643288ab11b84a680b5f644c4",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/leg_action.py": {
+      "bytes": 8179,
+      "sha256": "def2ef74bff4131ecd107fa81bf50cd53f5036d36d0b7a318e32ab60f70092aa",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/__init__.py": {
+      "bytes": 183,
+      "sha256": "6ce5064032a05435dd943244d3c26b01a27b2b6b82a876ad38bd8fcde4c9fc5c",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/commands.py": {
+      "bytes": 269,
+      "sha256": "1e9333550f5e60f59fb282de8b0785e4fc027e0bb45211fe9182dff6d0931b7e",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/curriculums.py": {
+      "bytes": 5449,
+      "sha256": "bd364f85f6168cbf5bfdbbae41e5bee0ea484f5e75734bc49a3a20321ae68702",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/events.py": {
+      "bytes": 7103,
+      "sha256": "dc088a03aa80047df40a6b4c158a40c18a0476e12e5546fef9cb7bdcb7f96925",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/observations.py": {
+      "bytes": 10704,
+      "sha256": "fb44195e49dba9d1144c4ee8ea33ade25a8eda414c389ca00594dcb4813582c9",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/rewards.py": {
+      "bytes": 29249,
+      "sha256": "15b30439d8cbd9d9827444d07ea7633ca693cd374743d0dc39d0b19ed8be2933",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/terminations.py": {
+      "bytes": 1262,
+      "sha256": "144a4f6f703e9d2e3229cce583c71747b6f190e33da401b62593ed2e031da4b8",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/walking_rewards.py": {
+      "bytes": 6803,
+      "sha256": "a62cbf224697a32a1b35d788b41f0fcad6163898709a84464be557b27392faa7",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/__init__.py": {
+      "bytes": 225,
+      "sha256": "32d4473905866bd06499e6740a78b21e92188ad3857fce0a11eac8e914e56464",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/actor_critic_our.py": {
+      "bytes": 8298,
+      "sha256": "73e7a0209ba3df6bba32ae17a09e0a19450c3487b2d3d7728e717f9cc3b072a0",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/lidar_terrain_reconstructor.py": {
+      "bytes": 43116,
+      "sha256": "026c81c5eadbcc98393cb0b41eca2fcf05bf72944a0ec1b430ded6380326a17e",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/terrain_reconstructor.py": {
+      "bytes": 8586,
+      "sha256": "dc8649271da703ce8b869257a4d3da6b3f34be6bf99446da67963c42213de224",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/robot_env.py": {
+      "bytes": 3709,
+      "sha256": "8cd18efd8f4cd32b1dfe9422c396c21de9a83daf05e2c4dec547b64bfcee16b7",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/robot_env_cfg.py": {
+      "bytes": 24267,
+      "sha256": "0360f8924af87202034af29f23f88c32162c4238866a55d4e991b5634e85dc2a",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stance.py": {
+      "bytes": 765,
+      "sha256": "79fb3ce3cd256875c8cf3cd3438693f1bbc7523deb7a2b46d7bc9402ffa7d552",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/walking_reference.py": {
+      "bytes": 28718,
+      "sha256": "64b04dd2ba70bdcb8f1d1ec6aa91949a27b220e43b03e5efb2a99151b0d8572d",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/walking_terrain.py": {
+      "bytes": 1533,
+      "sha256": "c007df55ac37a212b46d4d8c1cac8d276e12d8c23216b484c38f7f0c4e48aa87",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/agent.yaml": {
+      "bytes": 1203,
+      "sha256": "222f2dff1bb4c7c1b6b18ce8b23b615b0ef0ba48d43b465569f6485baefc7dcf",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/environment.yaml": {
+      "bytes": 82677,
+      "sha256": "35136f0e93003cca490e2105a56adf07f1d428242d163e7b6b683db646255fef",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/episodes.csv": {
+      "bytes": 245797,
+      "sha256": "9adb2a03958ca0b741798975bfedb19ab87aa7e58064b359db2d0676c2f5ae37",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/preview.png": {
+      "bytes": 152344,
+      "sha256": "4f92ca97e5ffa8ccdeadebb7f9fb4a25842b97a62d218f30f565668ce5ddcfe3",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/result.json": {
+      "bytes": 14759,
+      "sha256": "04472adfef4164df9dad09114f6aeda47058938549ba14f74aa530503a621fdf",
+      "storage": "git"
+    },
+    "artifacts/flat_forward/verification/source_manifest.json": {
+      "bytes": 8343,
+      "sha256": "0e1e6ed127c0c5e13948217eac0b48efe0b46bd54914785526f808c7a2e5e8da",
+      "storage": "git"
+    },
+    "artifacts/stair_current/checkpoint_parts.json": {
+      "bytes": 1265,
+      "sha256": "e2a7bc04b1e8ecc9715cfbc1876223ba9195842af7564c7ef9ecf573635dc937",
+      "storage": "git"
+    },
+    "artifacts/stair_current/checks/implementation_review.json": {
+      "bytes": 11235,
+      "sha256": "94181f88f11ff77c8964c0231ce09e2afae15086f0934cdcdf4761fe0a36a88b",
+      "storage": "git"
+    },
+    "artifacts/stair_current/checks/launch_client_closure.json": {
+      "bytes": 3922,
+      "sha256": "6e1322b28a03189b69a7670614ae66383a074f5678a3a135cff0dc4794c86ce4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/checks/launch_review.json": {
+      "bytes": 11744,
+      "sha256": "0b3e79e6326b44f43d46eb5b7c4729f38350f3400ea61bc7cb0cebeb6ca8eb9c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/checks/reward_and_recording_boundaries.json": {
+      "bytes": 1821,
+      "sha256": "cddd530763dc9a3315eb5550b846fe15615babe7ce11b685880afc87d7ea50ed",
+      "storage": "git"
+    },
+    "artifacts/stair_current/initial_parent/CPU_receipt.json": {
+      "bytes": 481676,
+      "sha256": "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1d1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/initial_parent/formal_result_review.json": {
+      "bytes": 5413,
+      "sha256": "0516fa4f5b1a49f75b7a9f2ba4d60c38be18064018a45c7badbb1863552ce881",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part01": {
+      "bytes": 16777216,
+      "sha256": "953deabae3aa4f7ecbcc66f65b505b4fb3f77817d043fc94eab2b5b2764c06fd",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part02": {
+      "bytes": 16777216,
+      "sha256": "4cb1ba28513989514d01e36d8e97831fda34b3396eb55ad2dd9036becc2fa954",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part03": {
+      "bytes": 16777216,
+      "sha256": "bfee0c000bd439065de5eb109f202ed0575cf78d8d83a2d62c9964bab49f50b9",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part04": {
+      "bytes": 16777216,
+      "sha256": "0a040da7a23f1cb466639adc5902d84ab6240e1e78bfb8882ea212adc21cc9bd",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part05": {
+      "bytes": 16777216,
+      "sha256": "e9c309e40acdd4d5ac2530ff55532d52f4ae7a77413ffee5c8850b749d2a4875",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.pt.xz.part06": {
+      "bytes": 12278332,
+      "sha256": "836571616326cf3a50ed913077a77770482fa95a02129464641a84e01148187a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/model_0.validation.json": {
+      "bytes": 59755,
+      "sha256": "7d2a9fc7c63d907484e79a375d527623b729ea04c2fc5798871262dc29e743b1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/plan.json": {
+      "bytes": 50131,
+      "sha256": "c69720ba816685d9d5d6a0e1d34f753975eccaa38d2adb08501431d7a50f7143",
+      "storage": "git"
+    },
+    "artifacts/stair_current/progress_controller_snapshot.json": {
+      "bytes": 385,
+      "sha256": "2d4f41786e684815aaf95fca04be3f9ef3793bd165d6fd60e7e80a77cb1e331d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/record.json": {
+      "bytes": 2880,
+      "sha256": "23340b234dda5b30ee0b56645462a1f3f76a8e700ecd375b9c7f373d35d8897c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/request_summary.json": {
+      "bytes": 11355,
+      "sha256": "37635860c7a40cd5747ab85cae01031af862713c0abaac93be86f59a58edd8b3",
+      "storage": "git"
+    },
+    "artifacts/stair_current/review_cursor_snapshot.json": {
+      "bytes": 711,
+      "sha256": "317eb6987facb490e0b9b72fa12408d6b6fdbeaf636f038dafc7167ad70f5e1f",
+      "storage": "git"
+    },
+    "artifacts/stair_current/reviews/ROOT_new_actual_records_review.json": {
+      "bytes": 17041,
+      "sha256": "437286e861e7817cd5a93bb586c778859b1e9d19412cf2b74f79f02880614cf4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/reviews/latest_actual_records_summary.json": {
+      "bytes": 10878,
+      "sha256": "afbfe1f136df799466c6414190c5f75ef238906a7f92a2044926f974cacb6be3",
+      "storage": "git"
+    },
+    "artifacts/stair_current/reviews/monitor_commit_review.json": {
+      "bytes": 489,
+      "sha256": "44fcd4734022d7c6a0de0a8248c0d9871c1dcfbdaec7d37dbd6d60acc9cd361c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/reviews/monitor_review.json": {
+      "bytes": 574,
+      "sha256": "90fc797d916222f71390d141f027171ff789349d9f50882524e1069d666cf372",
+      "storage": "git"
+    },
+    "artifacts/stair_current/run.json": {
+      "bytes": 181545,
+      "sha256": "584363c3ff682474323afd5b281fbc8a82a0aeaa3a05275f56b4c492fd5c5881",
+      "storage": "git"
+    },
+    "artifacts/stair_current/source_commit_review.json": {
+      "bytes": 21698,
+      "sha256": "b711c3a4737f43245b784e5d8a85691512a6e5a5996f66b05eb90de8d3798cdf",
+      "storage": "git"
+    },
+    "artifacts/stair_current/source_manifest.sha256.json": {
+      "bytes": 19564,
+      "sha256": "0aeb06a7e1969526c38f0c3f2a861654c967b2b1097556fa39b7dfe27ff20035",
+      "storage": "git"
+    },
+    "artifacts/stair_current/startup/CPU_review.json": {
+      "bytes": 12771,
+      "sha256": "92b4731359435795b484d9748d6f010f7b38fdac31e6be7de6027926d1122ac4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/startup/byte_custody_review.json": {
+      "bytes": 72564,
+      "sha256": "15ce0656fd0e9fb45cf4b569b97fe5ec90927ed741502eb0d9d06e92a4ff9218",
+      "storage": "git"
+    },
+    "artifacts/stair_current/startup/closure.json": {
+      "bytes": 2904,
+      "sha256": "e3d4148181fa4224d632a2cb90adc51155909f76ebff3674f77e9b2d41bee901",
+      "storage": "git"
+    },
+    "artifacts/stair_current/stop_policy.json": {
+      "bytes": 1265,
+      "sha256": "73c20f58a69e37181cfa48d39690e681a4a66c662a06b4e4250c2ba49dec95f8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_monitor_snapshot.json": {
+      "bytes": 65235,
+      "sha256": "1bef371cc26c04ae06f398952c335e320bcf23dd02ce72ea258f9560555136fd",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/docs/H2_STAIR_TASK_REQUIREMENTS.md": {
+      "bytes": 12576,
+      "sha256": "b256a35a4510f4386adb251a0da3d8eb0e789731d5d40cc6000ab2ffec9ffcff",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/__init__.py": {
+      "bytes": 23,
+      "sha256": "e6a54c5477d3323c9854899a2bb70f4ea503c1ea4f24c5e8d4b4fec4ccd29127",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/__init__.py.bak": {
+      "bytes": 47,
+      "sha256": "948a4c1e50ecf74901a108be815ae6349e48c473fa03ca996fa07b7ec3c3d114",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/__init__.py": {
+      "bytes": 3992,
+      "sha256": "eb04ad989efded4b4678c6d8410ddab7c6bba7224199255a572ac23e7244eee2",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/action_contract.py": {
+      "bytes": 1286,
+      "sha256": "48590b69cc4a2486938c178f0bfb87277ecb6de98c6a5174a6e1eed747adb529",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/__init__.py": {
+      "bytes": 125,
+      "sha256": "edf01b8701cdb85d3d121aff97364a00601fe678bc00f95d5c2d89b736dd375a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/flat_balance_ppo_cfg.py": {
+      "bytes": 1887,
+      "sha256": "3147493d6f4b460ed1ae1d51f5cfe6b02c9cb0f432d61361c01b3984801f2b20",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/rsl_rl_ppo_cfg.py": {
+      "bytes": 2129,
+      "sha256": "0298be156c125c91c2db58f9ba7c6706178b814ab11a705be111245c8a844eef",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/stair_ascent_ppo_cfg.py": {
+      "bytes": 925,
+      "sha256": "f287e3476dd3407686749f57ebec3762d9d179dea1970d94d63019c731426830",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/stair_transfer_ppo_cfg.py": {
+      "bytes": 785,
+      "sha256": "65fbc9346ebf8fd7d9b85c7a5124076947162f52ff9bae8a1a8b7669175f0e71",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/__init__.py": {
+      "bytes": 20,
+      "sha256": "f327ab690835a3dbbd147a77b20065657dd1afcffddee3fface205242b725cb2",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/h2_leg_chain.json": {
+      "bytes": 26874,
+      "sha256": "93ab30e0c337a821054fad12b99f4fe9a7c061877ec0d69d17ffde69a847b5e0",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/assets/robot.py": {
+      "bytes": 7001,
+      "sha256": "53787f447c130f328cddda0499d38109ccf1ef23186d5074eb0628521eb87ee4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/__init__.py": {
+      "bytes": 228,
+      "sha256": "37582134d28e5b8d0800a3e1d6b153a3c462acd96515909e7b4a08a5dd76d485",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/actions_cfg.py": {
+      "bytes": 454,
+      "sha256": "72f8cd326165908ae7390b061ebff54a0c0f923431741a97ca7f182de6a80e47",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/commands_cfg.py": {
+      "bytes": 1290,
+      "sha256": "f153e93ae6045d42b23048b42256273c982bcb9b4d076f4ef9c95954696cbe31",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/curriculum_cfg.py": {
+      "bytes": 424,
+      "sha256": "fb01770d5d6f8d7eaae533ccbae1b8bdf583569177689119b34bf23f83ec9d91",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/events_cfg.py": {
+      "bytes": 2079,
+      "sha256": "a68d39d74ddde18b634962467ea978721c9878cbb81323decdd9c80e37b03050",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/observations_cfg.py": {
+      "bytes": 6092,
+      "sha256": "468c0a649948fdf262515509bbfb36c786bf3741ddd96a11ef254beaed7a44bc",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/rewards_cfg.py": {
+      "bytes": 8955,
+      "sha256": "91d0c5efcbcaaeee722081155ee7a0e2fd1135999f0f283761b0da5967b3f6ea",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/terminations_cfg.py": {
+      "bytes": 1371,
+      "sha256": "977b26b3d36ee9342d7989b48ff9deea223366065983426b27ad97ba5c5f1241",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/config/terrain_cfg.py": {
+      "bytes": 7733,
+      "sha256": "c0b5b0f78999b41b56bd397d9a53019141317f6651ff6286275dc4186ffee333",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/direct_initialization.py": {
+      "bytes": 8327,
+      "sha256": "534eff8b5bd6d07f684061bdf6ea7920bc7312a7e16eed6039aacc8c19ae50b8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/direct_leg_action.py": {
+      "bytes": 2462,
+      "sha256": "cbf85bf5e6f7978fbbc6447d38f0ad930f3c6119dc73dce7f25457edc0e19e18",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/flat_balance_cfg.py": {
+      "bytes": 2453,
+      "sha256": "93f3450f298a39d92d103213f30cf9b2fbc562e37839b7196c304c75de78f2b8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/flat_balance_env.py": {
+      "bytes": 32786,
+      "sha256": "96d5b05da1ffe2c5a5c96b7c3f11f785f2f71af67f5c68805d690ca4f56a5613",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/flat_task_context.py": {
+      "bytes": 10693,
+      "sha256": "2e6ec78ace8ae53e5f1d548bbbc749f091c6d95a98fc410a7dea47779143658a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/foot_geometry.py": {
+      "bytes": 666,
+      "sha256": "16f6bb72b82a305e8cdbe8b0550f969016126e0acd86aba6dd3d66ee204a91d4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/leg_kinematics.py": {
+      "bytes": 5674,
+      "sha256": "4f27e3f7beacd3109ffeb8b4ea41181c156c3bb60794641698f0ea715bfbab17",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/lidar_hb_pattern.py": {
+      "bytes": 3596,
+      "sha256": "9556b2130dfc5bfe37b4bb20a9e95f5481cac6794d9efd62377756ca9df84113",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/locomotion_progress.py": {
+      "bytes": 7193,
+      "sha256": "f5a7ed51cd72f344c1cdeb9c012a259ba0195e95795bcad67526fd9893ad8293",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/__init__.py": {
+      "bytes": 49,
+      "sha256": "e66268f2f4038dcc00615809f74a4a9ce179dcdea4b5733247746286ee84803e",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/action_manager.py": {
+      "bytes": 2789,
+      "sha256": "71ff0358b2271410688587ddacac10b4bb50e2ffc9aebb2409b24a2a9f8cdf0a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/actuators.py": {
+      "bytes": 12435,
+      "sha256": "8a1c197cc333753ec105f3f84336cea3b7dcd4a4a378f78c384060641e117af3",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/manager/leg_action.py": {
+      "bytes": 13560,
+      "sha256": "91a5f2a763193ce329cc94c2bb970b1c96fbb01a7b8357ad431c94f019debfc7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/__init__.py": {
+      "bytes": 183,
+      "sha256": "6ce5064032a05435dd943244d3c26b01a27b2b6b82a876ad38bd8fcde4c9fc5c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/commands.py": {
+      "bytes": 269,
+      "sha256": "1e9333550f5e60f59fb282de8b0785e4fc027e0bb45211fe9182dff6d0931b7e",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/curriculums.py": {
+      "bytes": 5449,
+      "sha256": "bd364f85f6168cbf5bfdbbae41e5bee0ea484f5e75734bc49a3a20321ae68702",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/events.py": {
+      "bytes": 7103,
+      "sha256": "dc088a03aa80047df40a6b4c158a40c18a0476e12e5546fef9cb7bdcb7f96925",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/observations.py": {
+      "bytes": 10704,
+      "sha256": "fb44195e49dba9d1144c4ee8ea33ade25a8eda414c389ca00594dcb4813582c9",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/rewards.py": {
+      "bytes": 29249,
+      "sha256": "15b30439d8cbd9d9827444d07ea7633ca693cd374743d0dc39d0b19ed8be2933",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/terminations.py": {
+      "bytes": 1262,
+      "sha256": "144a4f6f703e9d2e3229cce583c71747b6f190e33da401b62593ed2e031da4b8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/mdp/walking_rewards.py": {
+      "bytes": 6803,
+      "sha256": "a62cbf224697a32a1b35d788b41f0fcad6163898709a84464be557b27392faa7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/__init__.py": {
+      "bytes": 225,
+      "sha256": "32d4473905866bd06499e6740a78b21e92188ad3857fce0a11eac8e914e56464",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/actor_critic_our.py": {
+      "bytes": 9630,
+      "sha256": "a23ae69e7026df1edfe3838bc9b5c9380ac8697225e5611af796d037cf31529c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/lidar_terrain_reconstructor.py": {
+      "bytes": 43116,
+      "sha256": "026c81c5eadbcc98393cb0b41eca2fcf05bf72944a0ec1b430ded6380326a17e",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/networks/terrain_reconstructor.py": {
+      "bytes": 8586,
+      "sha256": "dc8649271da703ce8b869257a4d3da6b3f34be6bf99446da67963c42213de224",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/robot_env.py": {
+      "bytes": 3709,
+      "sha256": "8cd18efd8f4cd32b1dfe9422c396c21de9a83daf05e2c4dec547b64bfcee16b7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/robot_env_cfg.py": {
+      "bytes": 24308,
+      "sha256": "8c9eb29605944d5e6ec869efc0f4a81802847c473818d2b71339dc5aca7e1aa4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_acceptance.py": {
+      "bytes": 5945,
+      "sha256": "97daf42ab0d72912892838ffb965e8ce834bdb22a1c75bf00f8fe734cc5253fe",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_cfg.py": {
+      "bytes": 6182,
+      "sha256": "697827b444d073e8f17c29be07f14766ca94ef9703257ee9539e59fdf09cf955",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_env.py": {
+      "bytes": 8407,
+      "sha256": "1f68520cfa75f9ce086eb0290632d89c4076d45413ffc3ab86602b4cbec0f47a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_evidence.py": {
+      "bytes": 4840,
+      "sha256": "c499106ddeb7b277f0f5ead1a7cc27e2a1b13c51c4dcbd87ba3ff95eb36c07da",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_progress.py": {
+      "bytes": 49621,
+      "sha256": "4540276a17b02b99ad20fdf064edf05174016db1b66299142999d9123c4438e2",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_rewards.py": {
+      "bytes": 4805,
+      "sha256": "130a0e19a32d5b75cecf4949860833261ac03afa4f4cd5f37dae22d3c0f3a574",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_safety.py": {
+      "bytes": 2316,
+      "sha256": "88cb1601b6d2b635578ceb69f1e88c716a379ef109c2f1403ee9a128dd33d562",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_ascent_terrain.py": {
+      "bytes": 2568,
+      "sha256": "e75434678873d9918fb14563c5d11c585ced44e9e2f5c1c50ad86ffed9d6c441",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_clearance_rewards.py": {
+      "bytes": 8514,
+      "sha256": "adef9f1e7c3635a20a1a79950ab5303ddb056382a37ff652aa5aed7d3fdac535",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_com_x_admittance.py": {
+      "bytes": 20078,
+      "sha256": "518fca61589d49fa3fb39272d8a3e394ebb19edbf88895cbebc8209a3644093d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_contact_handover.py": {
+      "bytes": 2472,
+      "sha256": "ebf1e584b4991471226d7b9e5480b744f6c4216df9141181d63143fcce593d7c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_drive.py": {
+      "bytes": 7537,
+      "sha256": "a4d4609ea62e643e647295ebbd00b11c3c7a0b924d4d80e90828cca7a8419959",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_dynamics.py": {
+      "bytes": 14276,
+      "sha256": "e57c11593ffb2451a801e29dfcf18e34c3890ea2491c960630598c204fe6278b",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_entry.py": {
+      "bytes": 29782,
+      "sha256": "844709d4f786d0228dd39fabcb7d0cf7908c454845bf807f6d01fac8df906d65",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_footprint.py": {
+      "bytes": 6580,
+      "sha256": "3a2cf6597a13d2df7112173f501b2b42602f1de7efe8836a13b45e6935a13c8d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_height_course.py": {
+      "bytes": 8843,
+      "sha256": "9d75c066671e283a799627ce701e0aa7ecdc8611942a60d2353a88967b50b541",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_impedance.py": {
+      "bytes": 7799,
+      "sha256": "4ce77b9f8af1234e543a36ab4b82907cd2f0a435fa5938f453999cc94ef21d06",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_lift.py": {
+      "bytes": 6219,
+      "sha256": "bd42a5885f7ed13b08fbff54822da5adc7d94daa5f2e97a9a2514ed6b9596161",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_load.py": {
+      "bytes": 3700,
+      "sha256": "2d4b96e0006f6aacd3b5e4d2576daea501347fa689a5f666dd4480ed0da9814c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_perception.py": {
+      "bytes": 15393,
+      "sha256": "5f2bfe095dbef348a9538d57cf08a3e6543617456c797fbfda40fb862bdbdba1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_receiver.py": {
+      "bytes": 3526,
+      "sha256": "53222245d98019f953928b0e748a94c55fce8baaeeb21eb19d590f7e7734b962",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_reference.py": {
+      "bytes": 79175,
+      "sha256": "782b00c11ef54e4aca209015a87d0a7e89c32e5be155443b1f6d9c6a267b4227",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_support.py": {
+      "bytes": 11972,
+      "sha256": "889fbe5de8980941efbbb52ee9027a5be6290cb1ce2391d71fe8b7bc564bbef3",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_swing_ik.py": {
+      "bytes": 21423,
+      "sha256": "7ca12c726fe927ec6100cb985853fd6393bc6f5baa0821b903363c1d8c2f61bb",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_task_context.py": {
+      "bytes": 7736,
+      "sha256": "be7b42e03451650b9015e9f039166b2ea613f484ed13201673fe0eae2184c204",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_terrain.py": {
+      "bytes": 1688,
+      "sha256": "059391c80b83125c3152c2cb4f047dd076d83fe1cc746fb00a33c0f9c93fc5af",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_trajectory.py": {
+      "bytes": 3193,
+      "sha256": "8a9bcc2354a06e42360241eca79b8994f4c29fe3314bafd0eeb3337af312dfeb",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_transfer_cfg.py": {
+      "bytes": 2590,
+      "sha256": "6bb1656a24acb2127ff1ef822347e28082ca7c7b1a84c174a7825ec7a26932ff",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_transfer_env.py": {
+      "bytes": 1494,
+      "sha256": "9f5f84c126a521e735dd7a866f0902ca17bb20d278fde5ee2049b5c15e6e4627",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_world_command.py": {
+      "bytes": 3181,
+      "sha256": "30e26df693fdcfc3f3256deb2547f0abcab9fcf0213652f3b16a56e02f07c592",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stance.py": {
+      "bytes": 765,
+      "sha256": "79fb3ce3cd256875c8cf3cd3438693f1bbc7523deb7a2b46d7bc9402ffa7d552",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/tactile_support.py": {
+      "bytes": 21356,
+      "sha256": "61d92d695606b5d45289cc45d65a3570520117ac113fafe37232205a66bd06d1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/walking_reference.py": {
+      "bytes": 28794,
+      "sha256": "a0bef2bef463fef3471b502fad8fb3ea3e939d9e936840e4a75e43fa39a8fce5",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/walking_terrain.py": {
+      "bytes": 1533,
+      "sha256": "c007df55ac37a212b46d4d8c1cac8d276e12d8c23216b484c38f7f0c4e48aa87",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/bootstrap_direct_policy.py": {
+      "bytes": 20044,
+      "sha256": "7a2cc49b5b1d70cbbed6556c178e01ddd9730d7c0df64164281366a72a351a26",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/bootstrap_direct_policy.sh": {
+      "bytes": 697,
+      "sha256": "edefe80b146ca08b51c1ee1aa9f361e1dfc4b6cc8270716291a4c5ac80558497",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/check_balance_objectives.py": {
+      "bytes": 5707,
+      "sha256": "78e45598aaa7eb38444e528d39cc829cad1d735cefbb751afe74253a0ad378e8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/check_locomotion_contracts.py": {
+      "bytes": 9492,
+      "sha256": "c95544e4785f4e274ea644c6049c044e451554f51bcd4624ecfbfaaf43f8e821",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/check_reference_walking.py": {
+      "bytes": 9078,
+      "sha256": "778d50bfe8364b58de05103c11a39464ec0cf9c594308269de6148af0fcdc417",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/collect_closed_loop_initialization.py": {
+      "bytes": 38919,
+      "sha256": "75c2be5315a1a90c48af87e34d7e940c2567a17760a29f46ab59a1d54c85b65d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/collect_closed_loop_initialization.sh": {
+      "bytes": 708,
+      "sha256": "f2bd64c8df801afc983fe465153b8307e231fbcecaae6ad79003eca1510b1081",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/diagnose_stair_initialization.py": {
+      "bytes": 41369,
+      "sha256": "3e9f2cb9c7172d19a2bf365c0a3071b9c10027b6215f9832392357598b090f44",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/diagnose_stair_initialization.sh": {
+      "bytes": 703,
+      "sha256": "4b9cf41f2e86bdab5323a0e49a2a7a4341a4596abdb677fae922ba8817eae22c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_direct_initialization.py": {
+      "bytes": 43985,
+      "sha256": "33566b27567df3ac4d15bcd7ba77fb35ef7d9b7660a8044c3597c5b1693af3eb",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_direct_initialization.sh": {
+      "bytes": 704,
+      "sha256": "f1caf3ce0f3f7b377e8436807b4f342e881d5a4677d7448468c3c6ac78b6c197",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_flat_balance_policy.py": {
+      "bytes": 91870,
+      "sha256": "395749584859d4c14e7136ebb3ea24b9716de895565637382c646482c02e3bb6",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_flat_balance_policy.sh": {
+      "bytes": 702,
+      "sha256": "dbe825dc2dad7d94994abd69b5fb42aec56242e4e3c701e6d432978ae4d27f96",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_main_walk.py": {
+      "bytes": 78568,
+      "sha256": "891f4d070269bbc686499581e384119a83a2d1de4700b66673444e0d2a200d56",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_main_walk.sh": {
+      "bytes": 692,
+      "sha256": "6fd8aa91d2c326abeb37396eb503144f8d14c534b7bcddf3c3e85e4017dbb132",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_stair_policy.py": {
+      "bytes": 57251,
+      "sha256": "1686316396784b1aed255be4ef17327a6713c7f558bee345fff7d04395b3a207",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/evaluate_stair_policy.sh": {
+      "bytes": 695,
+      "sha256": "c83eb3b61ebf807f42696223977427801cad4c106cce849852205073b6b0b037",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/functional_proposal.py": {
+      "bytes": 65910,
+      "sha256": "29b563e965613219cdd664f6e858cef9c17e09769dc38b5334d2f24b879ae5ef",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/guarded_flat_ppo.py": {
+      "bytes": 135580,
+      "sha256": "0e1bc2ad45588d69b17ae6cd789c97f2ae87081c92286842ac4177a6b50aa698",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/guarded_stair_transfer.py": {
+      "bytes": 26066,
+      "sha256": "77c94ecf8194adf2c0976b31a1c5dddfdf12f13cf1ab4f16340dbbaab629fbaf",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/h2_bootstrap_contract.py": {
+      "bytes": 14716,
+      "sha256": "436b0c5ed72427619cb179fbbab815089fe06a849f7df7a7b11d735426add9c1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/h2_initialization_dataset.py": {
+      "bytes": 15877,
+      "sha256": "b92a643eecb21f791bc9302e5c0914773c25b9cac14a80f53bf33019dbf76c15",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/h2_initialization_oracle.py": {
+      "bytes": 15677,
+      "sha256": "9b54b78570712b3722500cabb6039c48bb4671d4198ea3c62875fa221c5f0140",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_closed_loop_initialization.py": {
+      "bytes": 33873,
+      "sha256": "63172e6c5ff26b9c122d6b1e68300818989d42b9f6375e91485ebcb0dd177287",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_flat_balance_learning.py": {
+      "bytes": 123674,
+      "sha256": "ddcc8527dcb064f0b5d416cb559e1204e4327b59eb86ef82c527c75d855cef22",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_reference_trial.py": {
+      "bytes": 7388,
+      "sha256": "f037a9ce89529c1bb77352e13671a4bfcbf6c356f7b2b94b54b97caeedcd972d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_residual_learning.py": {
+      "bytes": 9968,
+      "sha256": "c6fbe1b7617ab8a8d1d61fe0ed4f610e8c05902d8cf1ff3ddb7281a48971f4ed",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_bootstrap.py": {
+      "bytes": 8805,
+      "sha256": "d2bd66a1a8435c5af0394256eeeddc84e52133e237762e57a5a64414b0f1a0bd",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_domain_check.py": {
+      "bytes": 11317,
+      "sha256": "aa17363fe13af3c3c0d18ae558d9151b02a9f5a41b21466b64d0018e2e01929f",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_evaluation.py": {
+      "bytes": 43046,
+      "sha256": "0d588a78a33ac7c2425d9a50a3242a41f3440d98c38a8c690e1a27dd251362a9",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_initialization_check.py": {
+      "bytes": 39191,
+      "sha256": "3051821670009e4d2043d0965470b6a16338460dc4f829917003282dcfb3a0d8",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_learning.py": {
+      "bytes": 52536,
+      "sha256": "55e3e464de70972ec778f124644b75e8ab74fc3265f657887609869b248227c7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_transfer.py": {
+      "bytes": 49161,
+      "sha256": "57bb69ead1919bff292e6daabdeea6d2af9ef1b05002c2e60e7714e2cc9ec60e",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/launch_stair_trial.py": {
+      "bytes": 6702,
+      "sha256": "7301d40c38e60311a6524e339b990e247ed9ea88eba068efb84eff474900c1b5",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/manage_reference_trial.py": {
+      "bytes": 2658,
+      "sha256": "0c9f5ed855df1f654b58204cd13afe9f487d0a8fe5e31669819e9ccdf227ca58",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/migrate_leg_policy.py": {
+      "bytes": 6007,
+      "sha256": "695c9927a63cb8c1c60608bb7b768adb0439f72ca5718b3db645e2b187be9ea0",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/monitor_acceptance_campaign.py": {
+      "bytes": 6764,
+      "sha256": "1b816904783551a7c50426b27a010717099a381bd65b5a4be6c3a35725ef2d02",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/monitor_stair_bootstrap.py": {
+      "bytes": 3929,
+      "sha256": "5d649d215073f247f87a49065160951a2a1a5d755c04f7e625d0c1daa252813d",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/refit_direct_initialization.py": {
+      "bytes": 41591,
+      "sha256": "07d69b04437278ed56ef5b05388557efdc377ef4f2f39ee29e6c88df2d1de0ad",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/refit_direct_initialization.sh": {
+      "bytes": 652,
+      "sha256": "9572cf5b7f77155914cd2e41594807811095dd0189b72b7a8ebb92905221bdaf",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/replay_flat.sh": {
+      "bytes": 808,
+      "sha256": "f6d7f72572042438479077bfea5fd007970ab397c57d2d72ed16419dced8a3b6",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/selected_row_block.py": {
+      "bytes": 5055,
+      "sha256": "e3ebc971c9846c3560793fe7d568a6308c58057a5bc82b6bc734059c3c2746e2",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_contact_bridge.py": {
+      "bytes": 45580,
+      "sha256": "faa4611b73ed8e6014faa5267dba51f3aaaef1e0a2f9782395c1eda87b6fb78c",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_contact_bridge_binding.py": {
+      "bytes": 5813,
+      "sha256": "431e3f05d141985e7c9527e2a8e284b35aaa101dbed63ca19857c443c7e6028f",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_credit_probe.py": {
+      "bytes": 10888,
+      "sha256": "8ea1acc56d52f036c64f6174cd5d134f0d035faac0640d0ea3d37b23c5663a23",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_curriculum_binding.py": {
+      "bytes": 11056,
+      "sha256": "1f9d2e16726d651f0099c43011cf55276ffc13d096415693940cde301bcda9c3",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_entry_evidence.py": {
+      "bytes": 26480,
+      "sha256": "f6e68d04070fadab7e55f2b3d705f7673a1a76c1866c427ba899825590f24f05",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_execution_binding.py": {
+      "bytes": 5431,
+      "sha256": "deea2a5677486160a243f77a2d43e81388b5f0dd7ac261612b2e340e4ccd3fa7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_execution_probe.py": {
+      "bytes": 18592,
+      "sha256": "02683df81fd65d0da4ce97676e3eb72d687357fc43454d53bb577d99ddc48095",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_exploration.py": {
+      "bytes": 4865,
+      "sha256": "d8a4afd5f5da6d5a937f7c770aaa33245fb4e576bfca9309d9d9d2e485706328",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_initialization_binding.py": {
+      "bytes": 28874,
+      "sha256": "89bbfc95dc7dcc26a99a50002ef87975846b2c5b27fbc3d2d54f65e127c3289a",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/stair_wrench_evidence.py": {
+      "bytes": 26231,
+      "sha256": "e64888e8c786667ba24d15d54e13af1b9dbe0bf8b298825eb00d22c68694e476",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/task_context_metadata.py": {
+      "bytes": 19447,
+      "sha256": "e05a521caeb611b2cdeb8a36d19b1590716ae70b33d385314ef9c621cf958fba",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/task_context_normalization.py": {
+      "bytes": 5554,
+      "sha256": "4fe705839bada62881cee5c37e84846e67e1dc7379b16006f2df46c9254a03c7",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/train.py": {
+      "bytes": 49417,
+      "sha256": "9f26ad306a42e394ea47d19601d107dc4b094e3af1a62dc2fe39a65fd074c0a9",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/train.sh": {
+      "bytes": 757,
+      "sha256": "c1923cb0c674dcff468f853557a4e36122675d9bde9d9afcbc3321558dd348cc",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/train_stair_transfer.py": {
+      "bytes": 34593,
+      "sha256": "af1702b4bcfcba1568308caa0f00fb10342192dbc26d233c0b29e143fc97db1b",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/training_supervision.py": {
+      "bytes": 33606,
+      "sha256": "7e36c863031d0bb2a3c671eef6789f91d109d30e232b4c86008a284caec3bfd1",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/training_video.py": {
+      "bytes": 13875,
+      "sha256": "c316bc2233c94860c5c32aeb82df0989e44950dbd3e05773c13ac6ffd62d3acd",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/v11_parent_custody.py": {
+      "bytes": 71318,
+      "sha256": "6237da1be09279ff05fda115ac790721d1915c77752e64d0bd53373482bd12bb",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/validate_main_checkpoint.py": {
+      "bytes": 4282,
+      "sha256": "7fba56ff577b89333ff300ebf9d59ec84c07b769731900f2ebc81561c41fcf41",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/validate_stair_domain.py": {
+      "bytes": 9353,
+      "sha256": "525f390ce7492eef9ab95a345bc128eddff776ff3c911508d93534c14ba8f1a4",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/validate_stair_domain.sh": {
+      "bytes": 752,
+      "sha256": "f836e508c8ef48029c061ee4532d56bff07d89cd6bcb77acd4ca1de864805204",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/validate_stair_transfer.py": {
+      "bytes": 36195,
+      "sha256": "c3b8ae955bf83621c2c4eda2080a4048f0eb5312d787cc18b2ca73e816031095",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/verify_current_flat.py": {
+      "bytes": 5419,
+      "sha256": "467fa995b52f4ce47bbf83438a90c0de5c190413a64bd5c6901c06e7c36fb404",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/verify_guard_restored_flat.py": {
+      "bytes": 11668,
+      "sha256": "32a62e2110fa7a16435c8af6bf7d4c709386a043c94e11a6768333186a9ee2d5",
+      "storage": "git"
+    },
+    "artifacts/stair_current/training_source/tools/watch_stair_progress.py": {
+      "bytes": 27504,
+      "sha256": "4162424c24d1843aa9fc049803742ba9c3904bf085839ab31efa0e63761c4798",
+      "storage": "git"
+    }
+  },
+  "manifest_excludes_itself": true,
+  "archive_part_count": 6,
+  "delivery_status": "parts_pending"
+}

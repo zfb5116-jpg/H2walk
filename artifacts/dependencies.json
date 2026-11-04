@@ -1,0 +1,17 @@
+{
+  "frozen_lidar_reconstructor": {
+    "path": "logs/rsl_rl/stairs_l0b2_20261020/lidar_reconstructor_phase1.pt",
+    "sha256": "d260001c9850941c95d1ba83196076f27e118e687e72586d0a2bff84f1674c50",
+    "included_in_this_tree": false,
+    "already_published_commit": "0d58cd35fe65fab2f85788dfb30a0bf4011e39a7",
+    "retrieve_from_existing_Git_history": true
+  },
+  "direct_flat_training_parent": {
+    "original_path": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_main_policy_manager_based/2026-11-02_08-58-39_guarded_flat_balance_d880d7b7/model_2568_guard_restored.pt",
+    "sha256": "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f",
+    "included": false,
+    "reason": "Publication retains exactly one original flat PT and one latest saved training PT"
+  },
+  "latest_checkpoint_contains_private_training_state": true,
+  "PT_payload_not_stripped_or_reencoded": true
+}

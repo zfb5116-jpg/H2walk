@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "fixed_iteration": 93,
+  "fixed_pending": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/monitor.pending_3fe0d8c0b532.json",
+  "fixed_pending_sha256": "7d0a851a14033acbaa0405a98fb3391f4c73c95d4d0dd05f3fac11ea5f56362b",
+  "reviewed_pending": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/monitor.pending_a046b0a1199a.json",
+  "journal_index0": 32,
+  "wholepoint_equal": true
+}

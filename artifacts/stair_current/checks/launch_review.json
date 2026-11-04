@@ -1,0 +1,140 @@
+{
+  "status": "passed",
+  "scope_closed": true,
+  "reviewed_at_utc": "2026-11-04T09:29:36.852942+00:00",
+  "scope": "New C14 launch-material admission. Final continuation inspects only B1-B3 metadata/operator repairs and the count-label correction; other passed new-launch checks inherit the preserved initial review. Closed8-source implementation/20 checks and all older data/model/math scopes remain closed.",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "reviewed_plan": {
+    "path": "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.complete_review_draft.json",
+    "sha256": "21eea8ff37b6d874f4a228909134c983d963f18de33fe7cd5bb811e980e3e593"
+  },
+  "reviewed_custody": {
+    "path": "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/launch_custody_inputs.complete_review_draft.json",
+    "sha256": "e01edb96845bacc699da579a34d4bf19f641d662fee4d8b809d6379d0f9d8e01",
+    "frozen_files": 7640,
+    "retained_stat_identities": 16092,
+    "retained_trees": 63
+  },
+  "preserved_initial_blocked_review": {
+    "path": "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/independent_new_launch_review.blocked_B1_B2_B3.json",
+    "sha256": "45a74336e4cf5aae723dd4d57ea2611184ab6355db2ef944ca03ff8d5c6c0d66",
+    "frozen_exact": true
+  },
+  "bindings": {
+    "metadata_B1_B2_B3_completion_review.json": "3bc7e5ac33370e6b43cd99d1f6349fd5f5234235be93be767642233f024e0f27",
+    "new_operator_inheritance_review.json": "5c0e50130527f5653a349bde2c21db1d9740e3e1e6b7f89b4dd6544e06b3e168",
+    "new_launch_material_review.json": "a96f38867ce3b846636466be331c6b16c7d3653e1b39ffa4c8a82526c9136d39",
+    "implementation_review.json": "62875f79062697e1fefc1381308764f4ab384ddaca31d9302eb636f3faf8ff6e",
+    "implementation_commit_review.json": "b711c3a4737f43245b784e5d8a85691512a6e5a5996f66b05eb90de8d3798cdf",
+    "cold_application_review.json": "14dde9d8956e48fc0dfb1e0003598c13489b5e1753897738bbcfaf7807faa184",
+    "ROOT_supported_clearance_archive_manifest.json": "db67b8842aea4c6ba4d214cf6344d19f2d8296fdaf4e6150aafdd7af5c7c22b5",
+    "pre_change_custody_review.json": "22b88a6ac4e1d2a862880506960e64e54b5bf297adcaf6fe2a737fb35e117bc4",
+    "independent_staged_implementation_review.json": "94181f88f11ff77c8964c0231ce09e2afae15086f0934cdcdf4761fe0a36a88b",
+    "canonical27_prefix.cached.jsonl": "4252114e154cbaa74b833036bf27abb123a01cd09941666622393aa57eec1f3a"
+  },
+  "runtime_operator_sha256": {
+    "capture_startup_custody_once.py": "891a1f8c91bc10f95d725625a23dad123b437630ad586870e7000b9a6e257dd3",
+    "prepare_actual_readers_once.py": "115d6868e4f6ecd277ab59f7ae49cc48cf1c214743ff84055df6b07b25d946a4",
+    "review_new_startup_monitor_once.py": "b54bc80a9b06b6500cc468491b3fcf33cc71f535ba90f257fa21ba098ec70fea",
+    "first_reader_template_bridge.py": "006c7f42e376631163f50eea8d0c70bd3ae9187b65b3f1c3d25a4e138711d405",
+    "incremental_reader_template_bridge.py": "74dc0d0baac949827e7075b297311d66162fb4caafa163c0b9c0eac4ca9de7b6",
+    "watch_stair_progress_supported_prefix27.py": "57809e4bfa80d1a9533ee11d0d105b83374020f79fa5005182a4d9e49ca0eff4",
+    "setup_progress_controller_once.py": "fe761e9161d0cc48f26aff64f4a4ff8aa8f712e419863e1da7a5ccb9fd7b24b0",
+    "record_actual_terminal_once.py": "fde6faef7c866f87b8593408e5ba8e0e5f8625145770e449f6fd4948b9ca2f40",
+    "close_new_startup_scope_once.py": "d85a0a9f3b2b1f0e9ede85d57fed2b85eaa1daf9ea29be3ebb4438effe608597",
+    "review_next_live_window_once.py": "3330bdd38757906d736d19403b4a2146f53b041a370ab4040e8379b6e6ed3d28"
+  },
+  "repairs": [
+    {
+      "id": "B1",
+      "status": "closed",
+      "finding": "Complete plan now declares the exact current full clearance contract: lookahead/envelope0.55, fulltarget0.20, floor0.25 motion_multiplier with stationary/retreat coverage and original moving convention outside preview. This matches the reviewed source and all19 profile. Relative to the original plan, only this contract plus necessary custody path/SHA differ."
+    },
+    {
+      "id": "B2",
+      "status": "closed",
+      "finding": "Live client no longer hardcodes C13 reader197b. It checks this case/source/plan/run in the new incremental-reader admission and the frozen prepare-binder SHA, then compares actual reader SHA to that admission before raw handoff. Existing first-reader status/source/template admission and all fresh cursor/training guards remain."
+    },
+    {
+      "id": "B3",
+      "status": "closed",
+      "finding": "First and incremental summaries now serialize actual last_logged_aux directly from the newly parsed final accepted state. Client reads the prior closed summary once, verifies its exact SHA and case/source/protocol/through and central bridge state/control binding before creating its new H scope. Actual new states retain original bridge/budget authority, equality and monotonic counter checks; window counters are actual last minus actual SHA-bound baseline. Fixed future skip2/Adam-cycle assumptions are removed without reopening old raw/cache."
+    },
+    {
+      "id": "actual_count_wording",
+      "status": "closed",
+      "finding": "Startup limitation no longer labels future CPU145. Actual finite count and monitor iterations continue to come from this run receipts/points; the strict actual native0/48 prerequisite is retained rather than fabricating it from a later native."
+    }
+  ],
+  "checks": [
+    {
+      "id": "repair_custody_nonpatch",
+      "status": "passed",
+      "finding": "Complete custody removes no frozen entry. Only four never-run new operator paths receive corrected hashes, with each exact previous version frozen at its .before_B2_B3.cached path.13 new evidence/static entries include the preserved blocked review and original drafts. Every non-frozen custody field, all retained identities/trees, source150 map/profile/execution/dependencies/budget/parent/formal values are unchanged. Counts are7640SHA/16092stat/63trees."
+    },
+    {
+      "id": "source_and_cold_identity",
+      "status": "passed_inherited",
+      "finding": "Clean b5f5 commit/implementation/archive maps agree with the closed final150 source map:8 changed/142 inherited, no new module/NN. Old live8411 aliases are preserved at exact owned8411 paths, not tested against newly cold-modified live source. C13 remains genuinely failed/EOF503/P-completed and its973 plusT221 evidence trees are retained. No old request or supervisor is reinterpreted as new live source."
+    },
+    {
+      "id": "full19_and_execution_contract",
+      "status": "passed_inherited_with_B1",
+      "finding": "New supported-clearance protocol/format, exact19 params and terrain-observer metadata are bound by central current-source predicates through plan/request, actual48 and seal24, packet/native/CPU and natural-final formal admission. Other18/Phi20cm/bridge2/numeric3 and physical limits remain inherited; dynamic logging availability is not perception success."
+    },
+    {
+      "id": "startup_CPU_and_opaque_once",
+      "status": "passed_inherited",
+      "finding": "Unchanged startup capture requires own new M0 actual typed startup target1+parent1 and reward/bridge/course states48, sealed prefix24/storage24/RND24/current520 and correct source/case/plan. One exclusive claim precedes each new M0/bank opaque capture;512MiB/64MiB caps, singleFD/five identities and chunk-growth bounds remain. This operator adds0packet/NPZ decode; no old CPU receipt substitutes for the next actual new receipt."
+    },
+    {
+      "id": "readers_and_terminal_boundary",
+      "status": "passed_inherited_with_B2_B3",
+      "finding": "Only actual healthy>=40 can enter first0..40 raw scope; incremental accepts exact new cursor/offset/source/plan/run within999. Exclusive markers precede one-open/seek, tell-before-read, complete logical window cache-before-parse and prior-summary same-bytes SHA checks. New metadata additions precede immutable summary serialization. A genuine terminal must obtain a separate future actual admission; training-reader main never accepts failed by relabeling."
+    },
+    {
+      "id": "P_and_canonical_once",
+      "status": "passed_inherited",
+      "finding": "Exact27-line prefix SHA4252114e... is frozen. New watcher is the current reviewed ROOT watcher plus only explicitROOT/prefix metadata changes. Fresh workload/manager/GPU and unique watcher argv/birth checks, fixed256 target299/399/499 complete5000 windows, saved500 custody, original cause/signal precedence and missing-not-zero policy persist. Terminal helper appends only unique28 after all owned ends and supports true-never-spawned P using the existing local frozen human authorization bytes; no future tail or P birth is fabricated."
+    },
+    {
+      "id": "unchanged_global_budget_and_gates",
+      "status": "passed_inherited",
+      "finding": "Fresh acceptedflat926 parent and ownnorm prefix24576000; fresh Adam/RND/RNG/environment;1000*1024*48=49,152,000/saves0,500,999; original nonlinear1/tau/arena/force/airtime/termination and all15 fresh1024/full90s/same-env joint922 formal gates remain. No resume/retry/extension or model/array qualification is introduced by these operators."
+    },
+    {
+      "id": "metadata_history",
+      "status": "passed_inherited",
+      "finding": "Pre-output builder replacement refusal and missing-local-Git-identity completion history are preserved as metadata/commit-environment facts with0new CPU/Sim; they are not learner failures. No old checks, source application or runtime once were rerun by this reviewer."
+    }
+  ],
+  "blockers": [],
+  "allowed_report_only_finalization": {
+    "baseline_plan_sha256": "21eea8ff37b6d874f4a228909134c983d963f18de33fe7cd5bb811e980e3e593",
+    "baseline_custody_sha256": "e01edb96845bacc699da579a34d4bf19f641d662fee4d8b809d6379d0f9d8e01",
+    "plan_fields": [
+      "status",
+      "independent_launch_review",
+      "independent_launch_review_sha256",
+      "custody_input_manifest",
+      "custody_input_manifest_sha256"
+    ],
+    "status_value": "reviewed_ready",
+    "custody_change": "Only add the final passed independent review and new static finalizer/evidence file SHA entries; preserve all existing7640 SHA gates and all16092 stat/63 tree values. Preserve candidate and initial blocked bytes.",
+    "nonpatch_rule": "No other plan values, source or operator bytes change. Verify full nonpatch equality and avoid report/plan self-hash cycles."
+  },
+  "limitations": [
+    "Passed is static launch-material readiness for the exact complete candidates. It does not execute or certify readonly preflight, new CPU, actual start, caches, realtime behavior or physical climbing. ROOT must complete allowed report-only finalization and the unique actual gates.",
+    "Startup closure still requires an actual native0 point; it may reject a later-only point rather than manufacture the48-control initial layer. Future actual data/availability/counters must be preserved honestly if a premise is unmet.",
+    "Only necessary inherited frozen opaque byte custody is authorized; it is not PT/NPZ/model/optimizer/RNG diagnostics, and no frozen SHA protection is downgraded to stat-only here.",
+    "No sourceReady/CPU success, learned reward, logged terrain values or training cohort metrics substitute for original fresh1024 six15cm90s joint922 acceptance."
+  ],
+  "reviewer_activity": {
+    "engineering_edits": 0,
+    "operator_builder_preflight_or_Sim_execution": 0,
+    "tests_compile_framework_model_NN_or_solver_execution": 0,
+    "old_raw_cache_PT_NPZ_video_or_array_diagnostics": 0,
+    "new_agents": 0,
+    "only_new_metadata_and_source_delta_read": true
+  }
+}

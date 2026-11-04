@@ -1,0 +1,29 @@
+{
+  "warmup_iterations": 2000,
+  "assessment_interval_iterations": 1000,
+  "patience_iterations": 3000,
+  "patience_seconds": 7200,
+  "required_stagnant_assessments": 3,
+  "episode_window_size": 5000,
+  "absolute_improvement_thresholds": {
+    "survival20s_fraction": 0.05,
+    "survival_and_progress_fraction": 0.05,
+    "locomotion_success_fraction": 0.02,
+    "terrain_level": 0.25,
+    "mean_completed_levels": 0.25,
+    "first_level_bilateral_fraction": 0.05,
+    "all_levels_bilateral_fraction": 0.02,
+    "stair_success_fraction": 0.02,
+    "mean_verified_feet": 0.5,
+    "mean_transferred_levels": 0.25
+  },
+  "median_episode_improvement": "max(1 second, 10 percent)",
+  "progress_ratio_improvement": 0.1,
+  "preserve_episode_stability_for_progress_gain": true,
+  "reward_alone_does_not_count": true,
+  "automatic_retry_allowed": false,
+  "automatic_parameter_change_allowed": false,
+  "physical_learning_improvements_are_not_stair_acceptance": true,
+  "bounded_run_note": "Independent1000-update whole-sole target training cap; never extend automatically.",
+  "acceptance": "Independent1024-env first90s replay; >=922 same environments complete every level with bilateral80-600ms valid flight/80ms load/8mm footprint, net0.9m rise±0.1m and2s top dwell"
+}

@@ -1,0 +1,567 @@
+{
+  "status": "passed",
+  "scope_closed": true,
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "new_cache_lines_independently_SHA_offset_JSON_checked": 1113,
+  "new_accepted": 53,
+  "new_proposals": 1060,
+  "original_raw_opens_here": 0,
+  "old_prefix_or_cache_reopens": 0,
+  "window": {
+    "through": 93,
+    "accepted_records": 53,
+    "actor_minibatch_records": 1060,
+    "active_proposals": 9,
+    "QP_calls": 9,
+    "row_Jacobian_calls": 9,
+    "fullbank_JVP_calls": 1069,
+    "SVD_calls": 0,
+    "Hildreth_sweeps": 9,
+    "support_pivots": 0,
+    "support_additions": 0,
+    "support_drops": 0,
+    "max_Hildreth_sweeps_per_proposal": 1,
+    "max_actual_rows": 1,
+    "max_used_arena_bytes": 37583424,
+    "max_nonlinear_hard_ratio": 0.5000273585319519,
+    "max_working_ratio": 0.9999466740203898,
+    "max_reserved_linear_residual_rad": 2.7580931787583862e-11,
+    "max_unreserved_linear_residual_rad": -1.9997241906821728e-07,
+    "max_eta64_rad": 2.6476385389862208e-12,
+    "max_direct_upper_rad": 2.4665223971909137e-13,
+    "max_final_same_direction_JVP_diff_rad": 2.3800150847526347e-10,
+    "actor_steps": 1080,
+    "critic_RND_steps": 1880,
+    "RND_rollout_counter": 4512,
+    "last_resources": {
+      "elapsed_s": 0.038196695037186146,
+      "process_peak_RSS_bytes": 10317520896,
+      "RSS_scope": "Whole Isaac process lifetime peak; not the isolated CPU diagnostic3GiB cap",
+      "GPU_process_allocator": {
+        "allocated_bytes": 3025777152,
+        "reserved_bytes": 4877975552,
+        "lifetime_peak_allocated_bytes": 5522496000,
+        "scope": "Whole training process PyTorch allocator; peaks not reset; excludes non-Torch GPU memory"
+      }
+    }
+  },
+  "runtime_totals": {
+    "through": 93,
+    "accepted_records": 94,
+    "actor_minibatch_records": 1080,
+    "active_proposals": 11,
+    "QP_calls": 11,
+    "row_Jacobian_calls": 11,
+    "fullbank_JVP_calls": 1091,
+    "SVD_calls": 0,
+    "Hildreth_sweeps": 11,
+    "support_pivots": 0,
+    "support_additions": 0,
+    "support_drops": 0,
+    "max_Hildreth_sweeps_per_proposal": 1,
+    "max_actual_rows": 1,
+    "max_used_arena_bytes": 37583424,
+    "max_nonlinear_hard_ratio": 0.5000273585319519,
+    "max_working_ratio": 0.9999733641737706,
+    "max_reserved_linear_residual_rad": 2.3130774465945914e-10,
+    "max_unreserved_linear_residual_rad": -1.9976869225502014e-07,
+    "max_eta64_rad": 6.476566662241197e-12,
+    "max_direct_upper_rad": 5.63148187852333e-12,
+    "max_final_same_direction_JVP_diff_rad": 8.178188334873049e-10,
+    "actor_steps": 1080,
+    "critic_RND_steps": 1880,
+    "RND_rollout_counter": 4512,
+    "last_resources": {
+      "elapsed_s": 0.038196695037186146,
+      "process_peak_RSS_bytes": 10317520896,
+      "RSS_scope": "Whole Isaac process lifetime peak; not the isolated CPU diagnostic3GiB cap",
+      "GPU_process_allocator": {
+        "allocated_bytes": 3025777152,
+        "reserved_bytes": 4877975552,
+        "lifetime_peak_allocated_bytes": 5522496000,
+        "scope": "Whole training process PyTorch allocator; peaks not reset; excludes non-Torch GPU memory"
+      }
+    }
+  },
+  "selected_block_accounting": {
+    "fullbank_jvp_block_calls": 5455,
+    "selected_block_jvp_calls": 11,
+    "selected_block_jacobian_calls": 11,
+    "selected_reverse_seeds_expected": 132,
+    "decoder_forward_calls_total": 5477,
+    "decoder_forward_rows_total": 5608448
+  },
+  "last_logged_aux": {
+    "contract": {
+      "kind": "anticipatory_support_credit_bridge_v2_location_fit",
+      "enabled": true,
+      "input_width": 883,
+      "output_width": 10,
+      "layers": [
+        883,
+        256,
+        128,
+        10
+      ],
+      "parameters": 260490,
+      "independent_actor_parameters": true,
+      "critic_input_width": 871,
+      "received_action_width": 12,
+      "action_feature": "tanh_actual_received_pre_transport_delay_action",
+      "contact_controls": 32,
+      "recovery_controls": 32,
+      "pending_controls": 64,
+      "closed_capacity": 49152,
+      "record_bytes": 3840,
+      "CPU_cap_bytes": 536870912,
+      "GPU_owned_cap_bytes": 134217728,
+      "Adam_steps_per_rollout": 32,
+      "batch_records": 512,
+      "Adam_learning_rate": 0.0003,
+      "gradient_clip": 1.0,
+      "private_CPU_seed": 20261104,
+      "warmup_updates": 40,
+      "calibration_cadence": 10,
+      "calibration_records": 4096,
+      "lookahead_m": 0.6,
+      "preparation_m": 0.25,
+      "retention_floor": 0.25,
+      "potential_weights": [
+        0.25,
+        0.25,
+        0.5
+      ],
+      "gamma": 0.99,
+      "inner_coefficient": 1.0,
+      "contact_height_tolerance_m": 0.02,
+      "sole_margin_m": 0.008,
+      "sole_side_margin_m": 0.02,
+      "recovery_tilt_limit_rad": 0.5,
+      "final_tilt_limit_rad": 0.15,
+      "final_angular_XY_limit_rad_s": 0.75,
+      "final_tilt_change_limit_rad": 0.01,
+      "final_controls": 4,
+      "loaded_controls": 4,
+      "unloaded_controls": 2,
+      "contact_force_N": 5.0,
+      "support_weight_fraction": 0.7,
+      "calibration_minimums": {
+        "joint_labels": 2048,
+        "joint_positive": 128,
+        "joint_negative": 128,
+        "contact_positive": 128,
+        "contact_negative": 128,
+        "contact_locations": 1024
+      },
+      "calibration_thresholds": {
+        "Brier_max": 0.2,
+        "ECE10_max": 0.1,
+        "AUROC_min": 0.65,
+        "location_median_m_max": 0.1,
+        "location_p90_m_max": 0.25,
+        "fully_censored_fraction_max": 0.75
+      },
+      "unknown_future_is_censored": true,
+      "floor_labels_are_not_stair_feet": true,
+      "no_new_policy_observation": true,
+      "no_joint_command_override": true,
+      "pre_super_aux_commit": true,
+      "physical_rewind": false,
+      "serving_publication": "only_scheduled_calibrated_candidate",
+      "formal_bridge_enabled": false,
+      "original_target500_policy_preserved": true
+    },
+    "controls": 4512,
+    "actual_environment_controls": 4512,
+    "pending_control": null,
+    "parameters": 260490,
+    "actor_parameters_shared": false,
+    "CPU_ring_bytes": 440401920,
+    "CPU_owned_bytes": 536870912,
+    "CPU_scratch_reservation_bytes": 96468992,
+    "GPU_owned_bytes": 8644320,
+    "original_numeric_arena_unchanged": true,
+    "serving_forwards": 2592,
+    "learner_forwards": 2944,
+    "calibration_forwards": 48,
+    "backwards": 2944,
+    "Adam_attempts": 2944,
+    "Adam_commits": 2944,
+    "aux_steps_per_rollout": 32,
+    "aux_rolled_back_commits": 0,
+    "aux_failed_Adam_attempts": 0,
+    "skipped_data_rollouts": 2,
+    "serving_version": 6,
+    "last_reward_model_version": 6,
+    "seal_id": 94,
+    "data_epoch": 13373,
+    "anchors": 4620288,
+    "pending_records": 41833,
+    "closed_records": 49152,
+    "closed_cursor": 35296,
+    "globally_armed": true,
+    "per_env_initialized": 1021,
+    "potential_min": 0.0,
+    "potential_max": 0.31918243449040407,
+    "last_added_event_min": -0.1427304446697235,
+    "last_added_event_max": 0.004964223597198725,
+    "last_raw_delta_min": -0.07190253468416288,
+    "last_raw_delta_max": 0.02286814337564573,
+    "last_calibration": {
+      "completed": 90,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 5931,
+        "joint_positive": 2344,
+        "joint_negative": 3587,
+        "contact_positive": 4359,
+        "contact_negative": 1572,
+        "contact_locations": 5188
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 3019,
+          "joint_positive_floor": 1795,
+          "joint_positive_stair": 17
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 1077,
+          "joint_positive_floor": 532,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.04706687732143071,
+        "ECE10": 0.03487788811850857,
+        "AUROC": 0.9830354500384394,
+        "positive": 4359,
+        "negative": 1572,
+        "count": 5931
+      },
+      "joint": {
+        "Brier": 0.1357412611070715,
+        "ECE10": 0.03957316117756261,
+        "AUROC": 0.8804259503649413,
+        "positive": 2344,
+        "negative": 3587,
+        "count": 5931
+      },
+      "location_median": 0.0629623606801033,
+      "location_p90": 0.14215211421251298,
+      "fully_censored_fraction": 0.3507950394241898
+    },
+    "ledger": {
+      "joint_positive": 2116419,
+      "joint_negative": 3824055,
+      "contact_positive": 4340594,
+      "contact_negative": 1599880,
+      "location_known": 5061106,
+      "fully_censored": 3230307,
+      "initial_partial": 473690,
+      "no_contact": 2756617,
+      "timeout": 0,
+      "budget_tail": 0,
+      "external_cut": 0,
+      "physical_or_force_failure": 1204861,
+      "first_contact_bad": 720512,
+      "no_local_recovery": 1898682,
+      "FIFO_evicted": 4016608
+    },
+    "actual_geometry": {
+      "approach": 1.4,
+      "depth": 0.35,
+      "width": 2.4,
+      "floor_start": -2.0,
+      "platform_end": 9.75
+    },
+    "seal_digest": "2c72cab08277603496c752673dbb3492b888c1bb2311cf7093363ec1254c6a78"
+  },
+  "new_scheduled_calibrations": {
+    "50": {
+      "completed": 50,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 5938,
+        "joint_positive": 2054,
+        "joint_negative": 3884,
+        "contact_positive": 4448,
+        "contact_negative": 1490,
+        "contact_locations": 5168
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 3145,
+          "joint_positive_floor": 1528,
+          "joint_positive_stair": 0
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 951,
+          "joint_positive_floor": 526,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.06314105554419291,
+        "ECE10": 0.02850649038434691,
+        "AUROC": 0.9693153698517696,
+        "positive": 4448,
+        "negative": 1490,
+        "count": 5938
+      },
+      "joint": {
+        "Brier": 0.12733648834925282,
+        "ECE10": 0.0354637669658846,
+        "AUROC": 0.892552974929228,
+        "positive": 2054,
+        "negative": 3884,
+        "count": 5938
+      },
+      "location_median": 0.08099782466888428,
+      "location_p90": 0.18144929111003877,
+      "fully_censored_fraction": 0.3777034505208333
+    },
+    "60": {
+      "completed": 60,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 6085,
+        "joint_positive": 2057,
+        "joint_negative": 4028,
+        "contact_positive": 3927,
+        "contact_negative": 2158,
+        "contact_locations": 4979
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 2965,
+          "joint_positive_floor": 1530,
+          "joint_positive_stair": 0
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 1131,
+          "joint_positive_floor": 527,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.05774113666335407,
+        "ECE10": 0.03533330464041202,
+        "AUROC": 0.9792732663037411,
+        "positive": 3927,
+        "negative": 2158,
+        "count": 6085
+      },
+      "joint": {
+        "Brier": 0.11492617938975262,
+        "ECE10": 0.04991069995363036,
+        "AUROC": 0.9086272128160726,
+        "positive": 2057,
+        "negative": 4028,
+        "count": 6085
+      },
+      "location_median": 0.07429851591587067,
+      "location_p90": 0.1569466084241867,
+      "fully_censored_fraction": 0.3670145670572917
+    },
+    "70": {
+      "completed": 70,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 6186,
+        "joint_positive": 2019,
+        "joint_negative": 4167,
+        "contact_positive": 4458,
+        "contact_negative": 1728,
+        "contact_locations": 5418
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 3022,
+          "joint_positive_floor": 1572,
+          "joint_positive_stair": 0
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 1074,
+          "joint_positive_floor": 447,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.07392856720569964,
+        "ECE10": 0.03197486943712119,
+        "AUROC": 0.9599388531645149,
+        "positive": 4458,
+        "negative": 1728,
+        "count": 6186
+      },
+      "joint": {
+        "Brier": 0.10077725199149473,
+        "ECE10": 0.026559156364752895,
+        "AUROC": 0.928162062042466,
+        "positive": 2019,
+        "negative": 4167,
+        "count": 6186
+      },
+      "location_median": 0.07378144562244415,
+      "location_p90": 0.1519271790981293,
+      "fully_censored_fraction": 0.3596583775111607
+    },
+    "80": {
+      "completed": 80,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 5750,
+        "joint_positive": 2488,
+        "joint_negative": 3262,
+        "contact_positive": 4174,
+        "contact_negative": 1576,
+        "contact_locations": 5057
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 2967,
+          "joint_positive_floor": 1875,
+          "joint_positive_stair": 0
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 1129,
+          "joint_positive_floor": 613,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.05581801834237677,
+        "ECE10": 0.023057735479949836,
+        "AUROC": 0.9735323698311277,
+        "positive": 4174,
+        "negative": 1576,
+        "count": 5750
+      },
+      "joint": {
+        "Brier": 0.11790902904992911,
+        "ECE10": 0.047261550843204554,
+        "AUROC": 0.9146983386595327,
+        "positive": 2488,
+        "negative": 3262,
+        "count": 5750
+      },
+      "location_median": 0.06002003327012062,
+      "location_p90": 0.13415538072586067,
+      "fully_censored_fraction": 0.3545899709065755
+    },
+    "90": {
+      "completed": 90,
+      "record_count": 4096,
+      "minima": {
+        "joint_labels": 5931,
+        "joint_positive": 2344,
+        "joint_negative": 3587,
+        "contact_positive": 4359,
+        "contact_negative": 1572,
+        "contact_locations": 5188
+      },
+      "passed": true,
+      "strata": {
+        "row0": {
+          "records": 3019,
+          "joint_positive_floor": 1795,
+          "joint_positive_stair": 17
+        },
+        "row1": {
+          "records": 0,
+          "joint_positive_floor": 0,
+          "joint_positive_stair": 0
+        },
+        "row2": {
+          "records": 1077,
+          "joint_positive_floor": 532,
+          "joint_positive_stair": 0
+        }
+      },
+      "contact": {
+        "Brier": 0.04706687732143071,
+        "ECE10": 0.03487788811850857,
+        "AUROC": 0.9830354500384394,
+        "positive": 4359,
+        "negative": 1572,
+        "count": 5931
+      },
+      "joint": {
+        "Brier": 0.1357412611070715,
+        "ECE10": 0.03957316117756261,
+        "AUROC": 0.8804259503649413,
+        "positive": 2344,
+        "negative": 3587,
+        "count": 5931
+      },
+      "location_median": 0.0629623606801033,
+      "location_p90": 0.14215211421251298,
+      "fully_censored_fraction": 0.3507950394241898
+    }
+  },
+  "actual_aux_baseline": {
+    "summary": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/first_actual_runtime_summary.json",
+    "summary_sha256": "db75c928f9752c77f801f65636b8ed595f070b44d8637bd9a5febbb0d9a82ef4",
+    "through": 40,
+    "counters": {
+      "learner_forwards": 1248,
+      "backwards": 1248,
+      "Adam_attempts": 1248,
+      "Adam_commits": 1248,
+      "serving_forwards": 48,
+      "calibration_forwards": 8,
+      "aux_failed_Adam_attempts": 0,
+      "aux_rolled_back_commits": 0,
+      "skipped_data_rollouts": 2
+    }
+  },
+  "new_aux_counts": {
+    "learner_forwards": 1696,
+    "backwards": 1696,
+    "Adam_attempts": 1696,
+    "Adam_commits": 1696,
+    "serving_forwards": 2544,
+    "calibration_forwards": 40,
+    "aux_failed_Adam_attempts": 0,
+    "aux_rolled_back_commits": 0,
+    "skipped_data_rollouts": 0
+  },
+  "last_logged_total_aux_forwards": 5584,
+  "summary_sha256": "afbfe1f136df799466c6414190c5f75ef238906a7f92a2044926f974cacb6be3",
+  "all_records_0_through_closed": 93,
+  "limits": [
+    "Only new actual JSON/logged certificates and counters; not M0 serialization, future realtime or all NN/kernel calls.",
+    "Endpoint/reset Phi/bridge buffers are not all-control paid-event extrema or original stair success.",
+    "No model/array/NN/JVP/QP/Sim recomputation or general QP/physical cause proof."
+  ]
+}

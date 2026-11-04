@@ -1,0 +1,107 @@
+{
+  "status": "passed",
+  "scope_closed": true,
+  "reviewed_at_utc": "2026-11-04T08:52:04.415531+00:00",
+  "scope": "Only the isolated supported-clearance plus existing-terrain-copy implementation delta:7 changed Python files plus the final requirements document. Closed design/older data, mathematical executors, model qualification and old suites are not reopened.",
+  "base_source_commit": "8411dfe24dc288e8280ea769015ea8bf1eec470d",
+  "bindings": {
+    "ROOT_staged_implementation_review.final.json": "25c2dd79fe83b003102a61c523e8341fc91be5d92a3689dd88b3034684c64243",
+    "proposed_supported_clearance_and_terrain.final.patch": "f3447a82c28c94043e03c43a4f903fa59cef8164f82343a50fedf7d33edd75b3",
+    "ROOT_staged_implementation_review.json": "73d5f831aa63b7555588cccb6ecf2b72b83be6595488e42aa1cb12dddacdf1f0",
+    "proposed_supported_clearance_and_terrain.patch": "296d347c39f6abe44df374348f3d502dfb884cf8c778b902f6617d06e80de4a9",
+    "ROOT_reward_and_terrain_recording_design.json": "7efda5c7cab05987e08bdef0e790b7056d86a99bf09b5344c77d128bc737230b",
+    "ROOT_design_adoption.json": "4b5ac34839e6404a2c9404bde49554c5d0b5c9734a7f9755d69a81780ffcf5c2",
+    "new_delta_checks.json": "cddd530763dc9a3315eb5550b846fe15615babe7ce11b685880afc87d7ea50ed"
+  },
+  "actual_changed_source_sha256": {
+    "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/agents/stair_transfer_ppo_cfg.py": "65fbc9346ebf8fd7d9b85c7a5124076947162f52ff9bae8a1a8b7669175f0e71",
+    "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_clearance_rewards.py": "adef9f1e7c3635a20a1a79950ab5303ddb056382a37ff652aa5aed7d3fdac535",
+    "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_transfer_cfg.py": "6bb1656a24acb2127ff1ef822347e28082ca7c7b1a84c174a7825ec7a26932ff",
+    "tools/evaluate_stair_policy.py": "1686316396784b1aed255be4ef17327a6713c7f558bee345fff7d04395b3a207",
+    "tools/stair_initialization_binding.py": "89bbfc95dc7dcc26a99a50002ef87975846b2c5b27fbc3d2d54f65e127c3289a",
+    "docs/H2_STAIR_TASK_REQUIREMENTS.md": "b256a35a4510f4386adb251a0da3d8eb0e789731d5d40cc6000ab2ffec9ffcff",
+    "tools/stair_execution_binding.py": "deea2a5677486160a243f77a2d43e81388b5f0dd7ac261612b2e340e4ccd3fa7",
+    "tools/stair_execution_probe.py": "02683df81fd65d0da4ce97676e3eb72d687357fc43454d53bb577d99ddc48095"
+  },
+  "checks": [
+    {
+      "id": "final_source_map",
+      "status": "passed",
+      "finding": "All150 staged source/doc hashes match the final manifest. Independent byte comparison with clean current8411 finds exactly8 changed and142 inherited, no new source files. The final revision changes only the requirements document relative to the initial7-code manifest; all7 Python hashes remain exact. Current actual ROOT HEAD is8411 and clean; this is isolated, not deployed."
+    },
+    {
+      "id": "single_reward_formula",
+      "status": "passed",
+      "file": "source/CtrlLab/CtrlLab/tasks/manager_based/h2_task/stair_clearance_rewards.py",
+      "finding": "Actual cfg passes preview0.55/full_target0.20/motion_floor0.25 with unchanged-4 outer weight. The normalized branch retains pure real-uncrossed mask and same-dtype sixth-edge arithmetic, clipped height-normalized deficit and existing load/invalid gates. Floor is applied only as maximum(original moving,floor*Areal*inside-preview); it is not a whole-cost preview mask. Outside preview, moving below-lower-plane cost remains. Legacy default20cm/floor0 and sharedPhi20cm helper behavior remain."
+    },
+    {
+      "id": "exact_other18_and_numeric_inheritance",
+      "status": "passed",
+      "finding": "Static reward-table AST comparison changes only swing_clearance_deficit among19 keys; existing tilt/action and the remaining16 definitions are exact. All inherited numerical3/bridge2, action/PD/force/termination/acceptance/LiDAR/normalization source bytes remain unchanged within the142 inherited files. No numerical body, policy architecture or learning module was introduced."
+    },
+    {
+      "id": "full_parameter_caller_chain",
+      "status": "passed",
+      "finding": "Unchanged train consumer passes the complete actual RewardManager clearance params via **dict into full_footprint_clearance_contract, so the new motion_floor cannot be omitted. Actual and pure clearance declarations include the same motion_multiplier metadata. Central all19 profile checks already used by train/runtime/guard/native/CPU compare the new params and counters. No old exact-profile receipt qualifies this new profile."
+    },
+    {
+      "id": "new_typed_family_and_formal",
+      "status": "passed_for_new_family",
+      "finding": "Agent cfg and central PROTOCOL_FORMATS/temporal/rollout/course/bridge/execution/reward-family membership bind accepted_flat_supported_clearance_terrain_observed_height_course_v2 to h2_guarded_stair_ppo_supported_clearance_v2. Evaluator explicitly recognizes it in natural-final receipt, actual reward/course/Phi/execution/bridge, typed uint8 finite-visit, fresh all15 formal scene and1034/871 input branches. Existing runtime consumers import central declarations, retaining48 rollout/24 seal. New format requires its own complete natural-final CPU/48000-state binding; no formal bridge/module is attached."
+    },
+    {
+      "id": "actual_prephysics_terrain_copy",
+      "status": "passed",
+      "file": "tools/stair_execution_probe.py",
+      "finding": "Only after the original selected-window and transition checks does begin copy row0 actual transition.observations[468:1029], existing reconstruction/ray tuple caches, grid/hit/filled pose-ring values and preaction root/origin/height. This occurs after real act and before current physics. Action control c, observed common/cache epochs and expected c-1 are explicit; normalized actor values and root-yaw reconstructed metres have separate labels. No scene/sensor.data, model/normalizer forward/reset/update, raycast, RNG or extra physics/render call is present."
+    },
+    {
+      "id": "cache_and_pose_source_semantics",
+      "status": "passed_with_diagnostic_limits",
+      "finding": "Necessary narrow actual source confirms reconstruction/ray cache tuple ABI and height-splat grid registration, existing_last_hit is fused diagnostic evidence, and pose-ring pointer is advanced after writing so (ptr-1)%K is the latest filled stored pose. No new timestamp for that pose is invented. Its optional absence is null; it is not asserted to be a new sensor sample equal in time to a ray cache. Model/sensor implementation bodies are unchanged and were not executed."
+    },
+    {
+      "id": "availability_and_exception_boundary",
+      "status": "passed_for_frozen_cache_ABI",
+      "finding": "Expected absent/wrong-shape core caches, stale epochs and nonfinite copied values become explicit null/issues/status unavailable rather than0-filled or recomputed. Finite optional JSON values including null remain acceptable to the existing record serializer. Stale values retain their separate cache epoch and unavailable status, not a corrected-current claim. No diagnostic-only stop is added for these handled cases. This is not a generic guarantee against arbitrary object/device corruption or IO failures."
+    },
+    {
+      "id": "bounded_resources_and_copy_ownership",
+      "status": "passed",
+      "finding": "Only env0 values are transferred:561 normalized,561 reconstructed and at most561 hit-mask entries, one pose/root registration and bounded scalar ray summary per existing selected record. Full1024 cache arrays or whole pose rings are not CPU-copied or retained. Tensor-to-list conversion produces independent JSON values; no new model/optimizer state or persistent learning buffer is added. The window stays1000 controls/4000 original physics snapshots; optional missing entries do not cause another data window or Sim."
+    },
+    {
+      "id": "lifecycle_counts_and_original_native_work",
+      "status": "passed",
+      "finding": "Availability counters initialize0, increment only after a completed record is serialized and alongside recorded_controls, and sum to selected_controls_after(controls_seen), including0 at startup/seal24/M0 and1000 at completed window. Native copy method AST is exact to8411; original-write wrapper, return, bridge hook, strict four physics samples, optional once reset flush, endpoint generation binding and close behavior remain. Other method deltas are only initialization, terrain capture, completed counters and snapshot fields."
+    },
+    {
+      "id": "requirements_document",
+      "status": "passed",
+      "finding": "Final document describes the implemented55cm ramp/floor, stationary/retreat exposure, preserved outside lower-plane cost and bounded existing-input observation with explicit missing/stale metadata. It records goals/current functionality and limits rather than phase/error history or physical success. It does not claim that an input path proves correct terrain recognition or utilization."
+    },
+    {
+      "id": "new_check_evidence_scope",
+      "status": "passed_with_runtime_limit",
+      "finding": "Read only the20-new-check/7-compile receipt and its source-manifest binding. It reports new formula/gates/bounds, exact profiles, copied tensor ownership, missing/stale cache handling and source inheritance passed, with0oldQ38/observer10 repeats and0model/NN/SDK/PT/NPZ/solver/Sim. No checks/compilation/framework imports were performed by this reviewer. The final doc-only change does not alter those7 checked code hashes."
+    }
+  ],
+  "blockers": [],
+  "limits": [
+    "Static isolated implementation readiness only. Actual cache availability, terrain accuracy/registration, policy use, performance/resource behavior and physical effect remain unmeasured in the next real run. An availability count is not a perception-accuracy certificate; optional pose/hit null fields retain their diagnostic limits.",
+    "Do not claim all reward qualification inherited: the intended new negative motion floor charges a supported unloaded low foot during stationary/retreat states inside55cm. It can encourage no-unload/standing/retreat and is not globally smooth at discrete gates. No positive force/physical threshold is weakened.",
+    "New typed-family routing is reviewed; closed C13 checkpoints/receipts are not authorized for reuse or new qualification under this new reward/terrain contract. Legacy20cm/default geometry behavior is preserved, but no old model was loaded or requalified.",
+    "No actual source application, commit, launch plan, custody finalization, model CPU, preflight or Sim admission is certified. Later launch materials must freeze this final150 source map/new family and observer contract with the original once gates and budget.",
+    "Original fresh1024 six15cm/full90s/same-env joint>=922 remains the completion authority; synthetic checks, a negative reward design and logged input presence do not establish ascent success."
+  ],
+  "reviewer_activity": {
+    "engineering_edits": 0,
+    "tests_compile_project_framework_or_Torch_imports": 0,
+    "model_PT_NPZ_NN_solver_SDK_or_Sim_execution": 0,
+    "old_raw_cache_video_or_array_reads": 0,
+    "new_agents": 0,
+    "read_only_source_SHA_AST_and_narrow_new_interface_checks": true,
+    "writes_only_W_review": true
+  }
+}

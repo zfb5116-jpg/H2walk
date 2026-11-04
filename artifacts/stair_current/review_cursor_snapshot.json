@@ -1,0 +1,13 @@
+{
+  "case": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "trial_protocol": "accepted_flat_supported_clearance_terrain_observed_height_course_v2",
+  "max_iteration_inclusive": 999,
+  "reviewed_through": 93,
+  "next_update_index": 94,
+  "next_accepted_byte_offset": 5524165,
+  "next_proposal_byte_offset": 5454606,
+  "review": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/heartbeat_20261104T100825Z_records_summary.json",
+  "review_sha256": "afbfe1f136df799466c6414190c5f75ef238906a7f92a2044926f974cacb6be3",
+  "only_new_records_after_this_cursor": true
+}

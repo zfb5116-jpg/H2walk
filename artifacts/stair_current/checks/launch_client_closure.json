@@ -1,0 +1,53 @@
+{
+  "status": "passed",
+  "scope_closed": true,
+  "reviewed_at_utc": "2026-11-04T09:36:47.757086+00:00",
+  "scope": "Only the two appended launch finalizer/unique CLI client interfaces and their narrow repair; main C14 launch review and original B1-B3 blocked bytes remain unchanged.",
+  "main_review_sha256": "0b3e79e6326b44f43d46eb5b7c4729f38350f3400ea61bc7cb0cebeb6ca8eb9c",
+  "preserved_blocked_review_sha256": "45a74336e4cf5aae723dd4d57ea2611184ab6355db2ef944ca03ff8d5c6c0d66",
+  "reviewed_plan_sha256": "21eea8ff37b6d874f4a228909134c983d963f18de33fe7cd5bb811e980e3e593",
+  "reviewed_custody_sha256": "e01edb96845bacc699da579a34d4bf19f641d662fee4d8b809d6379d0f9d8e01",
+  "client_sha256": {
+    "finalize_new_launch_once.py": "fe3370b0f28fab780f7e540e717422d6b66cb5b772d9bedf15fe9aa0298e2e24",
+    "run_unique_readonly_and_start_once.py": "044db7afc84ca308f7cb5af5d59b419f947d8e4613d36be661838787feed71cd"
+  },
+  "interface_completion_review_sha256": "0bd84b94a875af4479b25329f7ad25e403ba7d503075bd1191a77efae5e0225a",
+  "finalizer_inheritance_input_sha256": "837d3d1a33e9d0830e1d99e1403c24c3152e1fa17dc69d5b80359f479e22c4d6",
+  "checks": [
+    {
+      "id": "candidate_exact_binding",
+      "status": "closed",
+      "file": "finalize_new_launch_once.py",
+      "finding": "Before output, finalizer requires main passed review with no blockers and its exact reviewed plan path/SHA, custody path/SHA and plan custody pointer SHA. Clean source/no-Sim gates remain. Final plan changes only the agreed five fields; all existing custody keys and frozen values must remain exact, with only new static review/finalizer/client hashes added."
+    },
+    {
+      "id": "exception_exit_custody",
+      "status": "closed",
+      "file": "run_unique_readonly_and_start_once.py",
+      "finding": "CLI uses Popen/wait rather than subprocess.run automatic timeout kill. Spawn, timeout, nonzero exit, JSON-parse or interrupt exceptions first write an exclusive exit receipt with actual exit code orNone, exception, PID/command and unknown-birth/fresh-check/no-retry state, then re-raise. Normal return writes exit0. No dispatcher/manager/learner signal or automatic retry is sent."
+    },
+    {
+      "id": "unique_dispatch_order",
+      "status": "passed",
+      "finding": "Separate exclusive readonly claim precedes the actual CLI --plan call. Only its passed preflight_only/source/final-plan result permits the exclusive actual_start claim and one CLI --plan --start. Actual case request/source/plan/protocol/current pointer must match before start-result/binding receipts are created. No preflight result is a model-CPU or physical success claim."
+    },
+    {
+      "id": "freeze_without_cycle",
+      "status": "passed",
+      "finding": "Finalizer includes this independent_new_launch_review*.json closure through its existing glob, both exact client sources and the static completed-inheritance input. Main review/candidate hashes remain unchanged; no source edits or self-referential plan/review hash are needed."
+    }
+  ],
+  "blockers": [],
+  "permission_scope": "May freeze these exact two client hashes and this closure within the main review report-only finalization. Any actual readonly/start remains ROOT-owned and conditional on all original gates; no new human approval gate is added.",
+  "limitations": [
+    "No client, finalizer, readonly preflight, CPU or Sim was executed by reviewer.",
+    "A timeout can leave a live dispatcher and possible manager/learner children; outcome staysunknown until fresh exact pointer/request/argv/birth/GPU inspection. The once claim is never permission to retry blindly.",
+    "This closure does not enlarge the model/physics budget or certify actual startup/climbing/922 acceptance."
+  ],
+  "reviewer_activity": {
+    "engineering_edits": 0,
+    "tests_compile_framework_model_or_Sim_execution": 0,
+    "old_raw_cache_PT_NPZ_NN_or_solver_reads": 0,
+    "new_agents": 0
+  }
+}
