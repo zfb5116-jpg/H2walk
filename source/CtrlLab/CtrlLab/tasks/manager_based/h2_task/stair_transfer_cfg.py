@@ -22,7 +22,8 @@ class StairTransferRewardsCfg(StairAscentRewardsCfg):
     target_change = RewTerm(func=rewards.stair_target_change, weight=-0.5,
         params={"max_fraction":0.5, "same_generation_only":True})
     swing_clearance_deficit = RewTerm(func=clearance.stair_swing_clearance_deficit, weight=-4.0,
-        params={"preview":0.35, "full_target_distance":0.20, "terrain_normalized_envelope":True})
+        params={"preview":0.55, "full_target_distance":0.20,
+                "terrain_normalized_envelope":True, "motion_floor":0.25})
 
 
 @configclass

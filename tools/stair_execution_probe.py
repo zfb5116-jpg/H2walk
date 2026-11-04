@@ -13,6 +13,98 @@ def _value(value):
     return value.tolist() if hasattr(value, "tolist") else value
 
 
+def _finite_copy(value):
+    result = _value(value)
+    return result if finite_json(result) else None
+
+
+def _existing_terrain_input(raw, transition, asset, control, generation):
+    """Copy actual preaction inputs; never evaluate a sensor/model/normalizer.
+
+    The action c consumes observations produced at the previous control epoch.
+    Cached reconstruction is a separate, unnormalized root-yaw-frame quantity.
+    Missing diagnostic values remain null and never create a learner stop.
+    """
+    epoch = int(raw.common_step_counter)
+    result = dict(action_control=control,observation_producer_epoch=epoch,
+        expected_observation_epoch=control-1,episode_reset_generation=generation,
+        status="unavailable",normalized_actor_terrain=None,reconstructed_height_m=None,
+        reconstruction_cache_epoch=None,ray_cache=None,grid=None,latest_cached_sensor_pose=None,
+        existing_reconstruction_hit_mask=None,
+        preaction_root_position_w=_finite_copy(asset.data.root_pos_w[0]),
+        preaction_root_quaternion_wxyz=_finite_copy(asset.data.root_quat_w[0]),
+        env_origin_w=_finite_copy(raw.stair_progress.origins[0]),
+        actual_riser_height_m=_finite_copy(raw.stair_progress.heights[0]),
+        normalized_actor_slice=[468,1029],
+        height_semantics="existing_reconstruction_yaw_grid_Z_relative_to_current_root_Z_before_ObsTerm_clip_scale",
+        actor_semantics="actual_PPO_transition_input_after_own_frozen_normalization",
+        issues=[])
+    obs = getattr(transition,"observations",None)
+    if obs is not None and tuple(obs.shape)==(1024,1034):
+        result["normalized_actor_terrain"]=_finite_copy(obs[0,468:1029])
+    if result["normalized_actor_terrain"] is None:
+        result["issues"].append("actual_normalized_actor_terrain_missing_or_nonfinite")
+    cache = getattr(raw,"_h2_lidar_recon_cache",None)
+    if (isinstance(cache,tuple) and len(cache)==2 and type(cache[0]) is int
+            and tuple(getattr(cache[1],"shape",()))==(1024,561)):
+        result["reconstruction_cache_epoch"]=cache[0]
+        result["reconstructed_height_m"]=_finite_copy(cache[1][0])
+        if cache[0]!=epoch:
+            result["issues"].append("reconstruction_cache_epoch_differs")
+    if result["reconstructed_height_m"] is None:
+        result["issues"].append("existing_reconstruction_missing_or_nonfinite")
+    rays = getattr(raw,"_h2_lidar_ray_cache",None)
+    if (isinstance(rays,tuple) and len(rays)==5 and type(rays[0]) is int
+            and len(getattr(rays[3],"shape",()))==2 and rays[3].shape[0]==1024
+            and tuple(getattr(rays[4],"shape",()))==tuple(rays[3].shape)
+            and tuple(getattr(rays[1],"shape",()))==(1024,)
+            and tuple(getattr(rays[2],"shape",()))==(1024,3)):
+        ranges,mask=rays[3][0],rays[4][0]
+        valid=mask>0.5;count=int(valid.sum());bins=int(mask.shape[0])
+        result["ray_cache"]=dict(epoch=rays[0],range_bins=bins,valid_bins=count,
+            valid_fraction=count/bins if bins else None,
+            valid_range_min_m=_finite_copy(ranges[valid].min()) if count else None,
+            valid_range_max_m=_finite_copy(ranges[valid].max()) if count else None,
+            terrain_type=_finite_copy(rays[1][0]),cached_root_position_w=_finite_copy(rays[2][0]))
+        if rays[0]!=epoch:
+            result["issues"].append("ray_cache_epoch_differs")
+    else:
+        result["issues"].append("existing_ray_cache_missing_or_shape_differs")
+    model=getattr(raw,"_h2_lidar_reconstructor",None)
+    if model is not None:
+        names=("hb_nx","hb_ny","hb_x0","hb_y0","hb_res")
+        if all(hasattr(model,name) for name in names):
+            result["grid"]={name:_finite_copy(getattr(model,name)) for name in names}
+            result["grid"]["xy_frame"]="current_root_yaw_aligned; flatten_y_then_x"
+            if (result["grid"]["hb_nx"]!=33 or result["grid"]["hb_ny"]!=17
+                    or any(result["grid"][name] is None for name in names)):
+                result["issues"].append("existing_grid_registration_differs_or_nonfinite")
+        hit=getattr(model,"_last_hit",None)
+        if hit is not None and tuple(hit.shape)==(1024,561):
+            result["existing_reconstruction_hit_mask"]=_finite_copy(hit[0])
+        ptr=getattr(model,"_pose_ptr",None);fill=getattr(model,"_pose_fill",None)
+        pos=getattr(model,"_pose_pos",None);quat=getattr(model,"_pose_quat",None)
+        if (ptr is not None and fill is not None and pos is not None and quat is not None
+                and tuple(ptr.shape)==(1024,) and tuple(fill.shape)==(1024,)
+                and len(pos.shape)==3 and pos.shape[0]==1024 and pos.shape[-1]==3
+                and tuple(quat.shape)==(1024,pos.shape[1],4)
+                and int(fill[0])>0 and pos.shape[1]>0):
+            index=(int(ptr[0])-1)%int(pos.shape[1])
+            result["latest_cached_sensor_pose"]=dict(source="existing_pose_ring_latest_item",
+                ring_index=index,position_w=_finite_copy(pos[0,index]),
+                quaternion_wxyz=_finite_copy(quat[0,index]))
+    if result["grid"] is None:
+        result["issues"].append("existing_grid_registration_missing")
+    if any(result[name] is None for name in ("preaction_root_position_w",
+            "preaction_root_quaternion_wxyz","env_origin_w","actual_riser_height_m")):
+        result["issues"].append("existing_preaction_registration_nonfinite")
+    if epoch!=control-1:
+        result["issues"].append("observation_epoch_not_action_control_minus1")
+    if not result["issues"]:
+        result["status"]="captured"
+    return result
+
+
 class StairExecutionProbe:
     def __init__(self, raw, runner, credit, directory, binding):
         if (execution_config_errors(binding) or raw.num_envs != 1024
@@ -25,6 +117,7 @@ class StairExecutionProbe:
         self.stream = (self.directory / "env0_control_records.jsonl").open("x")
         self.closed = False
         self.controls_seen = self.recorded_controls = self.recorded_physics_substeps = 0
+        self.terrain_input_records = self.terrain_input_unavailable_records = 0
         self.first_recorded_control = self.last_recorded_control = None
         self.pending = None
         self.asset = raw.asset
@@ -91,6 +184,8 @@ class StairExecutionProbe:
             policy_action_mean=_value(transition.action_mean[0]),
             policy_action_sigma=_value(transition.action_sigma[0]),
             policy_sampled_action=_value(transition.actions[0]),
+            existing_terrain_input=_existing_terrain_input(self.raw,transition,self.asset,control,
+                int(self.credit.pre_generation[0])),
             physics_counter_before=int(self.raw._sim_step_counter), physics_substeps=[],
             pending_postphysics_reset_flush_writes=0)
 
@@ -166,6 +261,10 @@ class StairExecutionProbe:
         self.stream.write(json.dumps(record, allow_nan=False) + "\n");self.stream.flush()
         self.recorded_controls += 1
         self.recorded_physics_substeps += 4
+        if record["existing_terrain_input"]["status"]=="captured":
+            self.terrain_input_records += 1
+        else:
+            self.terrain_input_unavailable_records += 1
         self.first_recorded_control = self.first_recorded_control or record["control"]
         self.last_recorded_control = record["control"]
         self.pending = None
@@ -173,6 +272,8 @@ class StairExecutionProbe:
     def snapshot(self):
         return dict(contract=copy.deepcopy(self.contract), controls_seen=self.controls_seen,
             recorded_controls=self.recorded_controls, recorded_physics_substeps=self.recorded_physics_substeps,
+            terrain_input_records=self.terrain_input_records,
+            terrain_input_unavailable_records=self.terrain_input_unavailable_records,
             first_recorded_control=self.first_recorded_control, last_recorded_control=self.last_recorded_control,
             pending_control=self.pending["control"] if self.pending is not None else None,
             action_joint_ids=list(self.joint_ids), action_joint_names=list(self.joint_names),

@@ -10,8 +10,8 @@ from stair_execution_binding import PROTOCOL as EXECUTION_PROTOCOL, FORMAT as EX
 from stair_contact_bridge_binding import (PROTOCOL as FIT_BRIDGE_PROTOCOL, FORMAT as FIT_BRIDGE_FORMAT, LEGACY_PROTOCOL as LEGACY_BRIDGE_PROTOCOL,
                                          LEGACY_FORMAT as LEGACY_BRIDGE_FORMAT)
 
-PROTOCOL = "accepted_flat_reward_balanced_anticipatory_support_height_course_v1"
-FORMAT = "h2_guarded_stair_ppo_reward_balance_v1"
+PROTOCOL = "accepted_flat_supported_clearance_terrain_observed_height_course_v2"
+FORMAT = "h2_guarded_stair_ppo_supported_clearance_v2"
 REWARD_BALANCE_PROTOCOLS = (PROTOCOL,)
 
 LEGACY_COURSE_PROTOCOL = "accepted_flat_fixed_target_height_course_stair_v10"
@@ -56,7 +56,7 @@ _FLOAT32_RELATIVE_TOLERANCE = 4 * 2.0 ** -23
 
 
 def reward_balance_terms():
-    """Exact19-term configuration; only three existing costs are revised."""
+    """Exact19 terms; one existing cost differs from reward-balance v1."""
     values = {
         "world_forward": (12.0, "stair_signed_forward", {}),
         "heading_error": (-1.0, "stair_heading_error", {}),
@@ -77,15 +77,17 @@ def reward_balance_terms():
         "outward_tilt_growth": (-20.0/(1.0-math.cos(0.75)), "stair_outward_tilt_growth", {"margin_angle":0.0}),
         "body_angular_rate": (-0.025, "stair_body_angular_rate", {}),
         "swing_clearance_deficit": (-4.0, "stair_swing_clearance_deficit",
-            {"preview":0.35, "full_target_distance":0.2, "terrain_normalized_envelope":True}),
+            {"preview":0.55, "full_target_distance":0.2,
+             "terrain_normalized_envelope":True, "motion_floor":0.25}),
     }
     return {name:dict(weight=weight, function=function, params=params)
             for name,(weight,function,params) in values.items()}
 
 
 def reward_balance_contract():
-    return dict(kind="reward_only_balance_motion_v1", terms=reward_balance_terms(),
-        changed_terms=["tilt_margin", "target_change", "swing_clearance_deficit"],
+    return dict(kind="reward_only_supported_clearance_v2", terms=reward_balance_terms(),
+        changed_terms=["swing_clearance_deficit"],
+        inherited_reward_balance_terms=["tilt_margin", "target_change"],
         term_count=19, continuous_payment_dt_s=0.02,
         first_action_history_source="common_step_counter_minus_episode_start_counter_gt1",
         new_reward_terms=0, new_learning_modules=0, extra_NN_forwards=0,
@@ -95,13 +97,16 @@ def reward_balance_contract():
 def reward_balance_clearance_contract():
     return dict(kind="earliest_uncrossed_full_footprint_v1", real_riser_count=6,
         approach_m=1.4, depth_m=0.35, rear_margin_m=0.008,
-        lookahead_m=0.35, extra_height_m=0.02, distance_scale_m=None,
+        lookahead_m=0.55, extra_height_m=0.02, distance_scale_m=None,
         deficit_square_cap=1.0, target_retained_until_whole_sole_crossed=True,
         observation_or_joint_controller=False,
         height_normalization="actual_riser_height_plus_clearance",
         outside_preview_reference="selected_lower_plane", uncrossed_only_cost_mask=True,
-        approach_envelope=dict(preview_m=0.35, full_target_distance_m=0.2,
-                               interpolation="linear_clipped"))
+        approach_envelope=dict(preview_m=0.55, full_target_distance_m=0.2,
+                               interpolation="linear_clipped"),
+        motion_multiplier=dict(kind="preview_supported_motion_floor_v1",
+            floor=0.25, inside_preview_only=True, outside_preview="original_forward_motion",
+            includes_stationary_and_retreat=True))
 
 
 def _reward_exact(actual, expected):

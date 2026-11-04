@@ -113,7 +113,7 @@ def yaml_scalar(document, key_path):
 
 def finite_checkpoint(torch, checkpoint):
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1")
+    stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2")
     required = {"iter", "model_state_dict", "optimizer_state_dict", "obs_norm_state_dict",
                 "privileged_obs_norm_state_dict", "rnd_state_dict", "rnd_optimizer_state_dict"}
     if stair_transfer:
@@ -134,7 +134,7 @@ def finite_checkpoint(torch, checkpoint):
                     "h2_guarded_stair_ppo_v11": ("accepted_flat_execution_chain_observed_height_course_stair_v11", 1000),
                     "h2_guarded_stair_ppo_bridge_v1": ("accepted_flat_fixed_target_height_course_anticipatory_support_bridge_v1", 1000),
                     "h2_guarded_stair_ppo_bridge_v2_location_fit": ("accepted_flat_fixed_target_height_course_anticipatory_support_bridge_v2_location_fit", 1000),
-                    "h2_guarded_stair_ppo_reward_balance_v1": ("accepted_flat_reward_balanced_anticipatory_support_height_course_v1", 1000)}
+                    "h2_guarded_stair_ppo_supported_clearance_v2": ("accepted_flat_supported_clearance_terrain_observed_height_course_v2", 1000)}
         expected_protocol, expected_budget = profiles[saved["format"]]
         if (receipt.get("status") != "passed" or receipt.get("scope") != "natural_final"
                 or receipt.get("checkpoint_sha256") != sha256(checkpoint)
@@ -143,7 +143,7 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("iter") != expected_budget-1
                 or saved["guarded_ppo_state"]["completed_updates"] != expected_budget):
             raise ValueError("Typed stair replay requires its new complete natural-final CPU receipt")
-    if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+    if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
         from stair_initialization_binding import (clearance_progress_config_errors,
             clearance_progress_snapshot_errors)
         binding = receipt.get("clearance_progress_potential")
@@ -154,7 +154,7 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("clearance_progress_potential") != receipt.get("actual_clearance_reward_state")
                 or saved["guarded_ppo_state"].get("clearance_progress_potential") != saved["clearance_progress_potential"]):
             raise ValueError("New replay requires its actual clearance reward final-state binding")
-    if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+    if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
         from stair_curriculum_binding import profile_snapshot_errors
         if (receipt.get("actual_height_profile_binding_passed") is not True
                 or profile_snapshot_errors(receipt.get("height_course"), receipt.get("training_video"),
@@ -162,7 +162,7 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("height_profile") != receipt.get("actual_height_profile")
                 or saved["guarded_ppo_state"].get("height_profile") != saved.get("height_profile")):
             raise ValueError("Course replay requires its actual own final profile admission")
-    if saved.get("format") in ("h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+    if saved.get("format") in ("h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
         from stair_execution_binding import execution_snapshot_errors
         if (receipt.get("actual_execution_chain_binding_passed") is not True
                 or execution_snapshot_errors(receipt.get("execution_chain"), saved.get("execution_chain"),
@@ -170,7 +170,7 @@ def finite_checkpoint(torch, checkpoint):
                 or saved.get("execution_chain") != receipt.get("actual_execution_chain")
                 or saved["guarded_ppo_state"].get("execution_chain") != saved.get("execution_chain")):
             raise ValueError("Observed execution replay requires its own final-state admission")
-    if saved.get("format") in ("h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+    if saved.get("format") in ("h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
         from stair_contact_bridge_binding import bridge_snapshot_errors
         if (receipt.get("actual_contact_bridge_binding_passed") is not True
                 or bridge_snapshot_errors(receipt.get("contact_bridge"),saved.get("contact_bridge"),expected_controls=48000)
@@ -180,7 +180,7 @@ def finite_checkpoint(torch, checkpoint):
             raise ValueError("Bridge policy requires its new typed natural-final CPU receipt")
         # No predictor is attached to the fresh formal environment, actor or
         # acceptance tracker. This archive state is validation evidence only.
-    if saved.get("format") == "h2_guarded_stair_ppo_reward_balance_v1":
+    if saved.get("format") == "h2_guarded_stair_ppo_supported_clearance_v2":
         from stair_initialization_binding import reward_balance_snapshot_errors
         binding=receipt.get("reward_balance_profile")
         if (receipt.get("actual_reward_balance_binding_passed") is not True
@@ -202,7 +202,7 @@ def finite_checkpoint(torch, checkpoint):
     def visit(value, path=()):
         nonlocal tensors
         if isinstance(value, torch.Tensor):
-            if saved.get("format") in ("h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1") and path in (
+            if saved.get("format") in ("h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2") and path in (
                     ("contact_bridge_payload","pending_bytes"),("contact_bridge_payload","closed_bytes")):
                 expected = (64*1024 if path[-1] == "pending_bytes" else 49152)*3840
                 if (value.dtype != torch.uint8 or value.device.type != "cpu" or not value.is_contiguous()
@@ -306,8 +306,8 @@ def evaluate(args, app, metadata, source, expected_hashes):
         raise ValueError("Checkpoint action semantics disagree with direct position control")
     spec = gym.spec(args.task)
     cfg = load_config(spec.kwargs["env_cfg_entry_point"])
-    cfg.stair_clearance_progress_potential = saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1")
-    if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+    cfg.stair_clearance_progress_potential = saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2")
+    if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
         # Construct a fresh original formal scene. No training terrain importer,
         # course/cohort or post-construction relocation enters first episodes.
         from isaaclab.terrains import TerrainImporter
@@ -374,7 +374,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
         env = gym.make(args.task, cfg=cfg, render_mode="rgb_array")
         wrapped = RslRlVecEnvWrapper(env, clip_actions=agent.get("clip_actions"))
         raw = env.unwrapped
-        if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+        if saved.get("format") in ("h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
             from stair_initialization_binding import clearance_progress_snapshot_errors
             binding = json.loads(args.checkpoint.with_suffix(".validation.json").read_text())["clearance_progress_potential"]
             actual = dict(raw.stair_progress.clearance_progress_snapshot() or {}, contract=binding,
@@ -413,7 +413,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
             raise RuntimeError("Some direct policy leg joints have no native implicit drive")
         obs, extras = wrapped.get_observations()
         shapes = {key: list(value.shape) for key, value in extras["observations"].items()}
-        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1")
+        stair_transfer = saved.get("format") in ("h2_guarded_stair_ppo_v1", "h2_guarded_stair_ppo_v2", "h2_guarded_stair_ppo_v3", "h2_guarded_stair_ppo_v4", "h2_guarded_stair_ppo_v5", "h2_guarded_stair_ppo_v6", "h2_guarded_stair_ppo_v7", "h2_guarded_stair_ppo_v8", "h2_guarded_stair_ppo_v9", "h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2")
         actor_width, critic_width = (1034,871) if stair_transfer else (1029,866)
         if shapes != {"policy": [n, actor_width], "critic": [n, critic_width], "rnd_state": [n, 73]}:
             raise RuntimeError(f"Network observation dimensions changed: {shapes}")
@@ -533,7 +533,7 @@ def evaluate(args, app, metadata, source, expected_hashes):
                 sampled_delay_min=None if lags is None else int(lags.min()),
                 sampled_delay_max=None if lags is None else int(lags.max()))
         metadata["native_actuator_certificate"] = actuator_certificate
-        if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_reward_balance_v1"):
+        if saved.get("format") in ("h2_guarded_stair_ppo_v10", "h2_guarded_stair_ppo_v11", "h2_guarded_stair_ppo_bridge_v1", "h2_guarded_stair_ppo_bridge_v2_location_fit", "h2_guarded_stair_ppo_supported_clearance_v2"):
             if (hasattr(raw, "stair_height_course") or raw.cfg.stair_height_course is not None
                     or raw.cfg.scene.terrain.terrain_generator.num_rows != 2
                     or raw._stair_minimum_height != .15 or raw._stair_maximum_height != .15
