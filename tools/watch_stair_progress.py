@@ -29,6 +29,7 @@ from stair_curriculum_binding import target_window_errors, early_policy_errors
 from stair_initialization_binding import HEIGHT_COURSE_PROTOCOLS, EXECUTION_PROTOCOLS, BRIDGE_PROTOCOLS
 from stair_execution_binding import PROTOCOL, execution_snapshot_errors
 from stair_contact_bridge_binding import bridge_snapshot_errors
+from stair_initialization_binding import REWARD_BALANCE_PROTOCOLS, reward_balance_snapshot_errors
 # Reject a wrong/closed producer before creating any operator artifact.
 if (not CASE.is_relative_to(ROOT/'logs/stair_learning')
         or L.digest(HERE/'human_authorization.json') != AUTH_SHA
@@ -63,6 +64,10 @@ def validate_window(native, index):
     target_errors = target_window_errors(native, index)
     require(not target_errors, 'Target15 window rejected: '+ '; '.join(target_errors))
     request=L.read(CASE/'request.json')
+    if request['trial_protocol'] in REWARD_BALANCE_PROTOCOLS:
+        require(not reward_balance_snapshot_errors(request.get('reward_balance_profile'),
+            native.get('reward_balance_profile'),expected_controls=(index+1)*48),
+            'Wrong actual reward-only target-window source')
     if request['trial_protocol'] in EXECUTION_PROTOCOLS:
         require(not execution_snapshot_errors(request.get('execution_chain'), native.get('execution_chain'),
                     expected_controls=(index+1)*48), 'Wrong actual execution-chain window source')

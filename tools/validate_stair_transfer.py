@@ -9,6 +9,8 @@ from stair_curriculum_binding import course_config_errors, profile_snapshot_erro
 from training_video import video_config_errors
 from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 from stair_contact_bridge_binding import bridge_config_errors, bridge_snapshot_errors
+from stair_initialization_binding import (REWARD_BALANCE_PROTOCOLS, reward_balance_config_errors,
+    reward_balance_snapshot_errors, reward_balance_clearance_contract)
 from stair_initialization_binding import (PROTOCOL, PROTOCOL_FORMATS, INITIALIZATION_PROTOCOLS, CLEARANCE_PROGRESS_PROTOCOLS,
     TEMPORAL_PROTOCOLS, ROLLOUT_CREDIT_PROTOCOLS, HEIGHT_COURSE_PROTOCOLS, EXECUTION_PROTOCOLS, BRIDGE_PROTOCOLS, LEGACY_COURSE_PROTOCOL, ROLLOUT_STEPS_BY_PROTOCOL,
     initialization_config_errors, exploration_snapshot_errors,
@@ -98,6 +100,16 @@ def validate_cpu(checkpoint, plan_path, scope):
             require(not clearance_progress_snapshot_errors(clearance_progress, snapshot, protocol=protocol,
                                                            expected_updates=0),
                     "Actual clearance progress initialization binding changed")
+    if protocol in REWARD_BALANCE_PROTOCOLS:
+        reward_balance=plan.get("reward_balance_profile")
+        require(run.get("reward_balance_profile")==request.get("reward_balance_profile")==reward_balance
+                and not reward_balance_config_errors(reward_balance, run.get("runtime_reward_balance_config")),
+                "Reward-only plan/request/resolved configuration differs")
+        for snapshot in (run.get("runtime_reward_balance"),
+                         run.get("initial_learning_state",{}).get("reward_balance_profile"),
+                         run.get("guarded_stair_learning",{}).get("reward_balance_profile")):
+            require(not reward_balance_snapshot_errors(reward_balance,snapshot,expected_controls=0),
+                    "Initial actual reward-only source differs")
     source = Path(run["source_snapshot"]).resolve(strict=True)
     source_hashes = {"source/"+str(p.relative_to(source)):sha(p) for p in source.rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
@@ -172,6 +184,8 @@ def validate_cpu(checkpoint, plan_path, scope):
             expected_bindings["execution_chain"] = plan["execution_chain"]
         if protocol in BRIDGE_PROTOCOLS:
             expected_bindings["contact_bridge"] = plan["contact_bridge"]
+        if protocol in REWARD_BALANCE_PROTOCOLS:
+            expected_bindings["reward_balance_profile"] = reward_balance
         require(bank["bindings"] == expected_bindings,
                 "Actual fixed-prefix source/request/plan bindings changed")
         guard_dir = (checkpoint.parent/"functional_guard").resolve(strict=True)
@@ -193,6 +207,14 @@ def validate_cpu(checkpoint, plan_path, scope):
         require(not clearance_progress_snapshot_errors(clearance_progress,
             sealed.get("clearance_progress_potential"), protocol=protocol, expected_updates=24),
             "Actual prefix-seal reward state did not observe24 controls")
+    if protocol in REWARD_BALANCE_PROTOCOLS:
+        for record in (saved,gs,native[0]):
+            require(not reward_balance_snapshot_errors(reward_balance,record.get("reward_balance_profile"),
+                    expected_controls=completed*rollout_steps), "Packet/state/native reward-only source differs")
+        require(saved["reward_balance_profile"]==gs["reward_balance_profile"]==native[0]["reward_balance_profile"],
+                "Packet/state/native reward-only snapshots disagree")
+        require(not reward_balance_snapshot_errors(reward_balance,sealed.get("reward_balance_profile"),
+                    expected_controls=24), "Prefix24 did not bind its actual reward-only source")
     tensors = 0
     def finite(value, path=()):
         nonlocal tensors
@@ -374,7 +396,11 @@ def validate_cpu(checkpoint, plan_path, scope):
             and command["joint_or_body_height_controller"] is False,
             "World direction or inherited observation units/frame changed")
     rewards = run["reward_contract"]
-    require(run["stair_clearance_target"] == dict(kind="earliest_uncrossed_full_footprint_v1",
+    if protocol in REWARD_BALANCE_PROTOCOLS:
+        require(run["stair_clearance_target"]==reward_balance_clearance_contract(),
+                "New reward-only full-sole envelope differs")
+    else:
+        require(run["stair_clearance_target"] == dict(kind="earliest_uncrossed_full_footprint_v1",
             real_riser_count=6, approach_m=1.4, depth_m=.35, rear_margin_m=.008,
             lookahead_m=.20, extra_height_m=.02, distance_scale_m=.05,
             deficit_square_cap=16.0, target_retained_until_whole_sole_crossed=True,
@@ -410,6 +436,10 @@ def validate_cpu(checkpoint, plan_path, scope):
         NN_forward_batches=2+(bridge_cpu["CPU_forward_batches"] if bridge_cpu is not None else 0),
         policy_NN_forward_batches=2,optimizer_steps_executed=0,QP_calls=0,SVD_calls=0,CUDA_initialized=False,
         complete_policy_CPU_validation=True,physical_or_stair_acceptance=False)
+    if protocol in REWARD_BALANCE_PROTOCOLS:
+        result.update(reward_balance_profile=reward_balance,
+            actual_reward_balance_profile=saved["reward_balance_profile"],
+            actual_reward_balance_binding_passed=True)
     if protocol in INITIALIZATION_PROTOCOLS:
         result["exploration_initialization"] = binding
         result["exploration_initialization_binding_passed"] = True

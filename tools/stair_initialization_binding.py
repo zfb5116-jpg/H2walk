@@ -7,12 +7,16 @@ import math
 
 
 from stair_execution_binding import PROTOCOL as EXECUTION_PROTOCOL, FORMAT as EXECUTION_FORMAT
-from stair_contact_bridge_binding import (PROTOCOL, FORMAT, LEGACY_PROTOCOL as LEGACY_BRIDGE_PROTOCOL,
+from stair_contact_bridge_binding import (PROTOCOL as FIT_BRIDGE_PROTOCOL, FORMAT as FIT_BRIDGE_FORMAT, LEGACY_PROTOCOL as LEGACY_BRIDGE_PROTOCOL,
                                          LEGACY_FORMAT as LEGACY_BRIDGE_FORMAT)
 
+PROTOCOL = "accepted_flat_reward_balanced_anticipatory_support_height_course_v1"
+FORMAT = "h2_guarded_stair_ppo_reward_balance_v1"
+REWARD_BALANCE_PROTOCOLS = (PROTOCOL,)
+
 LEGACY_COURSE_PROTOCOL = "accepted_flat_fixed_target_height_course_stair_v10"
-EXECUTION_PROTOCOLS = (EXECUTION_PROTOCOL, LEGACY_BRIDGE_PROTOCOL, PROTOCOL)
-BRIDGE_PROTOCOLS = (LEGACY_BRIDGE_PROTOCOL, PROTOCOL)
+EXECUTION_PROTOCOLS = (EXECUTION_PROTOCOL, LEGACY_BRIDGE_PROTOCOL, FIT_BRIDGE_PROTOCOL, PROTOCOL)
+BRIDGE_PROTOCOLS = (LEGACY_BRIDGE_PROTOCOL, FIT_BRIDGE_PROTOCOL, PROTOCOL)
 HEIGHT_COURSE_PROTOCOLS = (LEGACY_COURSE_PROTOCOL, *EXECUTION_PROTOCOLS)
 LEGACY_CLEARANCE_PROTOCOL = "accepted_flat_clearance_potential_stair_v9"
 CLEARANCE_PROGRESS_PROTOCOLS = (LEGACY_CLEARANCE_PROTOCOL, *HEIGHT_COURSE_PROTOCOLS)
@@ -28,7 +32,7 @@ PROTOCOL_FORMATS = {LEGACY_PROTOCOL: "h2_guarded_stair_ppo_v5",
                     LEGACY_CLEARANCE_PROTOCOL: "h2_guarded_stair_ppo_v9",
                     LEGACY_COURSE_PROTOCOL: "h2_guarded_stair_ppo_v10",
                     EXECUTION_PROTOCOL: EXECUTION_FORMAT, LEGACY_BRIDGE_PROTOCOL: LEGACY_BRIDGE_FORMAT,
-                    PROTOCOL: FORMAT}
+                    FIT_BRIDGE_PROTOCOL: FIT_BRIDGE_FORMAT, PROTOCOL: FORMAT}
 INITIALIZATION_PROTOCOLS = (LEGACY_INITIALIZATION_PROTOCOL, LEGACY_TEMPORAL_PROTOCOL, *ROLLOUT_CREDIT_PROTOCOLS)
 TEMPORAL_CREDIT_BY_PROTOCOL = {
     LEGACY_TEMPORAL_PROTOCOL: {"gamma": 0.99, "gae_lambda": 0.99, "rollout_steps": 24, "control_dt_s": 0.02},
@@ -49,6 +53,92 @@ _UNSET = object()
 # Products and quotients in the existing float32 snapshot are compared within
 # four float32 relative epsilons. Raw initial==maximum and bound checks are exact.
 _FLOAT32_RELATIVE_TOLERANCE = 4 * 2.0 ** -23
+
+
+def reward_balance_terms():
+    """Exact19-term configuration; only three existing costs are revised."""
+    values = {
+        "world_forward": (12.0, "stair_signed_forward", {}),
+        "heading_error": (-1.0, "stair_heading_error", {}),
+        "platform_hold": (1.5, "stair_qualified_platform_hold", {}),
+        "potential": (1.0, "stair_event", {"name":"potential"}),
+        "first_valid_foot": (3.0, "stair_event", {"name":"foot"}),
+        "bilateral_level": (8.0, "stair_event", {"name":"pair"}),
+        "high_foot_transfer": (3.0, "stair_event", {"name":"transfer"}),
+        "stable_top": (30.0, "stair_event", {"name":"top"}),
+        "failure": (-20.0, "stair_first_qualified_failure", {}),
+        "stance_slip": (-0.3, "stair_stance_slip", {}),
+        "tilt_margin": (-4.0, "stair_tilt_margin", {"free_angle":0.1, "angle_scale":0.4}),
+        "drive_request": (-0.001, "stair_drive_request", {}),
+        "target_change": (-0.5, "stair_target_change", {"max_fraction":0.5, "same_generation_only":True}),
+        "native_overspeed": (-0.1, "stair_native_overspeed", {}),
+        "soft_limit_excess": (-5.0, "stair_soft_limit_excess", {}),
+        "world_forward_excess_speed": (-33.333333333333336, "stair_forward_excess_speed", {}),
+        "outward_tilt_growth": (-20.0/(1.0-math.cos(0.75)), "stair_outward_tilt_growth", {"margin_angle":0.0}),
+        "body_angular_rate": (-0.025, "stair_body_angular_rate", {}),
+        "swing_clearance_deficit": (-4.0, "stair_swing_clearance_deficit",
+            {"preview":0.35, "full_target_distance":0.2, "terrain_normalized_envelope":True}),
+    }
+    return {name:dict(weight=weight, function=function, params=params)
+            for name,(weight,function,params) in values.items()}
+
+
+def reward_balance_contract():
+    return dict(kind="reward_only_balance_motion_v1", terms=reward_balance_terms(),
+        changed_terms=["tilt_margin", "target_change", "swing_clearance_deficit"],
+        term_count=19, continuous_payment_dt_s=0.02,
+        first_action_history_source="common_step_counter_minus_episode_start_counter_gt1",
+        new_reward_terms=0, new_learning_modules=0, extra_NN_forwards=0,
+        actor_observation_added=False, physical_or_acceptance_threshold_changed=False)
+
+
+def reward_balance_clearance_contract():
+    return dict(kind="earliest_uncrossed_full_footprint_v1", real_riser_count=6,
+        approach_m=1.4, depth_m=0.35, rear_margin_m=0.008,
+        lookahead_m=0.35, extra_height_m=0.02, distance_scale_m=None,
+        deficit_square_cap=1.0, target_retained_until_whole_sole_crossed=True,
+        observation_or_joint_controller=False,
+        height_normalization="actual_riser_height_plus_clearance",
+        outside_preview_reference="selected_lower_plane", uncrossed_only_cost_mask=True,
+        approach_envelope=dict(preview_m=0.35, full_target_distance_m=0.2,
+                               interpolation="linear_clipped"))
+
+
+def _reward_exact(actual, expected):
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(_reward_exact(actual[k],v) for k,v in expected.items())
+    if isinstance(expected, list):
+        return len(actual)==len(expected) and all(_reward_exact(a,b) for a,b in zip(actual,expected))
+    return actual == expected
+
+
+def reward_balance_config_errors(binding, actual_terms=_UNSET):
+    errors=[]
+    if not _reward_exact(binding, reward_balance_contract()):
+        errors.append("reward-only profile differs from its exact19-term contract")
+    if actual_terms is not _UNSET and not _reward_exact(actual_terms, reward_balance_terms()):
+        errors.append("resolved reward functions, weights or parameters differ")
+    return errors
+
+
+def reward_balance_snapshot_errors(binding, snapshot, *, expected_controls=None):
+    errors=reward_balance_config_errors(binding)
+    if errors:
+        return errors
+    keys={"contract", "actual_terms", "controls", "first_action_history_source", "extra_NN_forwards"}
+    if not isinstance(snapshot, dict) or set(snapshot)!=keys:
+        return ["missing or undeclared actual reward-only snapshot fields"]
+    errors.extend(reward_balance_config_errors(snapshot["contract"], snapshot["actual_terms"]))
+    if snapshot["contract"]!=binding or snapshot["first_action_history_source"]!=binding["first_action_history_source"]:
+        errors.append("actual reward-only declaration/history source disagrees")
+    controls=snapshot["controls"]
+    if type(controls) is not int or controls < 0 or (expected_controls is not None and controls!=expected_controls):
+        errors.append("actual reward-only control count differs")
+    if type(snapshot["extra_NN_forwards"]) is not int or snapshot["extra_NN_forwards"]!=0:
+        errors.append("reward-only profile may not introduce neural forwards")
+    return errors
 
 
 def _number(value):

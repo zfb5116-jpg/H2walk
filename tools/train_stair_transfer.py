@@ -41,6 +41,7 @@ from stair_execution_probe import StairExecutionProbe
 from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 from stair_contact_bridge_binding import bridge_config_errors, bridge_snapshot_errors
 from stair_contact_bridge import BridgeRejected
+from stair_initialization_binding import reward_balance_config_errors
 from stair_initialization_binding import (initialization_config_errors, exploration_snapshot_errors,
     temporal_credit_config_snapshot, temporal_credit_config_errors, temporal_credit_snapshot_errors,
     ROLLOUT_STEPS_BY_PROTOCOL, rollout_credit_collection_errors, rollout_credit_budget_errors,
@@ -80,6 +81,9 @@ def main():
     training_video = plan.get("training_video")
     execution_chain = plan.get("execution_chain")
     contact_bridge = plan.get("contact_bridge")
+    reward_balance = plan.get("reward_balance_profile")
+    if reward_balance_config_errors(reward_balance):
+        raise RuntimeError("Missing exact reward-only balance/motion profile")
     if bridge_config_errors(contact_bridge):
         raise RuntimeError("Missing training-only future contact bridge contract")
     if execution_config_errors(execution_chain):
@@ -102,7 +106,8 @@ def main():
     request = json.loads(request_path.read_text())
     if (request.get("height_course") != height_course or request.get("training_video") != training_video
             or request.get("execution_chain") != execution_chain
-            or request.get("contact_bridge") != contact_bridge):
+            or request.get("contact_bridge") != contact_bridge
+            or request.get("reward_balance_profile") != reward_balance):
         raise RuntimeError("Plan/request height/video declarations differ")
     initialization = plan.get("exploration_initialization")
     config_errors = initialization_config_errors(initialization, agent.stair_exploration_budget)
@@ -236,7 +241,8 @@ def main():
         from h2_task.stair_clearance_rewards import full_footprint_clearance_contract
         metadata["stair_clearance_target"] = full_footprint_clearance_contract(
             approach=raw.stair_progress.approach, depth=raw.stair_progress.depth,
-            steps=raw.stair_progress.steps)
+            steps=raw.stair_progress.steps,
+            **dict(raw.reward_manager.get_term_cfg("swing_clearance_deficit").params))
         if (type(action).__name__ != "DirectLegPositionAction" or action.gait_reference is not None
                 or len(raw.action_manager.held_joint_ids) != 17 or not raw.stair_progress.strict_episode_force):
             raise RuntimeError("Stair action, upper hold or force contract changed")
@@ -254,10 +260,19 @@ def main():
             reward_contract={name:dict(weight=float(raw.reward_manager.get_term_cfg(name).weight),
                 function=raw.reward_manager.get_term_cfg(name).func.__name__)
                 for name in raw.reward_manager.active_terms})
+        actual_reward_terms = {name:dict(weight=float(raw.reward_manager.get_term_cfg(name).weight),
+            function=raw.reward_manager.get_term_cfg(name).func.__name__,
+            params=dict(raw.reward_manager.get_term_cfg(name).params))
+            for name in raw.reward_manager.active_terms}
+        if reward_balance_config_errors(reward_balance, actual_reward_terms):
+            raise RuntimeError("Actual19 reward functions/weights/parameters differ from plan")
+        metadata["reward_balance_profile"] = reward_balance
+        metadata["runtime_reward_balance_config"] = actual_reward_terms
         runner = SupervisedRunner(env, runner_config, log_dir=str(log_dir), device=agent.device,
             supervision_path=args.supervision_state, policy=policy, effect_task_name=TASK,
             normalize_initial_observations=True, guarded_stair=True)
         metadata["runtime_temporal_credit"] = runner.alg.bind_temporal_credit(runner, raw, temporal_credit)
+        metadata["runtime_reward_balance"] = runner.alg.bind_reward_balance(raw, reward_balance)
         metadata["runtime_clearance_progress"] = runner.alg.bind_clearance_progress(raw, clearance_progress)
         metadata["runtime_rollout_collection"] = runner.alg.rollout_collection_snapshot()
         metadata["ppo_temporal_credit_override"]["value"] = metadata["runtime_temporal_credit"]["gae_lambda"]
@@ -302,7 +317,8 @@ def main():
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             height_profile=runner.alg.height_profile_snapshot(),
             execution_chain=runner.alg.execution_chain_snapshot(),
-            contact_bridge=runner.alg.contact_bridge_snapshot())
+            contact_bridge=runner.alg.contact_bridge_snapshot(),
+            reward_balance_profile=runner.alg.reward_balance_snapshot())
         if execution_snapshot_errors(execution_chain, metadata["runtime_execution_chain"], expected_controls=0):
             raise RuntimeError("Actual initial execution observer binding failed")
         if bridge_snapshot_errors(contact_bridge, metadata["runtime_contact_bridge"], expected_controls=0):
@@ -328,6 +344,7 @@ def main():
             height_profile=runner.alg.height_profile_snapshot(),
             execution_chain=runner.alg.execution_chain_snapshot(),
             contact_bridge=runner.alg.contact_bridge_snapshot(),
+            reward_balance_profile=runner.alg.reward_balance_snapshot(),
             normalization_abi=normalization_metadata(normalizers), normalizers_frozen=True)
         def bank_sealed(receipt):
             if (sha(request_path) != request_sha or sha(args.plan) != plan_sha
@@ -357,6 +374,7 @@ def main():
                                    height_profile=runner.alg.height_profile_snapshot(),
                                    execution_chain=runner.alg.execution_chain_snapshot(),
                                    contact_bridge=runner.alg.contact_bridge_snapshot(),
+            reward_balance_profile=runner.alg.reward_balance_snapshot(),
                                    actual_seal_storage_step=runner.alg.storage.step,
                                    actual_seal_RND_counter=int(runner.alg.rnd.update_counter),
                                    actual_current_rows_at_seal=receipt["current_rows_at_seal"],
@@ -370,7 +388,7 @@ def main():
                 trial_protocol=PROTOCOL,temporal_credit=temporal_credit,rollout_collection=rollout_collection,
                 clearance_progress_potential=clearance_progress, height_course=height_course, training_video=training_video,
                 execution_chain=execution_chain,
-                contact_bridge=contact_bridge,
+                contact_bridge=contact_bridge, reward_balance_profile=reward_balance,
                 plan_path=str(args.plan.resolve()),plan_sha256=plan_sha,initial_policy_sha256=plan["initial_policy_sha256"]))
         runner.alg.attach_guard(normalizers, runner.stair_exploration_budget, None, guard_dir,
             plan["initial_policy_sha256"], acquisition_spec=acquisition, on_bank_sealed=bank_sealed)
@@ -393,7 +411,8 @@ def main():
             rollout_collection=metadata["runtime_rollout_collection"],
             clearance_progress_potential=runner.alg.clearance_progress_snapshot(),
             height_profile=runner.alg.height_profile_snapshot(), execution_chain=runner.alg.execution_chain_snapshot(),
-            contact_bridge=runner.alg.contact_bridge_snapshot())
+            contact_bridge=runner.alg.contact_bridge_snapshot(),
+            reward_balance_profile=runner.alg.reward_balance_snapshot())
         try:
             runner.learn(num_learning_iterations=BUDGET, init_at_random_ep_len=True)
         except BridgeRejected as error:

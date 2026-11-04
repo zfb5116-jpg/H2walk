@@ -515,6 +515,11 @@ class SupervisedRunner(OnPolicyRunner):
             bridge = self.alg.contact_bridge_snapshot()
             if bridge is not None:
                 point["contact_bridge"] = bridge
+            reward_snapshot = getattr(self.alg, "reward_balance_snapshot", None)
+            if reward_snapshot is not None:
+                reward_balance = reward_snapshot()
+                if reward_balance is not None:
+                    point["reward_balance_profile"] = reward_balance
         with self.telemetry_path.open("a") as stream:
             stream.write(json.dumps(point) + "\n")
         for name, value in motion.items():

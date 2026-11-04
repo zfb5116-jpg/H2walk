@@ -27,6 +27,8 @@ from stair_curriculum_binding import (course_config_errors, profile_snapshot_err
 from training_video import video_config_errors
 from stair_execution_binding import execution_config_errors, execution_snapshot_errors
 from stair_contact_bridge_binding import bridge_config_errors, bridge_snapshot_errors
+from stair_initialization_binding import (REWARD_BALANCE_PROTOCOLS, reward_balance_config_errors,
+    reward_balance_snapshot_errors, reward_balance_clearance_contract)
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
@@ -160,6 +162,8 @@ def preflight(plan_path):
             and all(name in plan["implementation_sha256"] for name in
                     ("tools/stair_contact_bridge_binding.py", "tools/stair_contact_bridge.py")),
             "Missing reviewed future-contact training credit module")
+    require(not reward_balance_config_errors(plan.get("reward_balance_profile")),
+            "Missing exact reward-only balance/motion profile")
     for name, expected in plan["external_dependency_sha256"].items():
         require(digest(name) == expected, "Reviewed external terrain/reset/render/encoder dependency changed: "+name)
     require(digest(plan["initial_policy"]) == plan["initial_policy_sha256"] == "8a82278fba63e1e5d8f715c33d4bdfced50291f0fffec73909059d92626cbf9f", "Wrong accepted flat parent")
@@ -192,6 +196,17 @@ def startup(metadata,request):
     def check(ok,message):
         if not ok: errors.append(message)
     protocol=request.get("trial_protocol")
+    if protocol in REWARD_BALANCE_PROTOCOLS:
+        binding=request.get("reward_balance_profile")
+        check(metadata.get("reward_balance_profile")==binding
+              and not reward_balance_config_errors(binding, metadata.get("runtime_reward_balance_config")),
+              "reward-only plan/request/resolved configuration disagrees")
+        for snapshot in (metadata.get("runtime_reward_balance"),
+                         metadata.get("initial_learning_state",{}).get("reward_balance_profile"),
+                         metadata.get("guarded_stair_learning",{}).get("reward_balance_profile")):
+            errors.extend(reward_balance_snapshot_errors(binding, snapshot, expected_controls=0))
+        check(metadata.get("stair_clearance_target")==reward_balance_clearance_contract(),
+              "reward-only terrain clearance envelope differs")
     check(metadata.get("task") == TASK and type(protocol) is str and protocol in PROTOCOL_FORMATS
           and metadata.get("trial_protocol") == protocol, "wrong physical task/profile")
     if protocol in INITIALIZATION_PROTOCOLS:
@@ -378,6 +393,13 @@ def sample(case,commit=False,reviewed_pending=None):
                 expected_controls=latest_motion["completed_iterations"]*request["num_steps_per_env"])
             contract["errors"].extend("native contact bridge: "+error for error in bridge_errors)
             if bridge_errors: contract["status"]="failed"
+        if (request["job_kind"] == KIND and request.get("trial_protocol") in REWARD_BALANCE_PROTOCOLS
+                and latest_motion is not None):
+            reward_errors=reward_balance_snapshot_errors(request.get("reward_balance_profile"),
+                latest_motion.get("reward_balance_profile"),
+                expected_controls=latest_motion["completed_iterations"]*request["num_steps_per_env"])
+            contract["errors"].extend("native reward-only profile: "+error for error in reward_errors)
+            if reward_errors: contract["status"]="failed"
         files=[]
         if run:
             for path in run.glob("model_*.pt"):
@@ -586,6 +608,7 @@ def dispatch(plan_path,start,validation_parent=None):
             height_course=plan["height_course"], training_video=plan["training_video"],
             execution_chain=plan["execution_chain"],
             contact_bridge=plan["contact_bridge"],
+            reward_balance_profile=plan["reward_balance_profile"],
             external_dependency_sha256=plan["external_dependency_sha256"],
             frozen_files=frozen,retained_stat_identities=read(plan["custody_input_manifest"])["retained_stat_identities"],
             retained_trees=read(plan["custody_input_manifest"])["retained_trees"],
@@ -615,6 +638,7 @@ def dispatch(plan_path,start,validation_parent=None):
             height_course=plan["height_course"], training_video=plan["training_video"],
             execution_chain=plan["execution_chain"],
             contact_bridge=plan["contact_bridge"],
+            reward_balance_profile=plan["reward_balance_profile"],
             external_dependency_sha256=plan["external_dependency_sha256"],
             expected_final_iteration=BUDGET-1,expected_total_timesteps=BUDGET*1024*rollout_steps,
             monitor_snapshot_tool=str(SELF),monitor_snapshot_command=[sys.executable,str(SELF),"--monitor",str(case)])

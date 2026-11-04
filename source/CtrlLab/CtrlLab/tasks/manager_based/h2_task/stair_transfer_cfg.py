@@ -17,7 +17,12 @@ class StairTransferRewardsCfg(StairAscentRewardsCfg):
     outward_tilt_growth = RewTerm(func=clearance.stair_outward_tilt_growth,
         weight=-20.0/(cos(0.0)-cos(.75)), params={'margin_angle':0.0})
     body_angular_rate = RewTerm(func=clearance.stair_body_angular_rate, weight=-.025)
-    swing_clearance_deficit = RewTerm(func=clearance.stair_swing_clearance_deficit, weight=-4.0)
+    tilt_margin = RewTerm(func=rewards.stair_tilt_margin, weight=-4.0,
+        params={"free_angle":0.10, "angle_scale":0.40})
+    target_change = RewTerm(func=rewards.stair_target_change, weight=-0.5,
+        params={"max_fraction":0.5, "same_generation_only":True})
+    swing_clearance_deficit = RewTerm(func=clearance.stair_swing_clearance_deficit, weight=-4.0,
+        params={"preview":0.35, "full_target_distance":0.20, "terrain_normalized_envelope":True})
 
 
 @configclass

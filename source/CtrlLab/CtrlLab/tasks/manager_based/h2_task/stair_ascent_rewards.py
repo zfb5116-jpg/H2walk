@@ -54,9 +54,11 @@ def stair_stance_slip(env):
     return env.stair_progress.current_slip.square()
 
 
-def stair_tilt_margin(env, free_angle=0.5):
+def stair_tilt_margin(env, free_angle=0.5, angle_scale=1.0):
+    if angle_scale <= 0:
+        raise ValueError("Tilt reward scale must be positive")
     tilt = torch.acos((-env.scene["robot"].data.projected_gravity_b[:, 2]).clamp(-1, 1))
-    return (tilt-free_angle).clamp_min(0).square()
+    return ((tilt-free_angle).clamp_min(0)/angle_scale).square()
 
 
 def stair_drive_request(env):
@@ -68,10 +70,20 @@ def stair_drive_request(env):
     return (robot.data.computed_torque[:, ids] / limit).clamp(-5, 5).square().mean(-1)
 
 
-def stair_target_change(env):
+def stair_target_change(env, max_fraction=0.0, same_generation_only=False):
     # Normalize in the policy's bounded coordinates, rather than penalizing
     # unused raw magnitudes near tanh saturation or imposing a new rate cap.
-    return (env.action_manager.action.tanh()-env.action_manager.prev_action.tanh()).square().mean(-1)
+    if not 0.0 <= max_fraction <= 1.0:
+        raise ValueError("Action reward reduction must be a convex mean/max mixture")
+    change = (env.action_manager.action.tanh()-env.action_manager.prev_action.tanh()).square()
+    cost = (1.0-max_fraction)*change.mean(-1)+max_fraction*change.amax(-1)
+    if same_generation_only:
+        # The runner randomizes initial episode lengths. Only the existing
+        # physical generation start counter identifies a real command pair.
+        progress = env.stair_progress
+        age = env.common_step_counter-progress.start_counter
+        cost = cost*(age > 1)
+    return cost
 
 
 def stair_native_overspeed(env):

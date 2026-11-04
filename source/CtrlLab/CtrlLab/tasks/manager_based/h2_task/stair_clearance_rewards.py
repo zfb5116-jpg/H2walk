@@ -25,18 +25,32 @@ def full_footprint_riser_target(front, rear, *, approach=1.4, depth=0.35, steps=
     return (crossed+1).clamp_max(steps), obstacle
 
 
-def full_footprint_clearance_contract(*, approach=1.4, depth=0.35, steps=6):
-    return dict(kind="earliest_uncrossed_full_footprint_v1", real_riser_count=steps,
+def full_footprint_clearance_contract(*, approach=1.4, depth=0.35, steps=6,
+                                    preview=0.20, full_target_distance=0.20,
+                                    terrain_normalized_envelope=False):
+    contract = dict(kind="earliest_uncrossed_full_footprint_v1", real_riser_count=steps,
                 approach_m=approach, depth_m=depth, rear_margin_m=0.008,
                 lookahead_m=0.20, extra_height_m=0.02, distance_scale_m=0.05,
                 deficit_square_cap=16.0, target_retained_until_whole_sole_crossed=True,
                 observation_or_joint_controller=False)
+    if terrain_normalized_envelope:
+        if not preview > full_target_distance >= 0:
+            raise ValueError("Clearance preview must precede the full-height requirement")
+        contract.update(lookahead_m=preview, distance_scale_m=None, deficit_square_cap=1.0,
+            height_normalization="actual_riser_height_plus_clearance",
+            outside_preview_reference="selected_lower_plane", uncrossed_only_cost_mask=True,
+            approach_envelope=dict(preview_m=preview, full_target_distance_m=full_target_distance,
+                                   interpolation="linear_clipped"))
+    elif preview != 0.20 or full_target_distance != 0.20:
+        raise ValueError("Legacy clearance geometry must retain its declared20cm window")
+    return contract
 
 
 def swing_clearance_deficit(soles, rotations, origins, heights, corners, previous_soles,
                             filtered_force, weight, minimum_load, dt, *,
                             approach=1.4, depth=0.35, steps=6,
-                            lookahead=0.20, clearance=0.02, distance_scale=0.05):
+                            lookahead=0.20, clearance=0.02, distance_scale=0.05,
+                            terrain_normalized_envelope=False, full_target_distance=0.20):
     """Cost low forward-moving unloaded soles through the next real riser.
 
     The other foot must physically support at least70% body weight. Every sole
@@ -51,8 +65,23 @@ def swing_clearance_deficit(soles, rotations, origins, heights, corners, previou
     bottom = world_corners[..., 2].amin(-1)
     target_level, obstacle = full_footprint_riser_target(front, rear, approach=approach,
         depth=depth, steps=steps, lookahead=lookahead)
-    required_height = target_level*heights[:, None]+clearance
-    deficit = ((required_height-bottom).clamp_min(0)/distance_scale).clamp_max(4).square()
+    if terrain_normalized_envelope:
+        if not lookahead > full_target_distance >= 0:
+            raise ValueError("Clearance preview must precede the full-height requirement")
+        if not bool(torch.isfinite(heights).all() & (heights > 0).all()):
+            raise ValueError("Terrain-normalized clearance requires actual positive finite heights")
+        last_edge = approach+torch.as_tensor(steps-1, device=front.device, dtype=front.dtype)*depth
+        obstacle = rear < last_edge+0.008
+        edge = approach+(target_level-1).to(front.dtype)*depth
+        distance = edge-front
+        alpha = ((lookahead-distance)/(lookahead-full_target_distance)).clamp(0, 1)
+        alpha = torch.where(distance <= full_target_distance, 1.0, alpha)
+        rise = heights[:, None]+clearance
+        required_height = (target_level-1)*heights[:, None]+alpha*rise
+        deficit = ((required_height-bottom)/rise).clamp(0, 1).square()
+    else:
+        required_height = target_level*heights[:, None]+clearance
+        deficit = ((required_height-bottom).clamp_min(0)/distance_scale).clamp_max(4).square()
     fz = filtered_force[..., 2]
     unloaded = fz < minimum_load[:, None]
     other_supported = fz.flip(-1) >= .7*weight[:, None]
@@ -61,13 +90,16 @@ def swing_clearance_deficit(soles, rotations, origins, heights, corners, previou
     return (deficit*moving*obstacle*unloaded*other_supported).sum(-1)
 
 
-def stair_swing_clearance_deficit(env):
+def stair_swing_clearance_deficit(env, preview=0.20, full_target_distance=0.20,
+                                 terrain_normalized_envelope=False):
     env._update_stair_progress()
     p = env.stair_progress
     soles, rotations = env._stair_foot_pose()
     cost = swing_clearance_deficit(soles, rotations, p.origins, p.heights, p.corners,
         p.pre_soles, p.ground_force_end, p.weight, p.minimum_load, env.step_dt,
-        approach=p.approach, depth=p.depth, steps=p.steps)
+        approach=p.approach, depth=p.depth, steps=p.steps, lookahead=preview,
+        terrain_normalized_envelope=terrain_normalized_envelope,
+        full_target_distance=full_target_distance)
     # Negative physical costs are not suppressed after a force-qualification
     # failure. Only invalid physical states are excluded by their own boundary.
     return cost * ~p.ever_invalid

@@ -25,6 +25,9 @@ PARENT_CPU_SHA = "a6dd8e21690f90362770221879613e373a4baa3bc6a8b47f1853ff43a84ea1
 FORMAL_SHA = "0516fa4f5b1a49f75b7a9f2ba4d60c38be18064018a45c7badbb1863552ce881"
 BUDGET = 1000
 
+from stair_initialization_binding import (REWARD_BALANCE_PROTOCOLS, reward_balance_config_errors,
+                                          reward_balance_snapshot_errors)
+
 
 class H2GuardedStairPPO(H2GuardedPPO):
     """Keep original optimizer/constraints and select original-block row calls."""
@@ -37,6 +40,32 @@ class H2GuardedStairPPO(H2GuardedPPO):
                          stair_temporal_credit=trial_protocol in TEMPORAL_PROTOCOLS, **kwargs)
         self.checkpoint_format = PROTOCOL_FORMATS[trial_protocol]
         self.selected_row_evaluation_policy = SELECTED_ROW_BLOCK_POLICY
+
+    def bind_reward_balance(self, environment, binding):
+        require(self.stair_trial_protocol in REWARD_BALANCE_PROTOCOLS
+                and environment is self._temporal_credit_environment
+                and not hasattr(self, "_reward_balance_binding")
+                and not reward_balance_config_errors(binding),
+                "Wrong or repeated reward-only profile binding")
+        self._reward_balance_binding = copy.deepcopy(binding)
+        return self.reward_balance_snapshot()
+
+    def reward_balance_snapshot(self):
+        if self.stair_trial_protocol not in REWARD_BALANCE_PROTOCOLS:
+            return None
+        require(hasattr(self, "_reward_balance_binding"), "Actual reward-only profile is not bound")
+        environment = self._temporal_credit_environment
+        terms = {name:dict(weight=float(environment.reward_manager.get_term_cfg(name).weight),
+                 function=environment.reward_manager.get_term_cfg(name).func.__name__,
+                 params=copy.deepcopy(environment.reward_manager.get_term_cfg(name).params))
+                 for name in environment.reward_manager.active_terms}
+        result = dict(contract=copy.deepcopy(self._reward_balance_binding), actual_terms=terms,
+            controls=int(environment.common_step_counter),
+            first_action_history_source="common_step_counter_minus_episode_start_counter_gt1",
+            extra_NN_forwards=0)
+        require(not reward_balance_snapshot_errors(self._reward_balance_binding, result),
+                "Actual reward functions, weights or parameters disagree")
+        return result
 
     def bind_contact_bridge(self, environment, binding, directory):
         from stair_contact_bridge import ContactBridge
@@ -226,6 +255,8 @@ class H2GuardedStairPPO(H2GuardedPPO):
             result["execution_chain"] = self.execution_chain_snapshot()
         if self.stair_trial_protocol in BRIDGE_PROTOCOLS:
             result["contact_bridge"] = self.contact_bridge_snapshot()
+        if self.stair_trial_protocol in REWARD_BALANCE_PROTOCOLS:
+            result["reward_balance_profile"] = self.reward_balance_snapshot()
         return result
 
     def packet(self, iteration, infos=None):
@@ -248,12 +279,17 @@ class H2GuardedStairPPO(H2GuardedPPO):
         if self.stair_trial_protocol in BRIDGE_PROTOCOLS:
             result["contact_bridge"] = self.contact_bridge_snapshot()
             result["contact_bridge_seal"] = self.contact_bridge.proposal_seal()
+        if self.stair_trial_protocol in REWARD_BALANCE_PROTOCOLS:
+            result["reward_balance_profile"] = self.reward_balance_snapshot()
         return result
 
 
 def parent_admission(plan, root):
     """Receipt/custody checks only; never loads a parent checkpoint."""
     root = Path(root).resolve(strict=True)
+    if plan.get("trial_protocol") in REWARD_BALANCE_PROTOCOLS:
+        require(not reward_balance_config_errors(plan.get("reward_balance_profile")),
+                "Missing exact reward-only profile")
     require(plan["trial_protocol"] in PROTOCOL_FORMATS and plan["task"] == TASK
             and plan["max_iterations"] == BUDGET and plan["num_envs"] == 1024
             and plan["network_dimensions"] == [1034, 871, 73, 12], "Wrong stair plan")

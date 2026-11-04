@@ -91,13 +91,25 @@ class StairExecutionProbe:
             policy_action_mean=_value(transition.action_mean[0]),
             policy_action_sigma=_value(transition.action_sigma[0]),
             policy_sampled_action=_value(transition.actions[0]),
-            physics_counter_before=int(self.raw._sim_step_counter), physics_substeps=[])
+            physics_counter_before=int(self.raw._sim_step_counter), physics_substeps=[],
+            pending_postphysics_reset_flush_writes=0)
 
     def _copy_after_native_write(self):
         record = self.pending
         step = int(self.raw._sim_step_counter)
         phase = len(record["physics_substeps"]) + 1
-        if phase > 4 or step != record["physics_counter_before"] + phase:
+        control = int(self.raw.common_step_counter)
+        # SDK increments the control counter after all four physics steps.
+        # Its later subset-reset flush writes native data without another step.
+        # Env0 can still await its endpoint when other environments reset.
+        if control == record["control"]:
+            if (phase == 5 and step == record["physics_counter_before"] + 4
+                    and record["pending_postphysics_reset_flush_writes"] == 0):
+                record["pending_postphysics_reset_flush_writes"] = 1
+                return
+            raise RuntimeError("Execution observer postphysics reset flush differs")
+        if (control != record["control"] - 1 or phase > 4
+                or step != record["physics_counter_before"] + phase):
             raise RuntimeError("Execution observer native write is not one original physics substep")
         data = self.asset.data
         ids = self.joint_ids
