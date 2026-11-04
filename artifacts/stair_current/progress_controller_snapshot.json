@@ -1,11 +1,6 @@
 {
-  "status": "waiting_for_three_windows_and_saved_M500",
-  "at": "2026-11-04T18:35:32.309086+08:00",
+  "status": "completed_stopped_user_no_progress",
+  "at": "2026-11-04T20:23:10.555079+08:00",
   "case": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7",
-  "captured_window_iterations": [],
-  "actual_monitor_iteration": 174,
-  "checkpoint_exists": false,
-  "signals": 0,
-  "checkpoint_CPU_loads": 0,
-  "original_source_budget": 1000
+  "classification": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/user_progress_gate_500/terminal_classification.json"
 }

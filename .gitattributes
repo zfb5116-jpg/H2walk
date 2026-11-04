@@ -9,3 +9,4 @@ tools/** -text
 *.png binary
 *.xz binary -delta
 artifacts/stair_current/*.part* binary -delta
+artifacts/stair_current/**/*.parts/** binary -delta

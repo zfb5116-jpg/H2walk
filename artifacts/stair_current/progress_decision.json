@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-04T20:23:01.550485+08:00",
+  "action": "stop_user_zero_first_riser_progress",
+  "all_three_zero_qualified_verified_feet": true,
+  "window_iterations": [
+    299,
+    399,
+    499
+  ],
+  "completed_episode_counts": [
+    13260,
+    17011,
+    20571
+  ],
+  "mean_verified_feet": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "first_level_bilateral_fraction": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "complete_window_episodes": 5000,
+  "failures_invalid_kept_in_denominator": true,
+  "not_independent_formal_trials_or_convergence_proof": true
+}

@@ -1,7 +1,5 @@
 # H2walk
 
-> 当前模型归档正在传输；六段齐全后才能解压，完整性状态见发布清单。
-
 Unitree H2 在 Isaac Sim 中的平地行走与上楼学习项目。
 
 ## 当前能力与目标
@@ -17,15 +15,25 @@ Unitree H2 在 Isaac Sim 中的平地行走与上楼学习项目。
 | 记录 | 模型 | 说明 |
 | --- | --- | --- |
 | 平地行走 | `artifacts/flat_forward/model_999.pt` | 原 952/1024 平地验收记录。控制系统包含参考控制器和冻结学习残差，PT 本身不是完整控制器。 |
-| 当前上楼训练 | `artifacts/stair_current/model_0.pt.xz.part01` 至 `part06` | 六段组成一份无损归档，解压后为 `model_0.pt`。当前训练最新已完成保存的检查点，保存轮次为 0。训练仍在继续，进度快照可以高于保存轮次；该检查点没有上楼通过结论。 |
+| 最新上楼训练 | `artifacts/stair_current/model_500.pt.xz.parts/` | 无损分段归档，合并解压后为 `model_500.pt`。这是本次训练最新已保存的检查点；固定 15 cm 目标组连续三个完整窗口均无合格上阶落脚，训练已按既定规则结束，尚未通过上楼验收。 |
 
-当前训练模型、参数、原始验证回执、进度快照、审查摘要与对应的完整源码快照位于 `artifacts/stair_current/`。保存轮次、来源和 SHA256 见该目录的 `record.json`。平地记录保留其原验收数据和环境资料。视频不随本次内容提供；原始历史回执中的视频路径仅是原记录的引用。
+当前训练模型、参数、对应的字节保全回执、进度快照、审查摘要与对应的完整源码快照位于 `artifacts/stair_current/`。保存轮次、来源和 SHA256 见该目录的 `record.json`。平地记录保留其原验收数据和环境资料。视频不随本次内容提供；原始历史回执中的视频路径仅是原记录的引用。
 
-当前训练 PT 以约 96 MB 的 XZ 无损归档提供，解压后恢复约 453 MB 的原始 PT。已核对解压后的 SHA256 与原检查点完全一致。克隆后按顺序合并六段，再解压得到原 PT：
+最新训练 PT 以约 314 MB 的 XZ 无损归档提供，解压后恢复 461,642,331 字节的原始 PT。为适应上传连接，归档保存在 1199 个小片段中；这些片段合计仍是一份模型记录。已核对解压后的 SHA256 与原检查点完全一致。克隆后按路径顺序合并，再解压：
 
 ```bash
-cat artifacts/stair_current/model_0.pt.xz.part* > artifacts/stair_current/model_0.pt.xz
-xz -dk artifacts/stair_current/model_0.pt.xz
+cat artifacts/stair_current/model_500.pt.xz.parts/*/part* > artifacts/stair_current/model_500.pt.xz
+xz -dk artifacts/stair_current/model_500.pt.xz
+sha256sum artifacts/stair_current/model_500.pt
+```
+
+原始 PT 的 SHA256 应为 `903ee671568a6aba7a6414a1b059e5d66a68b7c45a1537bdffeb308d8c3fa52f`。文件保存与无损传输检查不代表模型通过上楼验收；初始检查点的 CPU 回执单独保留在 `startup/`，不作为这份最新检查点的验证结论。
+
+当前记录也包含实际执行旁录的无损副本，保存于 `execution_records/`。这些资料用于后续核对地形输入与动作响应；本次上传只检查字节完整性，没有重新解析统计或开展仿真实验。恢复方式：
+
+```bash
+cat artifacts/stair_current/execution_records/records.jsonl.xz.parts/*/part* > artifacts/stair_current/execution_records/records.jsonl.xz
+xz -dk artifacts/stair_current/execution_records/records.jsonl.xz
 ```
 
 ## 环境与前置依赖

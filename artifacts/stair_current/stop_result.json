@@ -1,0 +1,135 @@
+{
+  "at": "2026-11-04T20:23:05.941047+08:00",
+  "reasons": [
+    "user-authorized500checkpoint: three complete fixed target15 windows have zero qualified verified stair feet"
+  ],
+  "signals": [
+    {
+      "signal": "SIGINT",
+      "identity": {
+        "recorded_identity": {
+          "pid": 2385229,
+          "start_ticks": 250111995,
+          "pgid": 2385224,
+          "ppid": 2385224,
+          "argv": [
+            "/home/nsgm/isaac-sim/kit/python/bin/python3",
+            "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py",
+            "--headless",
+            "--device",
+            "cuda:0",
+            "--enable_cameras",
+            "--plan",
+            "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json",
+            "--supervision_state",
+            "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json",
+            "--stop_policy",
+            "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json",
+            "--expected_git_commit",
+            "b5f5ae5f4aa742de93574df37dec1ce4323a249b"
+          ],
+          "fullargv": "/home/nsgm/isaac-sim/kit/python/bin/python3 /home/nsgm/python_src/H2walk/tools/train_stair_transfer.py --headless --device cuda:0 --enable_cameras --plan /home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json --supervision_state /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json --stop_policy /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json --expected_git_commit b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+          "process_state": "R",
+          "role": "learner",
+          "entrypoint": "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py"
+        },
+        "observed": {
+          "pid": 2385229,
+          "start_ticks": 250111995,
+          "pgid": 2385224,
+          "ppid": 2385224,
+          "argv": [
+            "/home/nsgm/isaac-sim/kit/python/bin/python3",
+            "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py",
+            "--headless",
+            "--device",
+            "cuda:0",
+            "--enable_cameras",
+            "--plan",
+            "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json",
+            "--supervision_state",
+            "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json",
+            "--stop_policy",
+            "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json",
+            "--expected_git_commit",
+            "b5f5ae5f4aa742de93574df37dec1ce4323a249b"
+          ],
+          "fullargv": "/home/nsgm/isaac-sim/kit/python/bin/python3 /home/nsgm/python_src/H2walk/tools/train_stair_transfer.py --headless --device cuda:0 --enable_cameras --plan /home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json --supervision_state /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json --stop_policy /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json --expected_git_commit b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+          "process_state": "R"
+        },
+        "identity_matches": true
+      }
+    }
+  ],
+  "remaining": [
+    {
+      "recorded_identity": {
+        "pid": 2385224,
+        "start_ticks": 250111995,
+        "pgid": 2385224,
+        "ppid": 2385217,
+        "argv": [
+          "/bin/bash",
+          "/home/nsgm/isaac-sim/python.sh",
+          "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py",
+          "--headless",
+          "--device",
+          "cuda:0",
+          "--enable_cameras",
+          "--plan",
+          "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json",
+          "--supervision_state",
+          "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json",
+          "--stop_policy",
+          "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json",
+          "--expected_git_commit",
+          "b5f5ae5f4aa742de93574df37dec1ce4323a249b"
+        ],
+        "fullargv": "/bin/bash /home/nsgm/isaac-sim/python.sh /home/nsgm/python_src/H2walk/tools/train_stair_transfer.py --headless --device cuda:0 --enable_cameras --plan /home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json --supervision_state /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json --stop_policy /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json --expected_git_commit b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+        "process_state": "S",
+        "role": "wrapper",
+        "entrypoint": "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py"
+      },
+      "observed": {
+        "pid": 2385224,
+        "start_ticks": 250111995,
+        "pgid": 2385224,
+        "ppid": 2385217,
+        "argv": [],
+        "fullargv": "",
+        "process_state": "Z"
+      },
+      "identity_matches": false
+    },
+    {
+      "recorded_identity": {
+        "pid": 2385229,
+        "start_ticks": 250111995,
+        "pgid": 2385224,
+        "ppid": 2385224,
+        "argv": [
+          "/home/nsgm/isaac-sim/kit/python/bin/python3",
+          "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py",
+          "--headless",
+          "--device",
+          "cuda:0",
+          "--enable_cameras",
+          "--plan",
+          "/home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json",
+          "--supervision_state",
+          "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json",
+          "--stop_policy",
+          "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json",
+          "--expected_git_commit",
+          "b5f5ae5f4aa742de93574df37dec1ce4323a249b"
+        ],
+        "fullargv": "/home/nsgm/isaac-sim/kit/python/bin/python3 /home/nsgm/python_src/H2walk/tools/train_stair_transfer.py --headless --device cuda:0 --enable_cameras --plan /home/nsgm/python_src/H2walk/logs/stairs_work/stair_supported_clearance_terrain_recording_20261104T082117Z/plan.json --supervision_state /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/supervision.json --stop_policy /home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/stop_policy.json --expected_git_commit b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+        "process_state": "R",
+        "role": "learner",
+        "entrypoint": "/home/nsgm/python_src/H2walk/tools/train_stair_transfer.py"
+      },
+      "observed": null,
+      "identity_matches": false
+    }
+  ]
+}

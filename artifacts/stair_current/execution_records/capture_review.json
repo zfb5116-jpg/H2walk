@@ -1,0 +1,35 @@
+{
+  "status": "passed_new_case14_trace_opaque_capture_for_publication_only",
+  "source": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_guarded_stair_transfer/2026-11-04_17-38-11_678015e7/execution_chain/env0_control_records.jsonl",
+  "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
+  "original_opens": 1,
+  "source_identity": {
+    "st_dev": 66313,
+    "st_ino": 11988028,
+    "st_size": 46728909,
+    "st_mtime_ns": 1793794939569761572,
+    "st_ctime_ns": 1793794939569761572
+  },
+  "raw_cache": "/home/nsgm/python_src/H2walk/logs/publications/github_upload_20261104T103306Z/case14_execution_capture/execution.jsonl",
+  "raw_sha256": "088c82c2c3f87975875c5c7ab0c90239c4f5f873104fbe079e96dfde7c997d94",
+  "raw_bytes": 46728909,
+  "archive_bytes": 7996144,
+  "archive_sha256": "0d3b124494db2080be961260c76b64a31c69e801a7b2ccfcbea9b3608792a221",
+  "parts": [
+    {
+      "file": "execution.jsonl.xz.part001",
+      "bytes": 4194304,
+      "sha256": "6266480599111089ce662a2ec3490e03dcde169449e1630557fccc0255754f31",
+      "git_blob_sha1": "85f7671cdb93ec8506efe4defe9c2cf18c52e803"
+    },
+    {
+      "file": "execution.jsonl.xz.part002",
+      "bytes": 3801840,
+      "sha256": "fd49baad4f41ef5f63511aced459a3a192b869f61b3b9d3f48fed86baee92a71",
+      "git_blob_sha1": "e92f01dc6d393049abb42724e3c7fbc8b3995bab"
+    }
+  ],
+  "scientific_JSON_parse_or_statistics": 0,
+  "model_NN_solver_or_Sim": 0,
+  "future_science_must_use_this_new_cache_not_reopen_original": true
+}

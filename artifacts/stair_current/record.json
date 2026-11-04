@@ -1,19 +1,19 @@
 {
   "kind": "saved_current_training_record",
-  "captured_at": "2026-11-04T10:35:33.214081+00:00",
+  "captured_at": "2026-11-04T13:47:54.833489+00:00",
   "source_commit": "b5f5ae5f4aa742de93574df37dec1ce4323a249b",
   "case_name": "stair_transfer_20261104_173801_678015e7",
   "run_name": "2026-11-04_17-38-11_678015e7",
   "protocol": "accepted_flat_supported_clearance_terrain_observed_height_course_v2",
   "checkpoint_format": "h2_guarded_stair_ppo_supported_clearance_v2",
   "plan_sha256": "c69720ba816685d9d5d6a0e1d34f753975eccaa38d2adb08501431d7a50f7143",
-  "training_status_at_capture": "training",
-  "checkpoint": "model_0.pt",
-  "checkpoint_iteration": 0,
-  "checkpoint_bytes": 453245538,
-  "checkpoint_sha256": "f53007e24e8d41b6565021a54c97d4e2b03dd72e4bb4a3da8b2292b1da10567a",
+  "training_status_at_capture": "stopped_user_no_first_riser_progress",
+  "checkpoint": "model_500.pt",
+  "checkpoint_iteration": 500,
+  "checkpoint_bytes": 461642331,
+  "checkpoint_sha256": "903ee671568a6aba7a6414a1b059e5d66a68b7c45a1537bdffeb308d8c3fa52f",
   "saved_checkpoint_is_not_live_unsaved_weights": true,
-  "automatic_monitor_footer_at_capture": 174,
+  "automatic_monitor_footer_at_capture": 502,
   "independently_reviewed_raw_through": 93,
   "num_envs": 1024,
   "source_budget_updates": 1000,
@@ -34,45 +34,21 @@
   "parent_weight_file_included": false,
   "training_videos_included": false,
   "transport": {
-    "artifact": "model_0.pt.xz.part01..part06",
+    "artifact": "model_500.pt.xz.parts",
     "format": "xz-split",
     "lossless": true,
-    "archive_bytes": 96164412,
-    "archive_sha256": "d954f85dff494dbedec8b747ab22e5d69244212b87ecdd4d781ebaac58f3da27",
-    "decoded_filename": "model_0.pt",
-    "decoded_bytes": 453245538,
-    "decoded_sha256": "f53007e24e8d41b6565021a54c97d4e2b03dd72e4bb4a3da8b2292b1da10567a",
-    "parts": [
-      {
-        "file": "model_0.pt.xz.part01",
-        "bytes": 16777216,
-        "sha256": "953deabae3aa4f7ecbcc66f65b505b4fb3f77817d043fc94eab2b5b2764c06fd"
-      },
-      {
-        "file": "model_0.pt.xz.part02",
-        "bytes": 16777216,
-        "sha256": "4cb1ba28513989514d01e36d8e97831fda34b3396eb55ad2dd9036becc2fa954"
-      },
-      {
-        "file": "model_0.pt.xz.part03",
-        "bytes": 16777216,
-        "sha256": "bfee0c000bd439065de5eb109f202ed0575cf78d8d83a2d62c9964bab49f50b9"
-      },
-      {
-        "file": "model_0.pt.xz.part04",
-        "bytes": 16777216,
-        "sha256": "0a040da7a23f1cb466639adc5902d84ab6240e1e78bfb8882ea212adc21cc9bd"
-      },
-      {
-        "file": "model_0.pt.xz.part05",
-        "bytes": 16777216,
-        "sha256": "e9c309e40acdd4d5ac2530ff55532d52f4ae7a77413ffee5c8850b749d2a4875"
-      },
-      {
-        "file": "model_0.pt.xz.part06",
-        "bytes": 12278332,
-        "sha256": "836571616326cf3a50ed913077a77770482fa95a02129464641a84e01148187a"
-      }
-    ]
-  }
+    "archive_bytes": 314216960,
+    "archive_sha256": "72138cba090446a205eff48a5c688d24eba4e63919664a8226b409e8932c3011",
+    "decoded_filename": "model_500.pt",
+    "decoded_bytes": 461642331,
+    "decoded_sha256": "903ee671568a6aba7a6414a1b059e5d66a68b7c45a1537bdffeb308d8c3fa52f",
+    "parts_manifest": "checkpoint_parts.json",
+    "part_count": 1199
+  },
+  "terminal_raw_EOF_independent_review_pending": true,
+  "latest_checkpoint_CPU_validation_performed": false,
+  "natural_1000_completion": false,
+  "post_checkpoint_unsaved_live_work": "unknown",
+  "startup_CPU_receipt": "startup/model_0.validation.json",
+  "startup_CPU_receipt_does_not_qualify_model_500": true
 }

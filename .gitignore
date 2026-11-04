@@ -30,3 +30,7 @@ venv/
 *.webm
 *.m4v
 artifacts/stair_current/model_*.pt.xz
+
+# Reassembled local execution data archives.
+artifacts/stair_current/execution_records/*.jsonl.xz
+artifacts/stair_current/execution_records/records.jsonl

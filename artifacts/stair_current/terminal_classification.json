@@ -1,0 +1,49 @@
+{
+  "status": "stopped_user_no_first_riser_progress",
+  "scope_closed": true,
+  "at": "2026-11-04T20:23:10.501822+08:00",
+  "case": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7",
+  "decision": {
+    "action": "stop_user_zero_first_riser_progress",
+    "all_three_zero_qualified_verified_feet": true,
+    "window_iterations": [
+      299,
+      399,
+      499
+    ],
+    "completed_episode_counts": [
+      13260,
+      17011,
+      20571
+    ],
+    "mean_verified_feet": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "first_level_bilateral_fraction": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "complete_window_episodes": 5000,
+    "failures_invalid_kept_in_denominator": true,
+    "not_independent_formal_trials_or_convergence_proof": true
+  },
+  "original_source_budget": 1000,
+  "natural_completion": false,
+  "selected_checkpoint": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_guarded_stair_transfer/2026-11-04_17-38-11_678015e7/model_500.pt",
+  "checkpoint_sha256": "903ee671568a6aba7a6414a1b059e5d66a68b7c45a1537bdffeb308d8c3fa52f",
+  "checkpoint_bytes_only_no_CPU": true,
+  "actual_final_footer_iteration": 502,
+  "actual_manager_status": "finished",
+  "actual_manager_outcome": "failed",
+  "actual_manager_exit_code": 0,
+  "actual_supervision_status": "failed",
+  "actual_both_births_ended": true,
+  "actual_manager_birth_ended": true,
+  "actual_GPU_empty": true,
+  "live_work_after_saved_checkpoint": "unknown; user INT does not promise whole-update or GPU RNG restoration",
+  "not_natural1000_not_exact_resume_not_independent_formal_failure": true,
+  "unconsumed_actor_raw_tail_requires_separate_ROOT_admission": true
+}

@@ -1,0 +1,46 @@
+{
+  "status": "passed_bytes_only",
+  "scope_closed": true,
+  "at": "2026-11-04T20:23:03.423792+08:00",
+  "checkpoint": "/home/nsgm/python_src/H2walk/logs/rsl_rl/h2_guarded_stair_transfer/2026-11-04_17-38-11_678015e7/model_500.pt",
+  "checkpoint_sha256": "903ee671568a6aba7a6414a1b059e5d66a68b7c45a1537bdffeb308d8c3fa52f",
+  "identity": {
+    "st_dev": 66313,
+    "st_ino": 11988280,
+    "st_size": 461642331,
+    "st_mtime_ns": 1793794944694338085,
+    "st_ctime_ns": 1793794944694338085
+  },
+  "opened_fstat": {
+    "st_dev": 66313,
+    "st_ino": 11988280,
+    "st_size": 461642331,
+    "st_mtime_ns": 1793794944694338085,
+    "st_ctime_ns": 1793794944694338085
+  },
+  "after_fstat": {
+    "st_dev": 66313,
+    "st_ino": 11988280,
+    "st_size": 461642331,
+    "st_mtime_ns": 1793794944694338085,
+    "st_ctime_ns": 1793794944694338085
+  },
+  "after_path_identity": {
+    "st_dev": 66313,
+    "st_ino": 11988280,
+    "st_size": 461642331,
+    "st_mtime_ns": 1793794944694338085,
+    "st_ctime_ns": 1793794944694338085
+  },
+  "ROOT_checkpoint_byte_opens": 1,
+  "CPU_loads": 0,
+  "NPZ_decodes": 0,
+  "optimizer_RNG_serialization_not_inspected": true,
+  "complete_policy_CPU_validation": false,
+  "validation_receipt_exists": false,
+  "metadata_pending": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/monitor.pending_7fbb8e857f56.json",
+  "metadata_pending_sha256": "894bc674b6bc7daf1ebc6a52dd15e78d36575be7fd35dc034834e4bc509b8f12",
+  "complete_footer_at_byte_admission": 501,
+  "physical_acceptance": false,
+  "byte_capture_owner": "/home/nsgm/python_src/H2walk/logs/stair_learning/stair_transfer_20261104_173801_678015e7/user_progress_gate_500"
+}
