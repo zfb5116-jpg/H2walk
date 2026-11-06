@@ -222,29 +222,89 @@ class StageEvaluator:
         self._family_snapshot = None
 
     @torch.no_grad()
-    def observe(self, command_tracker: CommandProgressTracker, traversal_tracker: StairTraversalTracker,
-                env_ids: Sequence[int] | torch.Tensor, *, family_ids: torch.Tensor,
-                terminated: torch.Tensor, time_outs: torch.Tensor,
-                max_episode_length_s: float, current_step: int) -> dict[str, object] | None:
+    def episode_success_mask(
+        self, command_tracker: CommandProgressTracker, traversal_tracker: StairTraversalTracker,
+        ids: Sequence[int] | torch.Tensor, *, family_ids: torch.Tensor,
+        terminated: torch.Tensor, time_outs: torch.Tensor,
+        max_episode_length_s: float, extra_success: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Classify settled natural episodes without consuming any evidence.
+
+        The result follows the tracker's sorted unique-ID order. The same
+        predicate supplies individual completion events and window statistics;
+        ``extra_success`` can tighten a new mode without changing old modes.
+        Readiness and generation are required, but ``reported`` is deliberately
+        not part of classification: once-only consumption belongs to the caller.
+        """
         n, device = traversal_tracker.num_envs, traversal_tracker.device
         if not math.isfinite(max_episode_length_s) or max_episode_length_s <= 0:
             raise ValueError("Maximum episode duration must be finite and positive")
-        if isinstance(current_step, bool) or not isinstance(current_step, int) or current_step < self._last_step:
-            raise ValueError("current_step must be a nondecreasing nonnegative integer")
         for name, value in (("family_ids", family_ids), ("terminated", terminated), ("time_outs", time_outs)):
             expected = torch.long if name == "family_ids" else torch.bool
             if not isinstance(value, torch.Tensor) or value.shape != (n,) or value.device != device or value.dtype != expected:
                 raise ValueError(f"{name} must have shape {(n,)} and dtype {expected} on {device}")
+        if extra_success is not None and (
+            not isinstance(extra_success, torch.Tensor) or extra_success.shape != (n,)
+            or extra_success.device != device or extra_success.dtype != torch.bool
+        ):
+            raise ValueError(f"extra_success must have shape {(n,)} and dtype torch.bool on {device}")
         declared = torch.zeros_like(family_ids, dtype=torch.bool)
         for family in self.required_families:
             declared |= family_ids == family
         if not declared.all():
             raise ValueError("family_ids include an undeclared stage family")
+        sample = traversal_tracker._ids(ids)
+        elapsed = command_tracker.elapsed_time[sample]
+        active = command_tracker.forward_active_time[sample]
+        target = command_tracker.forward_target_distance[sample]
+        progress = command_tracker.forward_signed_progress[sample]
+        inactive = command_tracker.inactive_forward_error[sample]
+        finite = (torch.isfinite(elapsed) & torch.isfinite(active) & torch.isfinite(target)
+                  & torch.isfinite(progress) & torch.isfinite(inactive))
+        ratio = progress / target.clamp_min(1e-12)
+        effective = (progress - inactive) / target.clamp_min(1e-12)
+        valid = (command_tracker.valid[sample] & traversal_tracker.valid[sample] & finite
+                 & (inactive >= 0) & traversal_tracker.support_seen[sample].all(dim=1)
+                 & torch.isclose(elapsed, traversal_tracker.elapsed_time[sample], atol=1e-3, rtol=1e-4))
+        ready = (command_tracker.reset_ready[sample] & traversal_tracker.reset_ready[sample]
+                 & (command_tracker.episode_generation[sample] == self.generation)
+                 & (traversal_tracker.episode_generation[sample] == self.generation))
+        success = (valid & ready & time_outs[sample] & ~terminated[sample]
+                   & (elapsed >= self.min_episode_fraction * max_episode_length_s)
+                   & (active >= self.min_active_time) & (target >= self.min_target_distance)
+                   & (ratio >= self.min_progress_ratio) & (ratio <= self.max_progress_ratio)
+                   & (effective >= self.min_progress_ratio))
+        height_change = (traversal_tracker.last_supported_height[sample]
+                         - traversal_tracker.initial_supported_height[sample])
+        minimum_height = self.min_stair_events * STAGE_HEIGHT_RANGES[self.stage][0] * 0.75
+        up = ((traversal_tracker.up_events[sample] >= self.min_stair_events).all(dim=1)
+              & (height_change >= minimum_height - 1e-6).all(dim=1))
+        down = ((traversal_tracker.down_events[sample] >= self.min_stair_events).all(dim=1)
+                & (height_change <= -minimum_height + 1e-6).all(dim=1))
+        family = family_ids[sample]
+        success &= ((family == 0) | ((family == 1) & up) | ((family == 2) & down))
+        if extra_success is not None:
+            success &= extra_success[sample]
+        return success
+
+    @torch.no_grad()
+    def observe(self, command_tracker: CommandProgressTracker, traversal_tracker: StairTraversalTracker,
+                env_ids: Sequence[int] | torch.Tensor, *, family_ids: torch.Tensor,
+                terminated: torch.Tensor, time_outs: torch.Tensor,
+                max_episode_length_s: float, current_step: int,
+                extra_success: torch.Tensor | None = None) -> dict[str, object] | None:
+        if isinstance(current_step, bool) or not isinstance(current_step, int) or current_step < self._last_step:
+            raise ValueError("current_step must be a nondecreasing nonnegative integer")
+        ids = traversal_tracker._ids(env_ids)
+        episode_success = self.episode_success_mask(
+            command_tracker, traversal_tracker, ids, family_ids=family_ids,
+            terminated=terminated, time_outs=time_outs,
+            max_episode_length_s=max_episode_length_s, extra_success=extra_success,
+        )
         if self._family_snapshot is not None and not torch.equal(family_ids, self._family_snapshot):
             raise ValueError("Stage family assignments must remain fixed")
         if self._family_snapshot is None:
             self._family_snapshot = family_ids.clone()
-        ids = traversal_tracker._ids(env_ids)
         ready = traversal_tracker.reset_ready[ids] & command_tracker.reset_ready[ids] & ~traversal_tracker.reported[ids]
         ready_ids = ids[ready]
         candidate = ((terminated[ready_ids] | time_outs[ready_ids])
@@ -252,32 +312,8 @@ class StageEvaluator:
                      & (command_tracker.episode_generation[ready_ids] == self.generation))
         sample = ready_ids[candidate]
         if sample.numel():
-            elapsed = command_tracker.elapsed_time[sample]
-            active = command_tracker.forward_active_time[sample]
-            target = command_tracker.forward_target_distance[sample]
-            progress = command_tracker.forward_signed_progress[sample]
-            inactive = command_tracker.inactive_forward_error[sample]
-            finite = (torch.isfinite(elapsed) & torch.isfinite(active) & torch.isfinite(target)
-                      & torch.isfinite(progress) & torch.isfinite(inactive))
-            ratio = progress / target.clamp_min(1e-12)
-            effective = (progress - inactive) / target.clamp_min(1e-12)
-            valid = (command_tracker.valid[sample] & traversal_tracker.valid[sample] & finite
-                     & (inactive >= 0) & traversal_tracker.support_seen[sample].all(dim=1)
-                     & torch.isclose(elapsed, traversal_tracker.elapsed_time[sample], atol=1e-3, rtol=1e-4))
-            success = (valid & time_outs[sample] & ~terminated[sample]
-                       & (elapsed >= self.min_episode_fraction * max_episode_length_s)
-                       & (active >= self.min_active_time) & (target >= self.min_target_distance)
-                       & (ratio >= self.min_progress_ratio) & (ratio <= self.max_progress_ratio)
-                       & (effective >= self.min_progress_ratio))
-            height_change = (traversal_tracker.last_supported_height[sample]
-                             - traversal_tracker.initial_supported_height[sample])
-            minimum_height = self.min_stair_events * STAGE_HEIGHT_RANGES[self.stage][0] * 0.75
-            up = ((traversal_tracker.up_events[sample] >= self.min_stair_events).all(dim=1)
-                  & (height_change >= minimum_height - 1e-6).all(dim=1))
-            down = ((traversal_tracker.down_events[sample] >= self.min_stair_events).all(dim=1)
-                    & (height_change <= -minimum_height + 1e-6).all(dim=1))
             family = family_ids[sample]
-            success &= ((family == 0) | ((family == 1) & up) | ((family == 2) & down))
+            success = episode_success[ready][candidate]
             counts = torch.bincount(family, minlength=3)
             successes = torch.bincount(family, weights=success.double(), minlength=3)
             values = torch.cat((counts.double(), successes)).cpu().tolist()

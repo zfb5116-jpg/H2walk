@@ -99,8 +99,8 @@ class WalkingRuntime:
         return local_ground_height(scanner.data.ray_hits_w, positions)
 
     @torch.no_grad()
-    def _support_state(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Certify upward terrain force near the sole, retaining an explicit validity mask."""
+    def support_components(self) -> dict[str, torch.Tensor]:
+        """Expose force and geometry separately; unknown is never ordinary air."""
         feet = self.env.asset.data.body_pos_w[:, self.env.feet_id_b]
         heights = self._ground_heights(feet)
         quaternions = self.env.asset.data.body_quat_w[:, self.env.feet_id_b]
@@ -109,6 +109,7 @@ class WalkingRuntime:
         near_surface = (sole - heights).abs() <= self.support_tolerance
         contacts = []
         valid_channels = []
+        vertical_forces = []
         for name in ("left_foot_ground", "right_foot_ground"):
             pairs = self.sensors[name].data.force_matrix_w_history[:, 0, 0]
             valid = torch.isfinite(pairs).all(dim=(1, 2))
@@ -116,8 +117,19 @@ class WalkingRuntime:
             # measured vertical forces, not the vector norm of any collision.
             contacts.append(valid & (pairs[..., 2].sum(dim=1) > self.threshold))
             valid_channels.append(valid)
+            vertical_forces.append(pairs[..., 2].sum(dim=1))
         valid = torch.stack(valid_channels, dim=1) & geometric_valid
-        return heights, torch.stack(contacts, dim=1) & valid & near_surface, valid
+        support = torch.stack(contacts, dim=1) & valid & near_surface
+        return {"ground_height": heights, "support": support, "valid": valid,
+                "force_z": torch.stack(vertical_forces, dim=1),
+                "force_valid": torch.stack(valid_channels, dim=1),
+                "force_support": torch.stack(contacts, dim=1),
+                "sole_height": sole, "near_surface": near_surface,
+                "geometry_valid": geometric_valid}
+
+    def _support_state(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        sample = self.support_components()
+        return sample["ground_height"], sample["support"], sample["valid"]
 
     def ground_support(self) -> tuple[torch.Tensor, torch.Tensor]:
         heights, support, _ = self._support_state()
@@ -128,6 +140,20 @@ class WalkingRuntime:
         if self.traversal is not None:
             self.traversal.begin_step(self.env.asset.data.root_pos_w, self.env.step_dt)
             self._check_tile_bounds(torch.arange(self.env.num_envs, device=self.env.device))
+
+    def settle_reward_transition(self) -> None:
+        """v3 settles terminal evidence before reward and reset, exactly once."""
+        env = self.env
+        terminal = env.termination_manager.terminated | env.termination_manager.time_outs
+        ids = terminal.nonzero(as_tuple=False).flatten()
+        env.command_progress_tracker.finish_step(ids, env.asset.data.root_pos_w[:, :2], for_reset=True)
+        self._finish_traversal(ids, for_reset=True)
+        remaining = env.command_progress_tracker.pending.nonzero(as_tuple=False).flatten()
+        env.command_progress_tracker.finish_step(remaining, env.asset.data.root_pos_w[:, :2])
+        if self.traversal is not None:
+            remaining = self.traversal.pending.nonzero(as_tuple=False).flatten()
+            if remaining.numel():
+                self._finish_traversal(remaining)
 
     def _check_tile_bounds(self, ids: Sequence[int] | torch.Tensor) -> None:
         if not torch.equal(self.env.scene.env_origins[:, :2], self.tile_origins):
@@ -193,10 +219,14 @@ class WalkingRuntime:
         if self.evaluator is not None:
             if not torch.equal(env.scene.terrain.terrain_types, self.column_ids):
                 raise ValueError("Stage terrain columns must stay fixed")
+            reward_state = getattr(env, "walking_reward_state", None)
+            success_evidence = getattr(reward_state, "success_evidence", None)
+            extra = {"extra_success": success_evidence} if success_evidence is not None else {}
             result = self.evaluator.observe(
                 env.command_progress_tracker, self.traversal, ids, family_ids=self.family_ids,
                 terminated=env.termination_manager.terminated, time_outs=env.termination_manager.time_outs,
                 max_episode_length_s=env.max_episode_length_s, current_step=env.common_step_counter,
+                **extra,
             )
             if result is not None:
                 self.latest_stage = result
@@ -204,6 +234,10 @@ class WalkingRuntime:
         natural = (env.command_progress_tracker.reset_ready[ids]
                    & (env.termination_manager.terminated[ids] | env.termination_manager.time_outs[ids]))
         selected = ids[natural]
+        reward_state = getattr(env, "walking_reward_state", None)
+        if callable(getattr(reward_state, "episode_logs", None)):
+            logs.update(reward_state.episode_logs(selected))
+            logs["Stage/uses_gait_evidence"] = 1.0
         snapshot = None
         if self.diagnostics and selected.numel():
             classified = classify_pelvis_contact(

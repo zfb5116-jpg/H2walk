@@ -20,7 +20,7 @@ STAGES = ("bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs
 PROTOCOL_ID = "h2_walk_fixed_scales_v2"
 REWARD_VERSION = "h2_walk_rewards_v1"
 REWARD_VERSIONS = {"legacy": REWARD_VERSION, "alternating_v1": REWARD_VERSION,
-                   "terrain_v2": "h2_walk_rewards_v2"}
+                   "terrain_v2": "h2_walk_rewards_v2", "budget_v3": "h2_walk_rewards_v3"}
 FORBIDDEN_STATES = {
     "obs_norm_state_dict",
     "privileged_obs_norm_state_dict",
@@ -160,7 +160,7 @@ def make_protocol(
     source: Mapping[str, Any],
     *,
     configuration_sha256: str,
-    reward_mode: str = "terrain_v2",
+    reward_mode: str = "budget_v3",
 ) -> dict[str, Any]:
     value = {
         "id": PROTOCOL_ID,

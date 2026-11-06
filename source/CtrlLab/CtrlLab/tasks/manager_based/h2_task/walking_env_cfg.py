@@ -16,6 +16,7 @@ from .robot_env_cfg import RobotSceneCfg, RobotStairsEnvCfg
 from .walking_profiles import apply_walking_profile
 from .walking_rewards import WALK_REWARD_PARAMETERS
 from .terrain_gait import TERRAIN_REWARD_PARAMETERS
+from .budget_parameters import BUDGET_REWARD_PARAMETERS
 
 
 # Collision-bearing rigid links from the audited H2 USD, not all 29 joint
@@ -106,17 +107,25 @@ def _configure_contact_diagnostic_sensors(cfg):
 
 def _configure_walking_reward_terms(cfg):
     """Declare opt-in terms before the pure profile resolves mode and weights."""
-    cfg.walking_reward_parameters = dict(
-        TERRAIN_REWARD_PARAMETERS if cfg.walking_reward_mode == "terrain_v2" else WALK_REWARD_PARAMETERS
-    )
+    parameters = BUDGET_REWARD_PARAMETERS if cfg.walking_reward_mode == "budget_v3" else (
+        TERRAIN_REWARD_PARAMETERS if cfg.walking_reward_mode == "terrain_v2" else WALK_REWARD_PARAMETERS)
+    cfg.walking_reward_parameters = dict(parameters)
     cfg.rewards.walk_signed_progress = RewTerm(func=h2_mdp.walk_signed_progress, weight=1.0)
     cfg.rewards.walk_alternating_steps = RewTerm(func=h2_mdp.walk_alternating_steps, weight=.5)
     cfg.rewards.walk_support_quality = RewTerm(func=h2_mdp.walk_support_quality, weight=.25)
-    if cfg.walking_reward_mode == "terrain_v2":
+    if cfg.walking_reward_mode in ("terrain_v2", "budget_v3"):
         cfg.rewards.terrain_walk_swing = RewTerm(func=h2_mdp.terrain_walk_swing, weight=.75)
         cfg.rewards.terrain_walk_support = RewTerm(func=h2_mdp.terrain_walk_support, weight=-1.0)
         cfg.rewards.terrain_walk_landing = RewTerm(func=h2_mdp.terrain_walk_landing, weight=-.25)
         cfg.rewards.terrain_walk_failure = RewTerm(func=h2_mdp.terrain_walk_failure, weight=-2.0)
+    if cfg.walking_reward_mode == "budget_v3":
+        cfg.rewards.budget_walk_advance = RewTerm(func=h2_mdp.budget_walk_advance, weight=20.0)
+        cfg.rewards.budget_walk_retreat = RewTerm(func=h2_mdp.budget_walk_retreat, weight=-20.0)
+        cfg.rewards.budget_walk_overspeed = RewTerm(func=h2_mdp.budget_walk_overspeed, weight=-.25)
+        cfg.rewards.budget_walk_lateral = RewTerm(func=h2_mdp.budget_walk_lateral, weight=-.25)
+        cfg.rewards.budget_walk_yaw = RewTerm(func=h2_mdp.budget_walk_yaw, weight=-.25)
+        cfg.rewards.budget_walk_stall = RewTerm(func=h2_mdp.budget_walk_stall, weight=-.25)
+        cfg.rewards.budget_walk_success = RewTerm(func=h2_mdp.budget_walk_success, weight=2.0)
 
 
 @configclass
@@ -163,7 +172,7 @@ class RobotWalkBootstrapEnvCfg(RobotContactDiagnosticEnvCfg):
     # formula as an explicit fresh-config comparison rather than a hot toggle.
     walking_cross_time_mode: str = "bounded"
     walking_max_time_difference: float = .5
-    walking_reward_mode: str = "terrain_v2"
+    walking_reward_mode: str = "budget_v3"
 
     def __post_init__(self):
         super().__post_init__()

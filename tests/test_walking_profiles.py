@@ -84,7 +84,9 @@ def _config(reward_mode="alternating_v1"):
     )
     # Containers for every active terrain-budget term; production function
     # declarations are tested separately through the real config class AST.
-    for name in _load_profile_module().TERRAIN_REWARD_WEIGHTS:
+    module = _load_profile_module()
+    weights = module.BUDGET_REWARD_WEIGHTS if reward_mode == "budget_v3" else module.TERRAIN_REWARD_WEIGHTS
+    for name in weights:
         if not hasattr(cfg.rewards, name):
             setattr(cfg.rewards, name, SimpleNamespace(func=abs, weight=-1., params={}))
     for term in vars(cfg.rewards).values():
@@ -129,7 +131,7 @@ def test_bootstrap_keeps_scan_actions_and_terminations(profile_module):
 
 @pytest.mark.parametrize("stage", ["shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20"])
 def test_stage_has_persistent_flat_up_and_down_columns_without_mutating_templates(profile_module, stage):
-    cfg = _config("terrain_v2")
+    cfg = _config("budget_v3")
     terrain = _load_terrain_configs()
     saved = deepcopy(terrain["MIXED_WALK_TERRAINS_CFG"])
     profile_module.apply_walking_profile(

@@ -57,7 +57,8 @@ def observe(e, t, command=None, ids=None, families=None, **kwargs):
                      family_ids=torch.tensor([0, 1, 2]) if families is None else families,
                      terminated=kwargs.get("terminated", torch.zeros(n, dtype=torch.bool)),
                      time_outs=kwargs.get("time_outs", torch.ones(n, dtype=torch.bool)),
-                     max_episode_length_s=3.0, current_step=kwargs.get("step", 3))
+                     max_episode_length_s=3.0, current_step=kwargs.get("step", 3),
+                     **({"extra_success": kwargs["extra_success"]} if "extra_success" in kwargs else {}))
 
 
 def test_shared_stage_names_heights_and_family_columns():
@@ -260,3 +261,99 @@ def test_family_dtype_undeclared_family_and_backward_step_reject_before_consumpt
     observe(e, t)
     with pytest.raises(ValueError, match="nondecreasing"):
         observe(e, t, step=2)
+
+
+def success_mask(e, t, command=None, ids=None, families=None, **kwargs):
+    n = t.elapsed_time.numel()
+    return e.episode_success_mask(
+        command_state(n) if command is None else command, t,
+        list(range(n)) if ids is None else ids,
+        family_ids=torch.tensor([0, 1, 2]) if families is None else families,
+        terminated=kwargs.get("terminated", torch.zeros(n, dtype=torch.bool)),
+        time_outs=kwargs.get("time_outs", torch.ones(n, dtype=torch.bool)),
+        max_episode_length_s=3.0, extra_success=kwargs.get("extra_success"),
+    )
+
+
+def test_episode_success_helper_and_observe_share_extra_evidence_decision():
+    t, e = trace(), evaluator()
+    extra = torch.tensor([True, False, True])
+    mask = success_mask(e, t, extra_success=extra)
+    assert mask.tolist() == [True, False, True]
+    # A decision lookup must not consume or change the evidence window.
+    assert not t.reported.any()
+    assert e.evaluation_count == 0
+    result = observe(e, t, extra_success=extra)
+    assert result["group_episodes"] == {0: 1, 1: 1, 2: 1}
+    assert result["group_success_rates"] == {0: 1., 1: 0., 2: 1.}
+    assert result["passed"] is False
+    # The classification remains a classification after observation consumes it.
+    torch.testing.assert_close(success_mask(e, t, extra_success=extra), mask)
+
+
+def test_success_helper_uses_selected_unique_ids_and_does_not_clear_other_rows():
+    t, e = trace(), evaluator()
+    command = command_state()
+    command.forward_signed_progress[2] = 0.
+    assert success_mask(e, t, command, ids=[2, 0, 2]).tolist() == [True, False]
+    assert not t.reported.any()
+    assert observe(e, t, command, ids=[2]) is None
+    assert t.reported.tolist() == [False, False, True]
+    result = observe(e, t, command, ids=[0, 1], step=4)
+    assert result["group_success_rates"] == {0: 1., 1: 1., 2: 0.}
+
+
+@pytest.mark.parametrize("changes", [
+    {"terminated": torch.tensor([False, True, False])},
+    {"time_outs": torch.tensor([True, False, True])},
+])
+def test_extra_true_does_not_override_failure_or_missing_timeout(changes):
+    assert success_mask(evaluator(), trace(), extra_success=torch.ones(3, dtype=torch.bool),
+                        **changes).tolist() == [True, False, True]
+
+
+def test_extra_true_cannot_override_invalid_or_wrong_height_direction():
+    t = trace()
+    t.valid[0] = False
+    t.last_supported_height[1] = -.04
+    t.down_events[2, 1] = 0
+    assert not success_mask(evaluator(), t, extra_success=torch.ones(3, dtype=torch.bool)).any()
+
+
+def test_helper_requires_ready_same_generation_natural_completed_evidence():
+    t = trace()
+    command = command_state()
+    command.reset_ready[0] = False
+    t.reset_ready[1] = False
+    command.episode_generation[2] = 1
+    assert not success_mask(evaluator(), t, command).any()
+    assert success_mask(evaluator(), trace(), ids=[]).shape == (0,)
+
+
+@pytest.mark.parametrize("extra", [
+    [True, True, True], torch.ones(3), torch.ones(3, 1, dtype=torch.bool),
+    torch.ones(2, dtype=torch.bool), torch.ones(3, dtype=torch.bool, device="meta"),
+])
+def test_invalid_extra_evidence_rejected_before_any_consumption(extra):
+    t, e = trace(), evaluator()
+    with pytest.raises(ValueError, match="extra_success"):
+        success_mask(e, t, extra_success=extra)
+    with pytest.raises(ValueError, match="extra_success"):
+        observe(e, t, extra_success=extra)
+    assert not t.reported.any()
+    assert e.group_episode_counts == {0: 0, 1: 0, 2: 0}
+
+
+def test_none_extra_retains_old_successes_for_every_stage():
+    for stage in MODULE.STAGE_ORDER:
+        heights = [torch.zeros(3, 2), torch.tensor([[0., 0.], [.20, .20], [-.20, -.20]]),
+                   torch.tensor([[0., 0.], [.40, .40], [-.40, -.40]])]
+        if stage == "bootstrap":
+            families = torch.zeros(3, dtype=torch.long)
+        else:
+            families = torch.tensor([0, 1, 2])
+        t = trace(heights)
+        mask = success_mask(evaluator(stage), t, families=families)
+        assert mask.tolist() == [True, True, True]
+        result = observe(evaluator(stage), t, families=families, extra_success=None)
+        assert result["passed"] is True

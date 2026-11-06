@@ -34,7 +34,7 @@ def build_parser(
         epilog="Isaac AppLauncher options (including --headless and --device) are accepted at runtime.",
     )
     parser.add_argument("--task", choices=TASKS, default=TASKS[0])
-    parser.add_argument("--reward_mode", choices=("terrain_v2", "alternating_v1", "legacy"), default="terrain_v2")
+    parser.add_argument("--reward_mode", choices=("budget_v3", "terrain_v2", "alternating_v1", "legacy"), default="budget_v3")
     parser.add_argument("--cross_time_mode", choices=("bounded", "legacy"), default="bounded")
     parser.add_argument("--num_envs", type=int, default=1024)
     parser.add_argument(
@@ -99,22 +99,28 @@ def resolved_configuration_signature(
     env_cfg: Any, agent_cfg: Any, fingerprint: Callable[..., str]
 ) -> str:
     """Pin transforms and resolved reward semantics before environment creation."""
+    controls = {
+        "physics_dt": env_cfg.sim.dt,
+        "decimation": env_cfg.decimation,
+        "default_joint_pos": env_cfg.scene.robot.init_state.joint_pos,
+        "wrapper_clip_actions": agent_cfg.clip_actions,
+        "walking_reward_mode": env_cfg.walking_reward_mode,
+        "walking_reward_version": env_cfg.walking_reward_version,
+        "walking_reward_parameters": env_cfg.walking_reward_parameters,
+        "support_force_threshold": env_cfg.contact_diagnostic_threshold,
+        "support_height_tolerance": env_cfg.stage_support_height_tolerance,
+    }
+    if env_cfg.walking_reward_mode == "budget_v3":
+        controls.update(
+            episode_length_s=env_cfg.episode_length_s,
+            walking_forward_speed=env_cfg.walking_forward_speed,
+        )
     return fingerprint(
         env_cfg.observations,
         env_cfg.actions,
         agent_cfg.policy,
         env_cfg.rewards,
-        {
-            "physics_dt": env_cfg.sim.dt,
-            "decimation": env_cfg.decimation,
-            "default_joint_pos": env_cfg.scene.robot.init_state.joint_pos,
-            "wrapper_clip_actions": agent_cfg.clip_actions,
-            "walking_reward_mode": env_cfg.walking_reward_mode,
-            "walking_reward_version": env_cfg.walking_reward_version,
-            "walking_reward_parameters": env_cfg.walking_reward_parameters,
-            "support_force_threshold": env_cfg.contact_diagnostic_threshold,
-            "support_height_tolerance": env_cfg.stage_support_height_tolerance,
-        },
+        controls,
     )
 
 

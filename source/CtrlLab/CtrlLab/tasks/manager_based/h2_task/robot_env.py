@@ -12,6 +12,7 @@ from .walking_runtime import WalkingRuntime
 from .walking_profiles import validate_walking_profile
 from .walking_rewards import WalkingRewardState
 from .terrain_walking_rewards import TerrainWalkingRewardState
+from .budget_walking_rewards import BudgetWalkingRewardState
 
 
 class RobotEnv(ManagerBasedRLEnv):
@@ -43,7 +44,13 @@ class RobotEnv(ManagerBasedRLEnv):
         if getattr(cfg, "contact_source_diagnostics", False) or getattr(cfg, "staged_evidence", False):
             self.walking_runtime = WalkingRuntime(self)
         self.walking_reward_state = None
-        if getattr(cfg, "walking_reward_mode", "legacy") == "terrain_v2":
+        if getattr(cfg, "walking_reward_mode", "legacy") == "budget_v3":
+            self.walking_reward_state = BudgetWalkingRewardState(
+                self.num_envs, self.device,
+                goal_distance=cfg.walking_forward_speed * cfg.episode_length_s,
+                parameters=cfg.walking_reward_parameters,
+            )
+        elif getattr(cfg, "walking_reward_mode", "legacy") == "terrain_v2":
             self.walking_reward_state = TerrainWalkingRewardState(self.num_envs, self.device)
         elif getattr(cfg, "walking_reward_mode", "legacy") == "alternating_v1":
             self.walking_reward_state = WalkingRewardState(self.num_envs, self.device)

@@ -25,10 +25,19 @@ class RewardRecorder:
         self.calls.append("abort")
 
 
+class BudgetRewardRecorder(RewardRecorder):
+    def __init__(self, num_envs, device, *, goal_distance, parameters):
+        super().__init__(num_envs, device)
+        self.goal_distance, self.parameters = goal_distance, parameters
+
+
 def make_env(env_type, mode="alternating_v1"):
     env_type.__init__.__globals__["WalkingRewardState"] = RewardRecorder
     env_type.__init__.__globals__["TerrainWalkingRewardState"] = RewardRecorder
-    return env_type(Box(feet_body_names=["left", "right"], walking_reward_mode=mode))
+    env_type.__init__.__globals__["BudgetWalkingRewardState"] = BudgetRewardRecorder
+    return env_type(Box(feet_body_names=["left", "right"], walking_reward_mode=mode,
+                        walking_forward_speed=.2, episode_length_s=20.,
+                        walking_reward_parameters={"semantic_version": mode}))
 
 
 def test_only_opt_in_mode_constructs_reward_state(env_type):
@@ -38,10 +47,15 @@ def test_only_opt_in_mode_constructs_reward_state(env_type):
     assert baseline.walking_reward_state is None
     terrain = make_env(env_type, "terrain_v2")
     assert isinstance(terrain.walking_reward_state, RewardRecorder)
+    budget = make_env(env_type, "budget_v3")
+    assert isinstance(budget.walking_reward_state, BudgetRewardRecorder)
+    assert budget.walking_reward_state.goal_distance == pytest.approx(4.)
+    assert budget.walking_reward_state.parameters == {"semantic_version": "budget_v3"}
 
 
-def test_begin_captures_executed_command_and_pre_physics_position(env_type):
-    env = make_env(env_type)
+@pytest.mark.parametrize("mode", ["alternating_v1", "terrain_v2", "budget_v3"])
+def test_begin_captures_executed_command_and_pre_physics_position(env_type, mode):
+    env = make_env(env_type, mode)
     env.next_command = -env.command.clone()
     env.step(torch.zeros(2, 1))
     state = env.walking_reward_state
@@ -51,8 +65,9 @@ def test_begin_captures_executed_command_and_pre_physics_position(env_type):
     assert (env.command[:, 0] < 0).all()
 
 
-def test_partial_and_manual_reset_clear_only_requested_reward_rows(env_type):
-    env = make_env(env_type)
+@pytest.mark.parametrize("mode", ["alternating_v1", "terrain_v2", "budget_v3"])
+def test_partial_and_manual_reset_clear_only_requested_reward_rows(env_type, mode):
+    env = make_env(env_type, mode)
     env.next_reset_ids = [0]
     env.step(torch.zeros(2, 1))
     assert env.walking_reward_state.calls == ["begin", ("reset", [0])]
@@ -62,8 +77,9 @@ def test_partial_and_manual_reset_clear_only_requested_reward_rows(env_type):
 
 
 @pytest.mark.parametrize("field", ["raise_before_reset", "raise_after_reset"])
-def test_parent_failure_aborts_reward_state_and_propagates(env_type, field):
-    env = make_env(env_type)
+@pytest.mark.parametrize("mode", ["alternating_v1", "terrain_v2", "budget_v3"])
+def test_parent_failure_aborts_reward_state_and_propagates(env_type, field, mode):
+    env = make_env(env_type, mode)
     setattr(env, field, True)
     with pytest.raises(RuntimeError, match="synthetic"):
         env.step(torch.zeros(2, 1))

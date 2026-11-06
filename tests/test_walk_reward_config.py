@@ -90,9 +90,11 @@ def test_walk_class_wires_declared_reward_functions_only_for_walk():
     namespace = _load_configs()
     cfg = _new_cfg(namespace, "RobotWalkBootstrapEnvCfg")
     for name in ("walk_signed_progress", "walk_alternating_steps", "terrain_walk_swing",
-                 "terrain_walk_support", "terrain_walk_landing", "terrain_walk_failure"):
+                 "terrain_walk_support", "terrain_walk_landing", "terrain_walk_failure",
+                 "budget_walk_advance", "budget_walk_retreat", "budget_walk_overspeed",
+                 "budget_walk_lateral", "budget_walk_yaw", "budget_walk_stall", "budget_walk_success"):
         assert getattr(cfg.rewards, name).func is getattr(namespace["h2_mdp"], name)
-    assert cfg.walking_reward_mode == "terrain_v2"
+    assert cfg.walking_reward_mode == "budget_v3"
     assert cfg.rewards.walk_support_quality.weight == 0.
     legacy = namespace["RobotWalkBootstrapEnvCfg"]()
     legacy.walking_reward_mode = "legacy"
@@ -195,10 +197,10 @@ def test_terrain_budget_rejects_post_resolution_semantic_changes(mutation):
         module.validate_walking_profile(cfg)
 
 
-def test_terrain_cli_default_and_explicit_previous_modes_are_available():
+def test_budget_cli_default_and_explicit_previous_modes_are_available():
     entry = entry_module()
-    assert entry.parse_args([]).reward_mode == "terrain_v2"
-    for mode in ("legacy", "alternating_v1", "terrain_v2"):
+    assert entry.parse_args([]).reward_mode == "budget_v3"
+    for mode in ("legacy", "alternating_v1", "terrain_v2", "budget_v3"):
         assert entry.parse_args(["--reward_mode", mode]).reward_mode == mode
 
 
@@ -206,7 +208,8 @@ def test_all_reward_versions_are_mode_specific_and_cross_mode_restore_rejects():
     mod = protocol_module()
     for mode, version in (("legacy", "h2_walk_rewards_v1"),
                           ("alternating_v1", "h2_walk_rewards_v1"),
-                          ("terrain_v2", "h2_walk_rewards_v2")):
+                          ("terrain_v2", "h2_walk_rewards_v2"),
+                          ("budget_v3", "h2_walk_rewards_v3")):
         marker = protocol(mod, reward_mode=mode)
         assert marker["reward_version"] == version
         mod.validate_protocol(marker)
@@ -267,3 +270,101 @@ def test_terrain_budget_closes_over_every_real_rewards_cfg_declaration():
                  "feet_swing_height", "feet_stair_clearance", "support_force_z_axis", "stand_still"):
         assert getattr(cfg.rewards, name).weight == 0.
     module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("stage", ["bootstrap", "shallow", "stairs_08", "stairs_12", "stairs_16", "stairs_20"])
+def test_budget_v3_uses_one_finite_progress_budget_in_every_stage(stage):
+    module = _load_profile_module()
+    cfg = _resolved_profile(module, stage, reward_mode="budget_v3")
+    expected = {name: weight for name, weight in module.BUDGET_REWARD_WEIGHTS.items() if weight}
+    active = {name: term.weight for name, term in vars(cfg.rewards).items()
+              if term is not None and term.weight != 0.}
+    assert active == expected
+    assert len(active) == 28
+    assert cfg.rewards.walk_signed_progress.weight == 0.
+    assert cfg.rewards.budget_walk_advance.weight == -cfg.rewards.budget_walk_retreat.weight == 20.
+    assert cfg.walking_reward_version == "h2_walk_rewards_v3"
+    assert cfg.walking_reward_parameters == module.BUDGET_REWARD_PARAMETERS
+    module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("mutation", ["weight", "function", "parameter", "disabled", "extra", "version", "budget"])
+def test_budget_v3_rejects_resolved_semantic_mutation(mutation):
+    module = _load_profile_module()
+    cfg = _resolved_profile(module, reward_mode="budget_v3")
+    if mutation == "weight":
+        cfg.rewards.budget_walk_advance.weight = 10.
+    elif mutation == "function":
+        cfg.rewards.budget_walk_overspeed.func = min
+    elif mutation == "parameter":
+        cfg.rewards.budget_walk_lateral.params["threshold"] = 1.
+    elif mutation == "disabled":
+        cfg.rewards.walk_signed_progress.weight = 1.
+    elif mutation == "extra":
+        cfg.rewards.extra = SimpleNamespace(func=abs, weight=0., params={})
+    elif mutation == "version":
+        cfg.walking_reward_version = "h2_walk_rewards_v2"
+    else:
+        cfg.walking_reward_parameters["success_min_goal_ratio"] = .1
+    with pytest.raises(ValueError, match="reward|version"):
+        module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("mode", ["legacy", "alternating_v1", "terrain_v2"])
+def test_previous_reward_modes_have_no_budget_keys_or_parameters(mode):
+    from test_walking_env_config import _load_configs
+
+    module, namespace = _load_profile_module(), _load_configs()
+    cfg = namespace["RobotWalkBootstrapEnvCfg"]()
+    cfg.walking_reward_mode = mode
+    cfg.__post_init__()
+    assert set(module.BUDGET_ONLY_TERMS).isdisjoint(vars(cfg.rewards))
+    assert cfg.walking_reward_parameters == module.reward_parameters(mode)
+    assert "success_min_goal_ratio" not in cfg.walking_reward_parameters
+    module.validate_walking_profile(cfg)
+
+
+@pytest.mark.parametrize("field", ["episode_length_s", "walking_forward_speed"])
+def test_budget_signature_includes_derived_goal_inputs_only_in_v3(field):
+    entry, proto = entry_module(), protocol_module()
+    cfg = _signature_cfg()
+    cfg.walking_reward_mode, cfg.walking_reward_version = "budget_v3", "h2_walk_rewards_v3"
+    cfg.episode_length_s, cfg.walking_forward_speed = 20., .2
+    agent = SimpleNamespace(policy={}, clip_actions=100.)
+    before = entry.resolved_configuration_signature(cfg, agent, proto.configuration_fingerprint)
+    setattr(cfg, field, getattr(cfg, field) * .9)
+    assert entry.resolved_configuration_signature(cfg, agent, proto.configuration_fingerprint) != before
+    for mode, version in (("legacy", "h2_walk_rewards_v1"), ("alternating_v1", "h2_walk_rewards_v1"),
+                          ("terrain_v2", "h2_walk_rewards_v2")):
+        cfg.walking_reward_mode, cfg.walking_reward_version = mode, version
+        before = entry.resolved_configuration_signature(cfg, agent, proto.configuration_fingerprint)
+        setattr(cfg, field, getattr(cfg, field) * .9)
+        assert entry.resolved_configuration_signature(cfg, agent, proto.configuration_fingerprint) == before
+
+
+def test_budget_protocol_cross_stage_and_previous_mode_rejection():
+    mod = protocol_module()
+    marker = protocol(mod, reward_mode="budget_v3")
+    assert marker["reward_version"] == "h2_walk_rewards_v3"
+    saved = checkpoint(mod)
+    saved["infos"]["h2_walk_protocol"] = marker
+    assert mod.validate_checkpoint(saved, protocol(mod, "stairs_20", reward_mode="budget_v3")) == 10
+    for mode in ("legacy", "alternating_v1", "terrain_v2"):
+        value = runner()
+        with pytest.raises(ValueError, match="protocol"):
+            mod.restore_checkpoint(value, saved, protocol(mod, reward_mode=mode))
+        assert value.calls == []
+
+
+@pytest.mark.parametrize("mode,version,expected", [
+    ("legacy", "h2_walk_rewards_v1", "5555311fcd33e321f0fc91f338681435e2d6e997d2957b0deabd64172312e9fb"),
+    ("alternating_v1", "h2_walk_rewards_v1", "67ddf2e594d50515cea95c1ee47076e39fa6f2b1bde8130a7df611975e93f41a"),
+    ("terrain_v2", "h2_walk_rewards_v2", "28711e9d31e1a34ec2dfd91675e3bad80351b64671f36fd89b37431804e41186"),
+])
+def test_previous_mode_signature_fixture_matches_067ecde(mode, version, expected):
+    """Golden signatures produced by the published prior entry on this fixture."""
+    cfg = _signature_cfg()
+    cfg.walking_reward_mode, cfg.walking_reward_version = mode, version
+    agent = SimpleNamespace(policy={}, clip_actions=100.)
+    assert entry_module().resolved_configuration_signature(
+        cfg, agent, protocol_module().configuration_fingerprint) == expected

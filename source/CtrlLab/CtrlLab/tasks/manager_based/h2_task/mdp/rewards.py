@@ -643,6 +643,41 @@ def terrain_walk_failure(env: RobotEnv) -> torch.Tensor:
     return env.termination_manager.terminated.float() / env.step_dt
 
 
+def budget_walk_advance(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.progress.advance_rate
+
+
+def budget_walk_retreat(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.progress.retreat_rate
+
+
+def budget_walk_overspeed(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.progress.overspeed_cost
+
+
+def budget_walk_lateral(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.progress.lateral_cost
+
+
+def budget_walk_yaw(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.yaw_cost
+
+
+def budget_walk_stall(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.stall_cost
+
+
+def budget_walk_success(env: RobotEnv) -> torch.Tensor:
+    env.walking_reward_state.update(env)
+    return env.walking_reward_state.success_event
+
+
 def feet_acc_norm(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     feet_acc = asset.data.body_lin_acc_w[:, asset_cfg.body_ids]

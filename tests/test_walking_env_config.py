@@ -81,9 +81,13 @@ def _load_configs():
         "RewTerm": _RewardTermCfg,
         "h2_mdp": SimpleNamespace(walk_signed_progress=abs, walk_alternating_steps=sum, walk_support_quality=min,
                                  terrain_walk_swing=max, terrain_walk_support=abs,
-                                 terrain_walk_landing=sum, terrain_walk_failure=min),
+                                 terrain_walk_landing=sum, terrain_walk_failure=min,
+                                 budget_walk_advance=abs, budget_walk_retreat=sum,
+                                 budget_walk_overspeed=min, budget_walk_lateral=max,
+                                 budget_walk_yaw=abs, budget_walk_stall=max, budget_walk_success=sum),
         "WALK_REWARD_PARAMETERS": _load_profile_module().WALK_REWARD_PARAMETERS,
         "TERRAIN_REWARD_PARAMETERS": _load_profile_module().TERRAIN_REWARD_PARAMETERS,
+        "BUDGET_REWARD_PARAMETERS": _load_profile_module().BUDGET_REWARD_PARAMETERS,
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(source), "exec"), namespace)
     return namespace
